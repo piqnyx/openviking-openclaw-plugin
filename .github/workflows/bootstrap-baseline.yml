@@ -1,0 +1,45 @@
+name: Bootstrap baseline snapshot
+
+on:
+  push:
+    paths:
+      - .github/workflows/bootstrap-baseline.yml
+
+permissions:
+  contents: write
+
+jobs:
+  import-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download and verify deployed plugin snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://www.piqnyx.com/openviking-openclaw-plugin-20260809-233218.tar.gz'
+          expected='7d9b396e9e54c629f179f87e2512cd3fc2e5f5a0ec17f62c64e88f5cb5e90836'
+          curl -fL --retry 3 --retry-delay 2 "$url" -o /tmp/plugin.tar.gz
+          actual="$(sha256sum /tmp/plugin.tar.gz | awk '{print $1}')"
+          test "$actual" = "$expected"
+
+      - name: Replace repository contents with exact snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          tar -xzf /tmp/plugin.tar.gz --strip-components=1
+
+      - name: Commit baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'piqnyx baseline import'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git diff --cached --check || true
+          git commit -m 'release: baseline 2026.7.15-isolation.5 snapshot'
+          git push origin HEAD:main
