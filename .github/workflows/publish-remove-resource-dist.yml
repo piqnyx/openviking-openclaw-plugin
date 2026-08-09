@@ -1,4 +1,4 @@
-name: Finalize remove_resource package version
+name: Apply audited remove_resource hardening
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  finalize-version:
+  apply-hardening:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,14 +19,23 @@ jobs:
           fetch-depth: 0
           ref: feature/remove-resource
 
-      - name: Require the verified feature head
+      - name: Require audited feature head
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 'f2b9e88e53727298eca06464a244c5d9cefd0559'
+          test "$(git rev-parse HEAD)" = 'd7832fa9373dbb829df71f9f6288af54aeee6566'
 
-      - name: Set package version without creating a tag
-        run: npm version 2026.7.15-isolation.6 --no-git-tag-version
+      - name: Fetch and apply hardening patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            'https://raw.githubusercontent.com/piqnyx/openviking-openclaw-plugin/d7832fa9373dbb829df71f9f6288af54aeee6566/changes/remove-resource-hardening.patch' \
+            -o /tmp/remove-resource-hardening.patch
+          git apply --check /tmp/remove-resource-hardening.patch
+          git apply /tmp/remove-resource-hardening.patch
+          rm -f changes/remove-resource-hardening.patch
+          rmdir changes 2>/dev/null || true
 
       - name: Install dependencies
         run: npm ci
@@ -37,17 +46,13 @@ jobs:
       - name: Typecheck including tests
         run: npm run typecheck
 
-      - name: Commit package metadata only
+      - name: Commit audited source, tests, and generated dist
         shell: bash
         run: |
           set -euo pipefail
-          test "$(node -p 'require("./package.json").version')" = '2026.7.15-isolation.6'
-          test "$(node -p 'require("./package-lock.json").version')" = '2026.7.15-isolation.6'
-          test "$(node -p 'require("./package-lock.json").packages[""] .version')" = '2026.7.15-isolation.6'
-          git diff --exit-code -- dist
           git config user.name 'piqnyx CI'
           git config user.email 'actions@users.noreply.github.com'
-          git add package.json package-lock.json
+          git add -A
           git diff --cached --check
-          git commit -m 'chore: bump plugin version to isolation.6'
+          git commit -m 'fix: enforce resource-only deletion at client boundary'
           git push origin HEAD:feature/remove-resource
