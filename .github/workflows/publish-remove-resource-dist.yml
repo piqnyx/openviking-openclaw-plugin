@@ -1,5 +1,6 @@
 name: Apply audited remove_resource hardening
 
+# One-shot trigger after the workflow is present on main.
 on:
   push:
     branches:
