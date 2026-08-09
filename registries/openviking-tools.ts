@@ -1,6 +1,7 @@
 export type OpenVikingToolGroup =
   | "memory"
   | "resource_query"
+  | "resource_manage"
   | "import"
   | "recall_trace"
   | "archive"
@@ -8,6 +9,7 @@ export type OpenVikingToolGroup =
 
 export type OpenVikingToolName =
   | "add_resource"
+  | "remove_resource"
   | "add_skill"
   | "ov_search"
   | "ov_read"
@@ -27,10 +29,11 @@ export type OpenVikingToolSpec = {
   name: OpenVikingToolName;
   group: OpenVikingToolGroup;
   defaultEnabled: boolean;
-  requiresLegacyFlag?: "enableAddResourceTool";
+  requiresLegacyFlag?: "enableAddResourceTool" | "enableRemoveResourceTool";
 };
 
 export const OPENVIKING_ADD_RESOURCE_TOOL_NAME = "add_resource" as const;
+export const OPENVIKING_REMOVE_RESOURCE_TOOL_NAME = "remove_resource" as const;
 
 export const OPENVIKING_TOOL_SPECS = [
   {
@@ -38,6 +41,12 @@ export const OPENVIKING_TOOL_SPECS = [
     group: "import",
     defaultEnabled: false,
     requiresLegacyFlag: "enableAddResourceTool",
+  },
+  {
+    name: OPENVIKING_REMOVE_RESOURCE_TOOL_NAME,
+    group: "resource_manage",
+    defaultEnabled: false,
+    requiresLegacyFlag: "enableRemoveResourceTool",
   },
   { name: "add_skill", group: "import", defaultEnabled: true },
   { name: "ov_search", group: "resource_query", defaultEnabled: true },
@@ -64,6 +73,7 @@ export const OPENVIKING_DEFAULT_ENABLED_TOOL_NAMES = OPENVIKING_TOOL_SPECS
 const OPENVIKING_TOOL_GROUP_ORDER: readonly OpenVikingToolGroup[] = [
   "memory",
   "resource_query",
+  "resource_manage",
   "import",
   "recall_trace",
   "archive",

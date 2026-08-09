@@ -91,6 +91,8 @@ export type MemoryOpenVikingConfig = {
   recallTargetTypes?: Array<"resource" | "user" | "agent"> | string;
   /** Agent-visible add_resource tool is disabled by default; manual /add-resource remains available. */
   enableAddResourceTool?: boolean;
+  /** Agent-visible remove_resource tool is disabled by default because it is destructive. */
+  enableRemoveResourceTool?: boolean;
   /** Agent-visible tool allowlist. Supports exact tool names or groups such as "memory" and "resource_query". */
   enabledTools?: string[] | string;
   /** Agent-visible tool blocklist applied after enabledTools. Supports exact tool names or groups. */
@@ -144,6 +146,7 @@ const ALLOWED_RECALL_TARGET_TYPES = ["resource", "user", "agent"] as const;
 const DEFAULT_RECALL_TARGET_TYPES = ["user", "agent"] as const;
 type RecallTargetType = typeof ALLOWED_RECALL_TARGET_TYPES[number];
 export const OPENVIKING_ADD_RESOURCE_TOOL_NAME = "add_resource" as const;
+export const OPENVIKING_REMOVE_RESOURCE_TOOL_NAME = "remove_resource" as const;
 export const OPENVIKING_DEFAULT_ENABLED_TOOL_NAMES = [
   "add_skill",
   "ov_search",
@@ -162,6 +165,7 @@ export const OPENVIKING_DEFAULT_ENABLED_TOOL_NAMES = [
 ] as const;
 export const OPENVIKING_ALL_TOOL_NAMES = [
   OPENVIKING_ADD_RESOURCE_TOOL_NAME,
+  OPENVIKING_REMOVE_RESOURCE_TOOL_NAME,
   ...OPENVIKING_DEFAULT_ENABLED_TOOL_NAMES,
 ] as const;
 export type OpenVikingToolName = typeof OPENVIKING_ALL_TOOL_NAMES[number];
@@ -170,6 +174,7 @@ export const OPENVIKING_TOOL_GROUPS: Record<string, readonly OpenVikingToolName[
   default: OPENVIKING_DEFAULT_ENABLED_TOOL_NAMES,
   memory: ["memory_recall", "memory_store", "memory_forget"],
   resource_query: ["ov_search", "ov_read", "ov_multi_read", "ov_list"],
+  resource_manage: ["remove_resource"],
   import: ["add_resource", "add_skill"],
   recall_trace: ["ov_recall_trace"],
   archive: ["ov_archive_search", "ov_archive_expand"],
@@ -351,18 +356,25 @@ function normalizeEnabledTools(cfg: Record<string, unknown>): {
   disabledTools: OpenVikingToolName[];
 } {
   const enableAddResourceTool = cfg.enableAddResourceTool === true;
-  const defaultTools = enableAddResourceTool
-    ? [OPENVIKING_ADD_RESOURCE_TOOL_NAME, ...OPENVIKING_DEFAULT_ENABLED_TOOL_NAMES]
-    : [...OPENVIKING_DEFAULT_ENABLED_TOOL_NAMES];
+  const enableRemoveResourceTool = cfg.enableRemoveResourceTool === true;
+  const defaultTools = [
+    ...(enableAddResourceTool ? [OPENVIKING_ADD_RESOURCE_TOOL_NAME] : []),
+    ...(enableRemoveResourceTool ? [OPENVIKING_REMOVE_RESOURCE_TOOL_NAME] : []),
+    ...OPENVIKING_DEFAULT_ENABLED_TOOL_NAMES,
+  ];
   const selected = expandToolSelectors(cfg.enabledTools, defaultTools, "enabledTools");
   const disabled = expandToolSelectors(cfg.disabledTools, [], "disabledTools");
   const disabledSet = new Set(disabled);
   if (!enableAddResourceTool) {
     disabledSet.add(OPENVIKING_ADD_RESOURCE_TOOL_NAME);
   }
+  if (!enableRemoveResourceTool) {
+    disabledSet.add(OPENVIKING_REMOVE_RESOURCE_TOOL_NAME);
+  }
   const enabledTools = selected.filter((tool) =>
     !disabledSet.has(tool) &&
-    (tool !== OPENVIKING_ADD_RESOURCE_TOOL_NAME || enableAddResourceTool)
+    (tool !== OPENVIKING_ADD_RESOURCE_TOOL_NAME || enableAddResourceTool) &&
+    (tool !== OPENVIKING_REMOVE_RESOURCE_TOOL_NAME || enableRemoveResourceTool)
   );
 
   return {
@@ -454,6 +466,7 @@ export const memoryOpenVikingConfigSchema = {
         "traceRecallIncludeRawUserPreview",
         "recallTargetTypes",
         "enableAddResourceTool",
+        "enableRemoveResourceTool",
         "enabledTools",
         "disabledTools",
         "runtimeQueryConfigPath",
@@ -632,6 +645,7 @@ export const memoryOpenVikingConfigSchema = {
       traceRecallIncludeRawUserPreview: cfg.traceRecallIncludeRawUserPreview === true,
       recallTargetTypes,
       enableAddResourceTool: cfg.enableAddResourceTool === true,
+      enableRemoveResourceTool: cfg.enableRemoveResourceTool === true,
       enabledTools,
       disabledTools,
       runtimeQueryConfigPath:
@@ -846,10 +860,16 @@ export const memoryOpenVikingConfigSchema = {
       help: "Disabled by default so search and read flows cannot call add_resource. Set true only when agents should import resources; manual /add-resource remains available.",
       advanced: true,
     },
+    enableRemoveResourceTool: {
+      label: "Enable Remove Resource Tool",
+      placeholder: "false",
+      help: "Disabled by default because remove_resource is destructive. When enabled, the tool can remove only descendants of viking://resources/.",
+      advanced: true,
+    },
     enabledTools: {
       label: "Enabled Tools",
       placeholder: "default",
-      help: "Agent-visible tool allowlist. Accepts tool names or groups: default, all, memory, resource_query, import, recall_trace, archive, tool_result. add_resource also requires enableAddResourceTool=true.",
+      help: "Agent-visible tool allowlist. Accepts tool names or groups: default, all, memory, resource_query, resource_manage, import, recall_trace, archive, tool_result. add_resource also requires enableAddResourceTool=true; remove_resource also requires enableRemoveResourceTool=true.",
       advanced: true,
     },
     disabledTools: {

@@ -13,6 +13,7 @@
   "contracts": {
     "tools": [
       "add_resource",
+      "remove_resource",
       "add_skill",
       "ov_search",
       "ov_read",
@@ -252,10 +253,16 @@
       "help": "Disabled by default so search and read flows cannot call add_resource. Set true only when agents should import resources; manual /add-resource remains available.",
       "advanced": true
     },
+    "enableRemoveResourceTool": {
+      "label": "Enable Remove Resource Tool",
+      "placeholder": "false",
+      "help": "Disabled by default because remove_resource is destructive. When enabled, the tool can remove only descendants of viking://resources/.",
+      "advanced": true
+    },
     "enabledTools": {
       "label": "Enabled Tools",
       "placeholder": "default",
-      "help": "Agent-visible tool allowlist. Accepts tool names or groups: default, all, memory, resource_query, import, recall_trace, archive, tool_result. add_resource also requires enableAddResourceTool=true.",
+      "help": "Agent-visible tool allowlist. Accepts tool names or groups: default, all, memory, resource_query, resource_manage, import, recall_trace, archive, tool_result. add_resource also requires enableAddResourceTool=true; remove_resource also requires enableRemoveResourceTool=true.",
       "advanced": true
     },
     "disabledTools": {
@@ -466,6 +473,9 @@
         "type": "boolean"
       },
       "enableAddResourceTool": {
+        "type": "boolean"
+      },
+      "enableRemoveResourceTool": {
         "type": "boolean"
       },
       "enabledTools": {
