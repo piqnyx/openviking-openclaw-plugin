@@ -1,0 +1,49 @@
+name: Verify remove_resource feature
+
+on:
+  push:
+    paths:
+      - .github/workflows/verify-remove-resource.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feature/remove-resource
+
+      - name: Fetch and apply implementation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            'https://raw.githubusercontent.com/piqnyx/openviking-openclaw-plugin/d4c65230c87313f44e4f741f28b984c1cf391dd0/changes/remove-resource.patch' \
+            -o /tmp/remove-resource.patch
+          git apply --check /tmp/remove-resource.patch
+          git apply /tmp/remove-resource.patch
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and test
+        run: npm run verify
+
+      - name: Typecheck including tests
+        run: npm run typecheck
+
+      - name: Commit verified implementation and generated dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'piqnyx CI'
+          git config user.email 'actions@users.noreply.github.com'
+          rm -f CI_FAILURE.log
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat: add guarded remove_resource tool'
+          git push origin HEAD:feature/remove-resource
