@@ -1,0 +1,86 @@
+{
+  "name": "openviking-openclaw-plugin",
+  "version": "2026.7.15-isolation.5",
+  "displayName": "OpenViking (per-agent isolation)",
+  "description": "OpenClaw context-engine plugin — OpenViking memory with one OpenViking account per OpenClaw agent (fork of @openviking/openclaw-plugin 2026.7.15)",
+  "type": "module",
+  "keywords": [
+    "openclaw",
+    "openviking",
+    "plugin",
+    "context-engine",
+    "memory",
+    "remote-memory",
+    "RAG",
+    "semantic-retrieval",
+    "context-database",
+    "long-term-memory",
+    "auto-recall",
+    "auto-capture"
+  ],
+  "files": [
+    "!vitest.config.ts",
+    "*.ts",
+    "README.md",
+    "adapters/",
+    "agent-keys.ts",
+    "commands/setup.ts",
+    "config/feature-gates.json",
+    "dist/",
+    "install-manifest.json",
+    "openclaw.plugin.json",
+    "package.json",
+    "plugin/",
+    "registries/",
+    "routing/",
+    "services/",
+    "skills/",
+    "tsconfig.build.json",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "test:watch": "vitest",
+    "verify": "npm run build && npm run test"
+  },
+  "engines": {
+    "openclaw": ">=2026.5.27"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48",
+    "fflate": "^0.8.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/volcengine/OpenViking"
+  },
+  "overrides": {
+    "axios": "^1.16.1"
+  },
+  "homepage": "https://github.com/volcengine/OpenViking/tree/main/examples/openclaw-plugin",
+  "license": "MIT",
+  "author": "OpenViking Contributors",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "setupEntry": "./dist/commands/setup.js",
+    "compat": {
+      "pluginApi": ">=2026.5.27",
+      "minGatewayVersion": "2026.5.27"
+    },
+    "build": {
+      "openclawVersion": "2026.5.27",
+      "pluginSdkVersion": "2026.5.27"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "@volcengine/tos-sdk": "^2.9.1",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.0"
+  }
+}
