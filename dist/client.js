@@ -499,6 +499,22 @@ export class OpenVikingClient {
     async deleteSession(sessionId) {
         await this.request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
     }
+    async removeResource(input, actorPeerId) {
+        const uri = input.uri.trim();
+        if (!uri) {
+            throw new Error("uri is required");
+        }
+        const query = new URLSearchParams({
+            uri,
+            recursive: String(input.recursive ?? false),
+            wait: String(input.wait ?? false),
+        });
+        if (typeof input.timeout === "number") {
+            query.set("timeout", String(input.timeout));
+        }
+        const requestTimeoutMs = input.wait ? resolveWaitRequestTimeoutMs(this.timeoutMs, input.timeout) : undefined;
+        return this.request(`/api/v1/fs?${query.toString()}`, { method: "DELETE" }, requestTimeoutMs, actorPeerId);
+    }
     async deleteUri(uri, actorPeerId) {
         await this.request(`/api/v1/fs?uri=${encodeURIComponent(uri)}&recursive=false`, {
             method: "DELETE",
