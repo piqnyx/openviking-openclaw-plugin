@@ -1,4 +1,4 @@
-name: Publish verified remove_resource dist
+name: Finalize remove_resource package version
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  publish-dist:
+  finalize-version:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +23,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = '468a6b54f98eb5a4c25e5b6740fc093c199bc1f1'
+          test "$(git rev-parse HEAD)" = 'f2b9e88e53727298eca06464a244c5d9cefd0559'
+
+      - name: Set package version without creating a tag
+        run: npm version 2026.7.15-isolation.6 --no-git-tag-version
 
       - name: Install dependencies
         run: npm ci
@@ -34,14 +37,17 @@ jobs:
       - name: Typecheck including tests
         run: npm run typecheck
 
-      - name: Commit generated dist only
+      - name: Commit package metadata only
         shell: bash
         run: |
           set -euo pipefail
+          test "$(node -p 'require("./package.json").version')" = '2026.7.15-isolation.6'
+          test "$(node -p 'require("./package-lock.json").version')" = '2026.7.15-isolation.6'
+          test "$(node -p 'require("./package-lock.json").packages[""] .version')" = '2026.7.15-isolation.6'
+          git diff --exit-code -- dist
           git config user.name 'piqnyx CI'
           git config user.email 'actions@users.noreply.github.com'
-          git add dist
+          git add package.json package-lock.json
           git diff --cached --check
-          git diff --cached --quiet && exit 0
-          git commit -m 'build: refresh dist for remove_resource'
+          git commit -m 'chore: bump plugin version to isolation.6'
           git push origin HEAD:feature/remove-resource
