@@ -1,0 +1,37 @@
+name: Test remove_resource PR
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test-remove-resource:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feature/remove-resource
+
+      - name: Fetch and apply implementation patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            'https://raw.githubusercontent.com/piqnyx/openviking-openclaw-plugin/d4c65230c87313f44e4f741f28b984c1cf391dd0/changes/remove-resource.patch' \
+            -o /tmp/remove-resource.patch
+          git apply --check /tmp/remove-resource.patch
+          git apply /tmp/remove-resource.patch
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and test
+        run: npm run verify
+
+      - name: Typecheck including tests
+        run: npm run typecheck
