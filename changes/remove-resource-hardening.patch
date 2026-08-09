@@ -1,0 +1,226 @@
+diff --git a/client.ts b/client.ts
+index b7d3150..4446120 100644
+--- a/client.ts
++++ b/client.ts
+@@ -213,6 +213,46 @@ export type RemoveResourceResult = {
+   queue_status?: unknown;
+ };
+ 
++export type RemovableResourceUriValidation =
++  | { ok: true; uri: string }
++  | { ok: false; reason: string };
++
++const RESOURCE_ROOT_URI = "viking://resources";
++
++export function validateRemovableResourceUri(value: string): RemovableResourceUriValidation {
++  const uri = value.trim().replace(/\/+$/, "");
++  if (!uri) {
++    return { ok: false, reason: "A resource URI is required." };
++  }
++  if (uri === RESOURCE_ROOT_URI) {
++    return {
++      ok: false,
++      reason: "Refusing to delete the viking://resources root. List it with ov_list and remove its child resources instead.",
++    };
++  }
++  if (!uri.startsWith(`${RESOURCE_ROOT_URI}/`)) {
++    return { ok: false, reason: `Refusing to delete non-resource URI: ${uri}` };
++  }
++
++  const relative = uri.slice(RESOURCE_ROOT_URI.length + 1);
++  const rawSegments = relative.split("/");
++  if (rawSegments.some((segment) => segment.length === 0)) {
++    return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
++  }
++  for (const segment of rawSegments) {
++    let decoded = segment;
++    try {
++      decoded = decodeURIComponent(segment);
++    } catch {
++      return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
++    }
++    if (decoded === "." || decoded === ".." || decoded.includes("/")) {
++      return { ok: false, reason: `Refusing unsafe resource URI: ${uri}` };
++    }
++  }
++  return { ok: true, uri };
++}
++
+ export type AddSkillInput = {
+   path?: string;
+   data?: unknown;
+@@ -992,10 +1032,11 @@ export class OpenVikingClient {
+   }
+ 
+   async removeResource(input: RemoveResourceInput, actorPeerId?: string): Promise<RemoveResourceResult> {
+-    const uri = input.uri.trim();
+-    if (!uri) {
+-      throw new Error("uri is required");
++    const validation = validateRemovableResourceUri(input.uri);
++    if (!validation.ok) {
++      throw new Error(validation.reason);
+     }
++    const uri = validation.uri;
+ 
+     const query = new URLSearchParams({
+       uri,
+diff --git a/plugin/openviking-import-tools.ts b/plugin/openviking-import-tools.ts
+index b93fb39..fdadb26 100644
+--- a/plugin/openviking-import-tools.ts
++++ b/plugin/openviking-import-tools.ts
+@@ -1,5 +1,6 @@
+ import { Type } from "@sinclair/typebox";
+ 
++import { validateRemovableResourceUri } from "../client.js";
+ import type {
+   AddResourceInput,
+   AddResourceResult,
+@@ -47,42 +48,6 @@ function formatResourceImportText(result: AddResourceResult): string {
+   return `Imported OpenViking resource.${root}${warnings}`.trim();
+ }
+ 
+-const RESOURCE_ROOT_URI = "viking://resources";
+-
+-function validateRemovableResourceUri(value: string): { ok: true; uri: string } | { ok: false; reason: string } {
+-  const uri = value.trim().replace(/\/+$/, "");
+-  if (!uri) {
+-    return { ok: false, reason: "A resource URI is required." };
+-  }
+-  if (uri === RESOURCE_ROOT_URI) {
+-    return {
+-      ok: false,
+-      reason: "Refusing to delete the viking://resources root. List it with ov_list and remove its child resources instead.",
+-    };
+-  }
+-  if (!uri.startsWith(`${RESOURCE_ROOT_URI}/`)) {
+-    return { ok: false, reason: `Refusing to delete non-resource URI: ${uri}` };
+-  }
+-
+-  const relative = uri.slice(RESOURCE_ROOT_URI.length + 1);
+-  const rawSegments = relative.split("/");
+-  if (rawSegments.some((segment) => segment.length === 0)) {
+-    return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
+-  }
+-  for (const segment of rawSegments) {
+-    let decoded = segment;
+-    try {
+-      decoded = decodeURIComponent(segment);
+-    } catch {
+-      return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
+-    }
+-    if (decoded === "." || decoded === ".." || decoded.includes("/")) {
+-      return { ok: false, reason: `Refusing unsafe resource URI: ${uri}` };
+-    }
+-  }
+-  return { ok: true, uri };
+-}
+-
+ function formatResourceRemovalText(result: RemoveResourceResult, requestedUri: string): string {
+   const uri = result.uri ?? requestedUri;
+   const details: string[] = [];
+@@ -157,7 +122,7 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps):
+           "Use when the user explicitly asks to delete or remove content from OpenViking resources. " +
+           "This tool is restricted to descendants of viking://resources/ and must never be used for memories, sessions, skills, or other namespaces. " +
+           "To clear all resources, first use ov_list on viking://resources, then remove each top-level child; the viking://resources root itself cannot be deleted. " +
+-          "Set recursive=true for a non-empty resource directory. Set wait=true when subsequent work must wait for OpenViking semantic/vector cleanup to finish.",
++          "Set recursive=true for a non-empty resource directory. Set wait=true when subsequent work must wait for OpenViking semantic refresh to finish.",
+         parameters: Type.Object({
+           uri: Type.String({
+             description: "Exact resource URI below viking://resources/, for example viking://resources/project-docs or viking://resources/project-docs/file.pdf. The viking://resources root itself is not allowed.",
+@@ -166,7 +131,7 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps):
+             description: "Remove the entire subtree below uri. Required for non-empty resource directories; default false.",
+           })),
+           wait: Type.Optional(Type.Boolean({
+-            description: "Wait for OpenViking semantic/vector cleanup associated with the removal to complete; default false.",
++            description: "Wait for OpenViking semantic refresh associated with the removal to complete; default false.",
+           })),
+           timeout: Type.Optional(Type.Number({
+             description: "Server-side wait timeout in seconds when wait=true.",
+diff --git a/tests/remove-resource-hardening.test.ts b/tests/remove-resource-hardening.test.ts
+new file mode 100644
+index 0000000..551a283
+--- /dev/null
++++ b/tests/remove-resource-hardening.test.ts
+@@ -0,0 +1,82 @@
++import { describe, expect, it, vi } from "vitest";
++
++import type { HttpTransport } from "../adapters/http-transport.js";
++import {
++  OpenVikingClient,
++  validateRemovableResourceUri,
++} from "../client.js";
++import { memoryOpenVikingConfigSchema } from "../config.js";
++
++function makeClient(transport: HttpTransport) {
++  return new OpenVikingClient(
++    "http://127.0.0.1:1933",
++    "ov-main-key",
++    "main",
++    5_000,
++    "",
++    "",
++    undefined,
++    { transport },
++  );
++}
++
++const refusedUris = [
++  "viking://user/memories/a",
++  "viking://user/sessions/a",
++  "viking://agent/skills/a",
++  "viking://resources",
++  "viking://resources/",
++  "viking://resources/../user/memories/a",
++  "viking://resources/%2e%2e/user/memories/a",
++  "viking://resources/./a",
++  "viking://resources/%2e/a",
++  "viking://resources/a//b",
++  "viking://resources/a%2Fb",
++  "viking://resources/%",
++] as const;
++
++describe("remove_resource resource boundary", () => {
++  it.each(refusedUris)("rejects %s", (uri) => {
++    expect(validateRemovableResourceUri(uri).ok).toBe(false);
++  });
++
++  it("accepts a normal resource descendant and normalizes trailing slashes", () => {
++    expect(validateRemovableResourceUri("  viking://resources/workspace/docs///  ")).toEqual({
++      ok: true,
++      uri: "viking://resources/workspace/docs",
++    });
++  });
++
++  it.each(refusedUris)("enforces the same boundary in OpenVikingClient.removeResource for %s", async (uri) => {
++    const transport: HttpTransport = vi.fn(async () => {
++      throw new Error("transport must not be reached");
++    });
++    const client = makeClient(transport);
++
++    await expect(client.removeResource({ uri })).rejects.toThrow();
++    expect(transport).not.toHaveBeenCalled();
++  });
++});
++
++describe("remove_resource fail-closed configuration", () => {
++  it("does not enable remove_resource merely because it is explicitly selected", () => {
++    const cfg = memoryOpenVikingConfigSchema.parse({
++      enabledTools: ["remove_resource"],
++    });
++
++    expect(cfg.enableRemoveResourceTool).toBe(false);
++    expect(cfg.enabledTools).not.toContain("remove_resource");
++  });
++
++  it("lets disabledTools win even when the explicit safety flag is enabled", () => {
++    const cfg = memoryOpenVikingConfigSchema.parse({
++      enableRemoveResourceTool: true,
++      enabledTools: "all",
++      disabledTools: ["remove_resource"],
++    });
++
++    expect(cfg.enableRemoveResourceTool).toBe(true);
++    expect(cfg.enabledTools).not.toContain("remove_resource");
++    expect(cfg.disabledTools).toContain("remove_resource");
++  });
++});
