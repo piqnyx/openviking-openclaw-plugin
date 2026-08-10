@@ -119,13 +119,15 @@ The routing contract is:
 3. explicit existing taxonomy `category`;
 4. automatic classification from a short semantic `summary`.
 
+`to` and `parent` are mutually exclusive. Supplying either skips category and automatic routing; do not send both in one call.
+
 Automatic routing embeds summary-only by default, compares it with cached embeddings of all routeable taxonomy categories, keeps configurable cosine `topK`, and conditionally reranks close candidates. Models never produce Viking URIs; the plugin converts only validated taxonomy keys to trusted `viking://resources/...` parents and uses OpenViking `create_parent=true`.
 
 Semantic uncertainty routes to the configured fallback key, normally `inbox -> viking://resources/__INBOX__`, and the resource is still imported. Infrastructure failures such as a dead embedder/reranker, malformed model output, dimension mismatch, invalid taxonomy, or unrebuildable cache are fail-closed: `add_resource` is not called.
 
 `summary` is routing input only. Do not copy it into OpenViking `reason`; a non-empty `reason` has separate memory-extraction semantics.
 
-Taxonomy YAML is strict: no aliases/anchors, unique semantic keys and destination URIs, safe segments, at most 50 Unicode characters per segment, and a 4096-character plugin cap for the compiled resource URI. A routeable category may also have children, so a resource directory may contain direct resources and more specific subdirectories. Taxonomy changes take effect after gateway restart.
+Taxonomy YAML is strict: no aliases/anchors, unique semantic keys and destination URIs, safe segments, and at most 50 Unicode characters **per individual segment**. The plugin walks nested taxonomy iteratively and does not impose a small artificial nesting-depth limit. A routeable category may also have children, so a resource directory may contain direct resources and more specific subdirectories. Taxonomy changes take effect after gateway restart.
 
 ## Tool Selection Guide
 
@@ -211,8 +213,8 @@ When resource routing is disabled, the historical import behavior remains active
 | Parameter | Required | Description |
 |---|---|---|
 | `source` | Yes | Local path, OpenClaw media attachment path, directory path, public URL, or Git URL. |
-| `to` | No | Exact target URI. Do not combine with `parent`. |
-| `parent` | No | Exact parent below `viking://resources`. |
+| `to` | No | Exact target URI. Mutually exclusive with `parent`; skips category and automatic routing. |
+| `parent` | No | Exact parent below `viking://resources`. Mutually exclusive with `to`; skips category and automatic routing. |
 | `category` | No | Existing semantic category key from the current agent taxonomy. Never invent one. |
 | `summary` | Automatic only | One concise sentence describing semantic content and purpose. |
 | `create_parent` | No | Create an explicit parent when missing. Category/automatic routing sets this internally. |
@@ -307,7 +309,7 @@ The plugin refuses to read/search a tool-result ref from another session.
 /ov-recall-trace --turn latest --source auto_recall --include-content
 ```
 
-Command parsers support quoted args and flags. Resource-only flags are rejected for skill imports.
+Command parsers support quoted args and flags. Resource-only flags are rejected for skill imports. The slash `/add-resource` command retains its existing argument surface; the new `create_parent`, semantic `category`, and automatic `summary` routing controls are agent-tool features in this release.
 
 ## Troubleshooting
 
