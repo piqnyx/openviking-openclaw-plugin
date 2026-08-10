@@ -1,6 +1,11 @@
 import { homedir } from "node:os";
 
 import { getEnv } from "./runtime-utils.js";
+import {
+  parseResourceRoutingConfig,
+  type ParsedResourceRoutingConfig,
+  type ResourceRoutingConfig,
+} from "./resource-routing/config.js";
 
 export type MemoryOpenVikingConfig = {
   mode?: "remote";
@@ -99,6 +104,8 @@ export type MemoryOpenVikingConfig = {
   disabledTools?: string[] | string;
   /** Optional JSON file path for runtime query config overrides. Empty means in-memory only. */
   runtimeQueryConfigPath?: string;
+  /** Optional semantic router for placing add_resource imports into per-agent resource taxonomies. */
+  resourceRouting?: ResourceRoutingConfig;
   agentExperience?: {
     enabled?: boolean;
     recallLimit?: number;
@@ -110,10 +117,11 @@ export type MemoryOpenVikingConfig = {
 
 /** Runtime config after memoryOpenVikingConfigSchema.parse() has applied defaults. */
 export type ParsedMemoryOpenVikingConfig = Required<
-  Omit<MemoryOpenVikingConfig, "agentExperience" | "recallTargetTypes">
+  Omit<MemoryOpenVikingConfig, "agentExperience" | "recallTargetTypes" | "resourceRouting">
 > & {
   agentExperience: Required<NonNullable<MemoryOpenVikingConfig["agentExperience"]>>;
   recallTargetTypes: Array<"resource" | "user" | "agent">;
+  resourceRouting: ParsedResourceRoutingConfig;
 };
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:1933";
@@ -470,6 +478,7 @@ export const memoryOpenVikingConfigSchema = {
         "enabledTools",
         "disabledTools",
         "runtimeQueryConfigPath",
+        "resourceRouting",
         "agentExperience",
       ],
       "openviking config",
@@ -652,6 +661,7 @@ export const memoryOpenVikingConfigSchema = {
         typeof cfg.runtimeQueryConfigPath === "string" && cfg.runtimeQueryConfigPath.trim()
           ? expandHomeDir(cfg.runtimeQueryConfigPath.trim())
           : "",
+      resourceRouting: parseResourceRoutingConfig(cfg.resourceRouting),
       agentExperience: {
         enabled:
           typeof agentExperienceRaw.enabled === "boolean"
@@ -882,6 +892,12 @@ export const memoryOpenVikingConfigSchema = {
       label: "Runtime Query Config Path",
       placeholder: "~/.openclaw/openviking/runtime-query-config.json",
       help: "Optional JSON file for /ov-query-config runtime overrides. Empty keeps overrides in memory only.",
+      advanced: true,
+    },
+    resourceRouting: {
+      label: "Resource Routing",
+      help:
+        "Optional per-agent semantic routing for add_resource. Taxonomy, model endpoints, thresholds, and cache behavior are configured under resourceRouting.",
       advanced: true,
     },
   },

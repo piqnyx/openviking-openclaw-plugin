@@ -270,6 +270,11 @@
       "placeholder": "memory",
       "help": "Agent-visible tool blocklist applied after enabledTools. Accepts the same tool names or groups.",
       "advanced": true
+    },
+    "resourceRouting": {
+      "label": "Resource Routing",
+      "help": "Per-agent semantic routing for add_resource using a YAML taxonomy, embeddings, and an optional reranker.",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -503,6 +508,96 @@
             "type": "string"
           }
         ]
+      },
+      "resourceRouting": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "taxonomyFileTemplate": {
+            "type": "string",
+            "description": "Per-agent YAML taxonomy path template. Must contain {agentId}."
+          },
+          "cacheFileTemplate": {
+            "type": "string",
+            "description": "Per-agent category embedding cache path template. Must contain {agentId}."
+          },
+          "semanticInputTemplate": {
+            "type": "string",
+            "description": "Template used to build semantic routing input. Must contain {{summary}}."
+          },
+          "fallbackCategory": {
+            "type": "string",
+            "description": "Semantic taxonomy key used for uncertain classifications."
+          },
+          "embedding": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "baseUrl": { "type": "string" },
+              "endpoint": { "type": "string" },
+              "apiKey": { "type": "string" },
+              "headers": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "model": { "type": "string" },
+              "timeoutMs": {
+                "type": "number",
+                "minimum": 100,
+                "maximum": 300000
+              },
+              "dimensions": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 65536
+              }
+            }
+          },
+          "reranker": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "baseUrl": { "type": "string" },
+              "endpoint": { "type": "string" },
+              "apiKey": { "type": "string" },
+              "headers": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "model": { "type": "string" },
+              "timeoutMs": {
+                "type": "number",
+                "minimum": 100,
+                "maximum": 300000
+              }
+            }
+          },
+          "retrieval": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "topK": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 50
+              },
+              "minScore": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "rerankBelowMargin": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        }
       },
       "agentExperience": {
         "type": "object",

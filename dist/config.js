@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { getEnv } from "./runtime-utils.js";
+import { parseResourceRoutingConfig, } from "./resource-routing/config.js";
 const DEFAULT_BASE_URL = "http://127.0.0.1:1933";
 const DEFAULT_TARGET_URI = "viking://user/memories";
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -324,6 +325,7 @@ export const memoryOpenVikingConfigSchema = {
             "enabledTools",
             "disabledTools",
             "runtimeQueryConfigPath",
+            "resourceRouting",
             "agentExperience",
         ], "openviking config");
         const agentExperienceRaw = toRecord(cfg.agentExperience);
@@ -409,6 +411,7 @@ export const memoryOpenVikingConfigSchema = {
             runtimeQueryConfigPath: typeof cfg.runtimeQueryConfigPath === "string" && cfg.runtimeQueryConfigPath.trim()
                 ? expandHomeDir(cfg.runtimeQueryConfigPath.trim())
                 : "",
+            resourceRouting: parseResourceRoutingConfig(cfg.resourceRouting),
             agentExperience: {
                 enabled: typeof agentExperienceRaw.enabled === "boolean"
                     ? agentExperienceRaw.enabled
@@ -615,6 +618,11 @@ export const memoryOpenVikingConfigSchema = {
             label: "Runtime Query Config Path",
             placeholder: "~/.openclaw/openviking/runtime-query-config.json",
             help: "Optional JSON file for /ov-query-config runtime overrides. Empty keeps overrides in memory only.",
+            advanced: true,
+        },
+        resourceRouting: {
+            label: "Resource Routing",
+            help: "Optional per-agent semantic routing for add_resource. Taxonomy, model endpoints, thresholds, and cache behavior are configured under resourceRouting.",
             advanced: true,
         },
     },

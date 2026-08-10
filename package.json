@@ -26,12 +26,14 @@
     "agent-keys.ts",
     "commands/setup.ts",
     "config/feature-gates.json",
+    "config/resource-taxonomy.default.yaml",
     "dist/",
     "install-manifest.json",
     "openclaw.plugin.json",
     "package.json",
     "plugin/",
     "registries/",
+    "resource-routing/",
     "routing/",
     "services/",
     "skills/",
@@ -51,7 +53,8 @@
   },
   "dependencies": {
     "@sinclair/typebox": "0.34.48",
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.2",
+    "yaml": "^2.9.0"
   },
   "repository": {
     "type": "git",
