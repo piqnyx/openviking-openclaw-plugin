@@ -2,6 +2,7 @@ export type AddResourceCommandArgs = {
   source?: string;
   to?: string;
   parent?: string;
+  createParent?: boolean;
   reason?: string;
   instruction?: string;
   wait?: boolean;
@@ -136,17 +137,22 @@ export function parseAddResourceCommandArgs(args: string): AddResourceCommandArg
   const source =
     parsed.positionals.length <= 1 ? parsed.positionals[0] : parsed.positionals.join(" ").trim();
   if (!source) {
-    throw new Error("Usage: /add-resource <source> [--to URI] [--parent URI] [--reason TEXT] [--instruction TEXT] [--wait] [--timeout SEC]");
+    throw new Error("Usage: /add-resource <source> [--to URI] [--parent URI] [--create-parent] [--reason TEXT] [--instruction TEXT] [--wait] [--timeout SEC]");
   }
   const to = getStringFlag(parsed.flags, "to");
   const parent = getStringFlag(parsed.flags, "parent");
+  const createParent = getBoolFlag(parsed.flags, "create-parent");
   if (to && parent) {
     throw new Error("Cannot specify both --to and --parent.");
+  }
+  if (createParent && !parent) {
+    throw new Error("--create-parent requires --parent.");
   }
   return {
     source,
     to,
     parent,
+    createParent: createParent || undefined,
     reason: getStringFlag(parsed.flags, "reason"),
     instruction: getStringFlag(parsed.flags, "instruction"),
     wait: getBoolFlag(parsed.flags, "wait"),
@@ -161,8 +167,14 @@ export function parseAddSkillCommandArgs(args: string): AddSkillCommandArgs {
   if (!source) {
     throw new Error("Usage: /add-skill <source> [--wait] [--timeout SEC]");
   }
-  if (parsed.flags.has("to") || parsed.flags.has("parent") || parsed.flags.has("reason") || parsed.flags.has("instruction")) {
-    throw new Error("--to, --parent, --reason, and --instruction are resource-only options.");
+  if (
+    parsed.flags.has("to") ||
+    parsed.flags.has("parent") ||
+    parsed.flags.has("create-parent") ||
+    parsed.flags.has("reason") ||
+    parsed.flags.has("instruction")
+  ) {
+    throw new Error("--to, --parent, --create-parent, --reason, and --instruction are resource-only options.");
   }
   return {
     source,

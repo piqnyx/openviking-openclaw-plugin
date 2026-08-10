@@ -1,0 +1,382 @@
+schemaVersion: 1
+fallback: inbox
+
+categories:
+  inbox:
+    segment: __INBOX__
+    description: >
+      Resources that cannot be classified confidently into a more specific category.
+
+  projects:
+    segment: projects
+    description: >
+      Materials tied to a concrete project, product, implementation effort or research initiative.
+    children:
+      projects-software:
+        segment: software
+        description: >
+          Software-project materials that are primarily about a specific codebase or application.
+        children:
+          projects-software-own:
+            segment: own
+            description: >
+              Materials for software projects owned or actively developed by the user or team.
+          projects-software-third-party:
+            segment: third-party
+            description: >
+              Materials about external software projects, dependencies, forks or vendor codebases.
+      projects-infrastructure:
+        segment: infrastructure
+        description: >
+          Project-specific infrastructure, deployment, hosting, networking and platform materials.
+      projects-research:
+        segment: research
+        description: >
+          Project-specific investigations, experiments, findings and exploratory technical work.
+
+  documents:
+    segment: documents
+    description: >
+      General documents whose primary value is human-readable content rather than executable code or raw data.
+    children:
+      documents-documentation:
+        segment: documentation
+        description: >
+          Product, system or process documentation intended to explain how something works or how to use it.
+        children:
+          documents-manuals:
+            segment: manuals
+            description: >
+              Manuals and comprehensive operating or usage documentation.
+          documents-guides:
+            segment: guides
+            description: >
+              Tutorials, how-to guides, walkthroughs and practical instructions.
+          documents-specifications:
+            segment: specifications
+            description: >
+              Formal technical specifications, requirements and protocol descriptions.
+          documents-api:
+            segment: api
+            description: >
+              Human-readable API documentation, endpoint references and integration documentation.
+      documents-reports:
+        segment: reports
+        description: >
+          Reports, analyses, assessments, reviews and written findings.
+      documents-notes:
+        segment: notes
+        description: >
+          Notes, working documents, personal knowledge notes and informal written material.
+      documents-articles:
+        segment: articles
+        description: >
+          Standalone articles, essays and long-form explanatory text saved as documents.
+      documents-books:
+        segment: books
+        description: >
+          Books, ebooks and book-like long-form reference documents.
+      documents-office:
+        segment: office
+        description: >
+          Office-style files where the document format is materially relevant to how the resource is used.
+        children:
+          documents-office-pdf:
+            segment: pdf
+            description: >
+              PDF documents that do not fit a more specific semantic document category.
+          documents-office-word:
+            segment: word
+            description: >
+              Word-processing documents that do not fit a more specific semantic document category.
+          documents-office-spreadsheets:
+            segment: spreadsheets
+            description: >
+              Spreadsheet documents primarily used for human analysis, planning or tabular reference.
+          documents-office-presentations:
+            segment: presentations
+            description: >
+              Slide decks and presentation documents.
+
+  code:
+    segment: code
+    description: >
+      Source code and code-centric technical artifacts whose primary purpose is execution, implementation or reuse.
+    children:
+      code-source:
+        segment: source
+        description: >
+          Source-code files or imported source trees.
+        children:
+          code-source-applications:
+            segment: applications
+            description: >
+              Application and service implementation source code.
+          code-source-libraries:
+            segment: libraries
+            description: >
+              Libraries, modules, packages and reusable implementation source code.
+      code-scripts:
+        segment: scripts
+        description: >
+          Shell scripts, automation scripts and small executable utilities.
+      code-configuration:
+        segment: configuration
+        description: >
+          Configuration files, manifests and machine-readable settings primarily used by software.
+      code-examples:
+        segment: examples
+        description: >
+          Example code and demonstration implementations.
+      code-patches:
+        segment: patches
+        description: >
+          Patches, diffs and code-change artifacts.
+      code-snippets:
+        segment: snippets
+        description: >
+          Small reusable code fragments that are not a complete project or source tree.
+
+  web:
+    segment: web
+    description: >
+      Material captured or imported from the public web, where web provenance is important to the resource.
+    children:
+      web-pages:
+        segment: pages
+        description: >
+          General web pages saved for later retrieval or reference.
+      web-articles:
+        segment: articles
+        description: >
+          Articles, blog posts, news stories and editorial web content.
+      web-documentation:
+        segment: documentation
+        description: >
+          Documentation imported directly from websites, documentation portals or online manuals.
+      web-research:
+        segment: research
+        description: >
+          Web research, collected sources and externally gathered material used for investigation.
+      web-scraped:
+        segment: scraped
+        description: >
+          Scraped or crawled web content where the collection process itself is relevant.
+      web-archives:
+        segment: archives
+        description: >
+          Archived web pages, snapshots and preserved online content.
+
+  media:
+    segment: media
+    description: >
+      Visual, audio or video resources whose primary information is carried by media rather than text.
+    children:
+      media-images:
+        segment: images
+        description: >
+          Still images and visual assets.
+        children:
+          media-images-screenshots:
+            segment: screenshots
+            description: >
+              Screenshots of applications, terminals, websites, dashboards or other user interfaces.
+          media-images-photos:
+            segment: photos
+            description: >
+              Photographs and camera-captured images.
+          media-images-diagrams:
+            segment: diagrams
+            description: >
+              Technical diagrams, architecture drawings, charts and explanatory schematics.
+          media-images-illustrations:
+            segment: illustrations
+            description: >
+              Illustrations, artwork, generated images and other non-photographic visual assets.
+      media-audio:
+        segment: audio
+        description: >
+          Audio recordings and audio assets.
+        children:
+          media-audio-speech:
+            segment: speech
+            description: >
+              Spoken-word audio such as voice messages, narration, lectures and conversations.
+          media-audio-music:
+            segment: music
+            description: >
+              Music and musical audio resources.
+          media-audio-recordings:
+            segment: recordings
+            description: >
+              General audio recordings that do not fit a more specific audio category.
+      media-video:
+        segment: video
+        description: >
+          Video recordings and moving-image resources.
+        children:
+          media-video-recordings:
+            segment: recordings
+            description: >
+              General video recordings, captured sessions and screen recordings.
+          media-video-tutorials:
+            segment: tutorials
+            description: >
+              Instructional videos, demonstrations and tutorial recordings.
+
+  data:
+    segment: data
+    description: >
+      Machine-oriented datasets, structured records, exports, logs and raw information collections.
+    children:
+      data-datasets:
+        segment: datasets
+        description: >
+          Datasets intended for analysis, processing, training or repeated querying.
+      data-structured:
+        segment: structured
+        description: >
+          Structured machine-readable data files.
+        children:
+          data-structured-json:
+            segment: json
+            description: >
+              JSON datasets or structured JSON records whose primary purpose is data rather than configuration.
+          data-structured-yaml:
+            segment: yaml
+            description: >
+              YAML data collections whose primary purpose is data rather than software configuration.
+          data-structured-csv:
+            segment: csv
+            description: >
+              CSV and delimited tabular datasets.
+      data-exports:
+        segment: exports
+        description: >
+          Exported records produced by applications, services or external systems.
+      data-logs:
+        segment: logs
+        description: >
+          Runtime logs, diagnostic logs and event streams kept as searchable resources.
+      data-dumps:
+        segment: dumps
+        description: >
+          Database dumps, raw snapshots and bulk machine-generated data captures.
+
+  reference:
+    segment: reference
+    description: >
+      Stable reference material used mainly for lookup rather than project-specific work.
+    children:
+      reference-technical:
+        segment: technical
+        description: >
+          General technical references, cheat sheets and reusable engineering knowledge.
+      reference-standards:
+        segment: standards
+        description: >
+          Standards, specifications and normative reference material published by standards bodies or vendors.
+      reference-specifications:
+        segment: specifications
+        description: >
+          Reusable specifications and protocol references not tied to one project.
+      reference-knowledge:
+        segment: knowledge
+        description: >
+          General-purpose knowledge resources that are useful primarily as long-lived reference material.
+
+  communications:
+    segment: communications
+    description: >
+      Saved human communications and conversation-derived records.
+    children:
+      communications-email:
+        segment: email
+        description: >
+          Email messages, exported mail threads and email correspondence.
+      communications-chats:
+        segment: chats
+        description: >
+          Chat logs, messenger exports and text conversation records.
+      communications-transcripts:
+        segment: transcripts
+        description: >
+          Meeting, call, interview, speech or media transcripts.
+
+  operations:
+    segment: operations
+    description: >
+      Operational material used to run, deploy, maintain or troubleshoot systems and services.
+    children:
+      operations-procedures:
+        segment: procedures
+        description: >
+          Runbooks, standard operating procedures and repeatable operational instructions.
+      operations-deployment:
+        segment: deployment
+        description: >
+          Deployment plans, rollout procedures and release-operation material.
+      operations-maintenance:
+        segment: maintenance
+        description: >
+          Maintenance procedures, upgrade notes and recurring system-care material.
+      operations-monitoring:
+        segment: monitoring
+        description: >
+          Monitoring, observability, health-check and alerting material.
+      operations-incidents:
+        segment: incidents
+        description: >
+          Operational incident records, outage notes, postmortems and recovery information.
+
+  security:
+    segment: security
+    description: >
+      Security-related material covering assessment, defense, incidents and secure operation.
+    children:
+      security-audits:
+        segment: audits
+        description: >
+          Security audits, review findings, penetration-test reports and remediation tracking.
+      security-reports:
+        segment: reports
+        description: >
+          Security reports, assessments and analytical findings not specific to a formal audit.
+      security-incidents:
+        segment: incidents
+        description: >
+          Security incidents, investigations, indicators and response material.
+      security-hardening:
+        segment: hardening
+        description: >
+          Hardening guides, secure-configuration practices and defensive procedures.
+      security-reference:
+        segment: reference
+        description: >
+          Reusable security reference material, vulnerability information and defensive knowledge.
+
+  tests:
+    segment: tests
+    description: >
+      Deliberately temporary or synthetic resources created to validate behavior, integrations or routing.
+    children:
+      tests-text:
+        segment: text
+        description: >
+          Small synthetic text resources and throwaway textual fixtures used for testing.
+      tests-documents:
+        segment: documents
+        description: >
+          Test documents and document-ingestion fixtures.
+      tests-media:
+        segment: media
+        description: >
+          Test images, audio, video and other media fixtures.
+      tests-fixtures:
+        segment: fixtures
+        description: >
+          Reusable fixtures and sample resources intended specifically for automated or manual tests.
+      tests-experiments:
+        segment: experiments
+        description: >
+          Experimental resources used for exploratory validation or temporary comparisons.

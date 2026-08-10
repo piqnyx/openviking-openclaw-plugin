@@ -9,6 +9,7 @@ export type OpenVikingImportRuntimeResourceInput = {
   source?: string;
   to?: string;
   parent?: string;
+  createParent?: boolean;
   reason?: string;
   instruction?: string;
   wait?: boolean;
@@ -97,6 +98,7 @@ export function createOpenVikingImportRuntime(deps: OpenVikingImportRuntimeDeps)
       pathOrUrl: input.source ?? "",
       to: input.to,
       parent: input.parent,
+      createParent: input.createParent,
       reason: input.reason,
       instruction: input.instruction,
       wait: input.wait,

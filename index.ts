@@ -1,4 +1,4 @@
-import { memoryOpenVikingConfigSchema } from "./config.js";
+import { openVikingPluginConfigSchema } from "./plugin-config.js";
 import { loadAgentKeys, type AgentKeyResolver } from "./agent-keys.js";
 import { registerSetupCli } from "./commands/setup.js";
 import { createOpenVikingBypassRuntime } from "./plugin/openviking-bypass-runtime.js";
@@ -56,6 +56,7 @@ import {
   openClawSessionRefToOvStorageId,
   openClawSessionToOvStorageId,
 } from "./routing/identity-routing.js";
+import { ResourceRoutingService } from "./routing/resource-routing-service.js";
 import {
   buildMemoryLinesWithBudget,
 } from "./auto-recall.js";
@@ -155,7 +156,7 @@ const contextEnginePlugin = {
   name: "Context Engine (OpenViking)",
   description: "OpenViking-backed context-engine memory with auto-recall/capture",
   kind: "context-engine" as const,
-  configSchema: memoryOpenVikingConfigSchema,
+  configSchema: openVikingPluginConfigSchema,
 
   register(api: OpenClawPluginApi) {
     registerOpenVikingFeatureGatesMethod(api);
@@ -177,9 +178,9 @@ const contextEnginePlugin = {
       delete rawCfg.autoStart;
     }
 
-    let cfg: ReturnType<typeof memoryOpenVikingConfigSchema.parse>;
+    let cfg: ReturnType<typeof openVikingPluginConfigSchema.parse>;
     try {
-      cfg = memoryOpenVikingConfigSchema.parse(rawCfg);
+      cfg = openVikingPluginConfigSchema.parse(rawCfg);
     } catch (parseErr) {
       api.logger.warn(
         `openviking: config parse failed (${parseErr instanceof Error ? parseErr.message : String(parseErr)}). ` +
@@ -197,9 +198,6 @@ const contextEnginePlugin = {
         logger: api.logger,
       });
     } catch (keysErr) {
-      // Refuse to serve rather than fall back to one shared account: a broken
-      // credential map is exactly the situation where agents would silently
-      // start reading each other's memory.
       api.logger.error(
         `${keysErr instanceof Error ? keysErr.message : String(keysErr)}. ` +
           "Plugin loaded in setup-only mode; fix the agent key file and restart.",
@@ -289,6 +287,15 @@ const contextEnginePlugin = {
       listOpenVikingDirectory,
     } = queryRuntime;
 
+    const resourceRouting = new ResourceRoutingService(cfg.resourceRouting);
+    if (resourceRouting.enabled) {
+      void resourceRouting.preloadAgents(agentKeys.agentNames, api.logger).catch((error) => {
+        api.logger.error(
+          `openviking: resource routing startup preload failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
+
     registerOpenVikingImportTools({
       registerTool: registerOpenVikingTool,
       getClient,
@@ -297,6 +304,7 @@ const contextEnginePlugin = {
       makeBypassedToolResult,
       enableAddResourceTool: cfg.enableAddResourceTool,
       enableRemoveResourceTool: cfg.enableRemoveResourceTool,
+      resourceRouting,
     });
 
     registerOpenVikingQueryTools({

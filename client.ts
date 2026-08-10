@@ -175,6 +175,7 @@ export type AddResourceInput = {
   pathOrUrl: string;
   to?: string;
   parent?: string;
+  createParent?: boolean;
   reason?: string;
   instruction?: string;
   wait?: boolean;
@@ -717,10 +718,14 @@ export class OpenVikingClient {
     if (input.to && input.parent) {
       throw new Error("Cannot specify both 'to' and 'parent'.");
     }
+    if (input.createParent !== undefined && !input.parent) {
+      throw new Error("'createParent' requires 'parent'.");
+    }
 
     const body: Record<string, unknown> = {
       to: input.to,
       parent: input.parent,
+      create_parent: input.createParent,
       reason: input.reason ?? "",
       instruction: input.instruction ?? "",
       wait: input.wait ?? false,
