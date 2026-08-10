@@ -1,6 +1,11 @@
 import { homedir } from "node:os";
 
 import { getEnv } from "./runtime-utils.js";
+import {
+  parseResourceRoutingConfig,
+  type ParsedResourceRoutingConfig,
+  type ResourceRoutingConfigInput,
+} from "./resource-routing/config.js";
 
 export type MemoryOpenVikingConfig = {
   mode?: "remote";
@@ -99,6 +104,8 @@ export type MemoryOpenVikingConfig = {
   disabledTools?: string[] | string;
   /** Optional JSON file path for runtime query config overrides. Empty means in-memory only. */
   runtimeQueryConfigPath?: string;
+  /** Optional semantic router for automatically placing imported resources into per-agent taxonomy branches. */
+  resourceRouting?: ResourceRoutingConfigInput;
   agentExperience?: {
     enabled?: boolean;
     recallLimit?: number;
@@ -110,10 +117,11 @@ export type MemoryOpenVikingConfig = {
 
 /** Runtime config after memoryOpenVikingConfigSchema.parse() has applied defaults. */
 export type ParsedMemoryOpenVikingConfig = Required<
-  Omit<MemoryOpenVikingConfig, "agentExperience" | "recallTargetTypes">
+  Omit<MemoryOpenVikingConfig, "agentExperience" | "recallTargetTypes" | "resourceRouting">
 > & {
   agentExperience: Required<NonNullable<MemoryOpenVikingConfig["agentExperience"]>>;
   recallTargetTypes: Array<"resource" | "user" | "agent">;
+  resourceRouting: ParsedResourceRoutingConfig;
 };
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:1933";
@@ -470,6 +478,7 @@ export const memoryOpenVikingConfigSchema = {
         "enabledTools",
         "disabledTools",
         "runtimeQueryConfigPath",
+        "resourceRouting",
         "agentExperience",
       ],
       "openviking config",
@@ -523,6 +532,7 @@ export const memoryOpenVikingConfigSchema = {
       !("recallTargetTypes" in cfg) && recallResources,
     );
     const { enabledTools, disabledTools } = normalizeEnabledTools(cfg);
+    const resourceRouting = parseResourceRoutingConfig(cfg.resourceRouting);
 
     return {
       mode,
@@ -652,6 +662,7 @@ export const memoryOpenVikingConfigSchema = {
         typeof cfg.runtimeQueryConfigPath === "string" && cfg.runtimeQueryConfigPath.trim()
           ? expandHomeDir(cfg.runtimeQueryConfigPath.trim())
           : "",
+      resourceRouting,
       agentExperience: {
         enabled:
           typeof agentExperienceRaw.enabled === "boolean"
@@ -852,6 +863,11 @@ export const memoryOpenVikingConfigSchema = {
       label: "Recall Trace Directory",
       placeholder: DEFAULT_TRACE_RECALL_DIR,
       help: "Directory for persisted recall trace JSONL files.",
+      advanced: true,
+    },
+    resourceRouting: {
+      label: "Resource Routing",
+      help: "Optional per-agent semantic routing for add_resource. Uses a YAML taxonomy and configured embedding/reranker endpoints; infrastructure failures fail closed.",
       advanced: true,
     },
     enableAddResourceTool: {

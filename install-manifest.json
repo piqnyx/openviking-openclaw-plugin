@@ -26,6 +26,7 @@
       "query-config.ts",
       "adapters/",
       "registries/",
+      "resource-routing/",
       "routing/",
       "plugin/",
       "services/",
