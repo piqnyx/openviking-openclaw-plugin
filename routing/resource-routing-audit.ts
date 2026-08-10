@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { closeSync, fchmodSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { ResourceRoutingDecision } from "./resource-router.js";
@@ -84,6 +84,9 @@ export function writeResourceRoutingAudit(input: ResourceRoutingAuditInput): voi
   mkdirSync(dirname(input.filePath), { recursive: true });
   const fd = openSync(input.filePath, "a", 0o600);
   try {
+    // open(2) applies mode only when creating the file. Enforce owner-only mode
+    // as well when an existing audit file was created with broader permissions.
+    fchmodSync(fd, 0o600);
     writeSync(fd, `${JSON.stringify(record)}\n`, undefined, "utf8");
   } finally {
     closeSync(fd);
