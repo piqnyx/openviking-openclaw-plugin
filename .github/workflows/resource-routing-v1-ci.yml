@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   validate:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +25,9 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Apply deterministic resource-routing integration
+        run: node .github/scripts/integrate-resource-routing-v1.mjs
+
       - name: Refresh lockfile for declared dependencies
         run: npm install --package-lock-only --ignore-scripts
 
@@ -33,19 +37,27 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Tests
-        run: npm test
+      - name: Build and tests
+        run: npm run verify
 
-      - name: Commit lockfile if npm changed it
+      - name: Diff check
+        run: git diff --check
+
+      - name: Commit verified integration changes
         if: github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- package-lock.json; then
-            exit 0
-          fi
           git config user.name 'resource-routing-ci'
           git config user.email 'actions@users.noreply.github.com'
-          git add package-lock.json
-          git commit -m 'Refresh lockfile for YAML taxonomy support'
+          git add \
+            config.ts \
+            openclaw.plugin.json \
+            install-manifest.json \
+            resource-routing/default-taxonomy.yaml \
+            package-lock.json
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Integrate resource routing config foundation [skip ci]'
           git push origin HEAD:agent/resource-routing-v1
