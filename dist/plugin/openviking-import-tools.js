@@ -1,42 +1,9 @@
 import { Type } from "@sinclair/typebox";
+import { validateRemovableResourceUri } from "../client.js";
 function formatResourceImportText(result) {
     const root = result.root_uri ? ` ${result.root_uri}` : "";
     const warnings = result.warnings?.length ? ` Warnings: ${result.warnings.join("; ")}` : "";
     return `Imported OpenViking resource.${root}${warnings}`.trim();
-}
-const RESOURCE_ROOT_URI = "viking://resources";
-function validateRemovableResourceUri(value) {
-    const uri = value.trim().replace(/\/+$/, "");
-    if (!uri) {
-        return { ok: false, reason: "A resource URI is required." };
-    }
-    if (uri === RESOURCE_ROOT_URI) {
-        return {
-            ok: false,
-            reason: "Refusing to delete the viking://resources root. List it with ov_list and remove its child resources instead.",
-        };
-    }
-    if (!uri.startsWith(`${RESOURCE_ROOT_URI}/`)) {
-        return { ok: false, reason: `Refusing to delete non-resource URI: ${uri}` };
-    }
-    const relative = uri.slice(RESOURCE_ROOT_URI.length + 1);
-    const rawSegments = relative.split("/");
-    if (rawSegments.some((segment) => segment.length === 0)) {
-        return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
-    }
-    for (const segment of rawSegments) {
-        let decoded = segment;
-        try {
-            decoded = decodeURIComponent(segment);
-        }
-        catch {
-            return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
-        }
-        if (decoded === "." || decoded === ".." || decoded.includes("/")) {
-            return { ok: false, reason: `Refusing unsafe resource URI: ${uri}` };
-        }
-    }
-    return { ok: true, uri };
 }
 function formatResourceRemovalText(result, requestedUri) {
     const uri = result.uri ?? requestedUri;
@@ -44,7 +11,16 @@ function formatResourceRemovalText(result, requestedUri) {
     if (typeof result.estimated_deleted_count === "number") {
         details.push(`estimated deleted entries: ${result.estimated_deleted_count}`);
     }
-    if (result.semantic_status) {
+    if (result.semantic_status === "complete") {
+        details.push("semantic refresh complete");
+    }
+    else if (result.semantic_status === "queued") {
+        details.push("semantic refresh queued; consistency work is still pending");
+    }
+    else if (result.semantic_status === "failed") {
+        details.push("semantic refresh failed after resource removal");
+    }
+    else if (result.semantic_status) {
         details.push(`semantic status: ${result.semantic_status}`);
     }
     return `Removed OpenViking resource: ${uri}.${details.length ? ` ${details.join("; ")}.` : ""}`;
@@ -103,7 +79,7 @@ export function registerOpenVikingImportTools(deps) {
             description: "Use when the user explicitly asks to delete or remove content from OpenViking resources. " +
                 "This tool is restricted to descendants of viking://resources/ and must never be used for memories, sessions, skills, or other namespaces. " +
                 "To clear all resources, first use ov_list on viking://resources, then remove each top-level child; the viking://resources root itself cannot be deleted. " +
-                "Set recursive=true for a non-empty resource directory. Set wait=true when subsequent work must wait for OpenViking semantic/vector cleanup to finish.",
+                "Set recursive=true for a non-empty resource directory. Set wait=true when subsequent work must wait for OpenViking semantic refresh to finish.",
             parameters: Type.Object({
                 uri: Type.String({
                     description: "Exact resource URI below viking://resources/, for example viking://resources/project-docs or viking://resources/project-docs/file.pdf. The viking://resources root itself is not allowed.",
@@ -112,7 +88,7 @@ export function registerOpenVikingImportTools(deps) {
                     description: "Remove the entire subtree below uri. Required for non-empty resource directories; default false.",
                 })),
                 wait: Type.Optional(Type.Boolean({
-                    description: "Wait for OpenViking semantic/vector cleanup associated with the removal to complete; default false.",
+                    description: "Wait for OpenViking semantic refresh associated with the removal to complete. The agent tool defaults to true; set false only when asynchronous cleanup is explicitly desired.",
                 })),
                 timeout: Type.Optional(Type.Number({
                     description: "Server-side wait timeout in seconds when wait=true.",
@@ -135,7 +111,7 @@ export function registerOpenVikingImportTools(deps) {
                 const result = await client.removeResource({
                     uri: validation.uri,
                     recursive: typeof params.recursive === "boolean" ? params.recursive : undefined,
-                    wait: typeof params.wait === "boolean" ? params.wait : undefined,
+                    wait: typeof params.wait === "boolean" ? params.wait : true,
                     timeout: typeof params.timeout === "number" ? params.timeout : undefined,
                 }, session.actorPeerId);
                 return {
