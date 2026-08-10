@@ -1,3 +1,4 @@
+# Trigger after workflow creation.
 name: Resource routing security validation
 
 on:
