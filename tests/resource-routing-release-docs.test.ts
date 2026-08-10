@@ -18,12 +18,14 @@ describe("resource routing release documentation", () => {
     const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
     expect(readme).toContain("2026.7.15-isolation.7");
     expect(readme).toContain("50 Unicode characters");
-    expect(readme).toContain("4096");
+    expect(readme).toContain("individual segment");
+    expect(readme).toContain("does **not** impose a small artificial taxonomy nesting-depth limit");
     expect(readme).toContain("summary` is not `reason");
     expect(readme).toContain("retrieval.topK");
     expect(readme).toContain("Semantic uncertainty");
     expect(readme).toContain("Infrastructure failure");
     expect(readme).toContain("routeable **and** contain children");
+    expect(readme).toContain("mutually exclusive legacy OpenViking inputs");
   });
 
   it("keeps the bundled operator skill aware of routed add/remove resource tools", async () => {
@@ -34,5 +36,6 @@ describe("resource routing release documentation", () => {
     expect(skill).toContain("### `remove_resource`");
     expect(skill).toContain("__INBOX__");
     expect(skill).toContain("infrastructure");
+    expect(skill).toContain("at most 50 Unicode characters **per individual segment**");
   });
 });
