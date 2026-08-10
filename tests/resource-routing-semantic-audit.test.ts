@@ -46,6 +46,7 @@ describe("resource routing audit", () => {
     const dir = mkdtempSync(join(tmpdir(), "ov-routing-audit-"));
     tempDirs.push(dir);
     const filePath = join(dir, "nested", "main.jsonl");
+    const timing = { embeddingMs: 82.1234, rerankerMs: 373.9876, totalMs: 460.1111 };
     writeResourceRoutingAudit({
       filePath,
       agentId: "main",
@@ -69,8 +70,9 @@ describe("resource routing audit", () => {
           { key: "security_audits", score: 0.94 },
           { key: "security", score: 0.71 },
         ],
+        timing,
       },
-      timing: { embeddingMs: 82.1234, rerankerMs: 373.9876, totalMs: 460.1111 },
+      timing,
       status: "success",
     });
 
