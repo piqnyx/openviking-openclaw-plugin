@@ -36,7 +36,10 @@ export type PrepareAgentResourceRoutingStateOptions = {
 };
 
 export function resourceEmbeddingModelIdentity(config: ParsedResourceRoutingConfig): string {
-  return `${config.embedding.model}@${config.embedding.baseUrl}${config.embedding.endpointPath}`;
+  const endpointIdentity = `${config.embedding.model}@${config.embedding.baseUrl}${config.embedding.endpointPath}`;
+  return config.embedding.cacheKey
+    ? `${endpointIdentity}|cacheKey=${config.embedding.cacheKey}`
+    : endpointIdentity;
 }
 
 function cacheToEmbeddingMap(cache: ResourceRoutingCacheDocument): ReadonlyMap<string, readonly number[]> {
