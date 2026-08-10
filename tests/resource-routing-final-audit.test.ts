@@ -14,9 +14,15 @@ describe("resource routing final release contracts", () => {
       join(process.cwd(), "plugin", "openviking-import-tools.ts"),
       "utf8",
     );
+    const skill = readFileSync(
+      join(process.cwd(), "skills", "openviking-context-database", "SKILL.md"),
+      "utf8",
+    );
     expect(source).toContain("MUST provide summary");
     expect(source).toContain("Automatic resource routing requires `summary`");
     expect(source).toContain("Then retry add_resource with that summary");
+    expect(source).toContain("online article, email thread, meeting transcript, or terminal screenshot");
+    expect(skill).toContain("online article, email thread, meeting transcript, or terminal screenshot");
   });
 
   it("ships the detailed resource-routing documentation in packaged releases", () => {
