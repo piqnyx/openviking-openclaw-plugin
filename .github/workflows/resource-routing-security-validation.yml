@@ -92,7 +92,7 @@ jobs:
               raise SystemExit('taxonomy duplicate destination anchor missing')
           p.write_text(s)
 
-          # Strict endpoint URL composition.
+          # Strict endpoint URL composition and truly distinct per-agent paths.
           p = Path('resource-routing/config.ts')
           s = p.read_text()
           old_block = '''  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
@@ -137,6 +137,28 @@ function normalizeEndpointPath(value: string, label: string): string {
               s = s.replace(old_block, new_block, 1)
           if new_block not in s:
               raise SystemExit('endpoint URL hardening anchor missing')
+
+          old_block = '''function validatePathTemplate(value: string, label: string): string {
+  if (!value.includes("{agentId}")) {
+    throw new Error(`${label} must contain {agentId} so every isolated agent gets its own file`);
+  }
+  return value;
+}'''
+          new_block = '''function validatePathTemplate(value: string, label: string): string {
+  if (!value.includes("{agentId}")) {
+    throw new Error(`${label} must contain {agentId} so every isolated agent gets its own file`);
+  }
+  const first = resolveAgentScopedResourceRoutingPath(value, "routing-isolation-a");
+  const second = resolveAgentScopedResourceRoutingPath(value, "routing-isolation-b");
+  if (first === second) {
+    throw new Error(`${label} must resolve to distinct paths for different agents`);
+  }
+  return value;
+}'''
+          if old_block in s:
+              s = s.replace(old_block, new_block, 1)
+          if new_block not in s:
+              raise SystemExit('per-agent path isolation anchor missing')
           p.write_text(s)
 
           # A configured fallback is part of taxonomy integrity, even for explicit category routing.
