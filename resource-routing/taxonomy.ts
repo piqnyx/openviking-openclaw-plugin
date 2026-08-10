@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 
 const RESOURCE_ROOT = "viking://resources";
 const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const SEGMENT_RE = /^[^/\\?\0]+$/u;
+const SEGMENT_RE = /^[\p{L}\p{N}\p{M}_.-]+$/u;
 
 export type ResourceTaxonomyNodeInput = {
   segment?: unknown;
@@ -66,8 +66,8 @@ function validateSegment(segment: string, label: string): void {
   if (segment === "." || segment === ".." || !SEGMENT_RE.test(segment)) {
     throw new Error(`${label} is not a safe resource URI segment`);
   }
-  if (segment.trim() !== segment) {
-    throw new Error(`${label} must not have leading or trailing whitespace`);
+  if (Array.from(segment).length > 50) {
+    throw new Error(`${label} must be at most 50 characters`);
   }
 }
 
@@ -96,6 +96,7 @@ export function parseResourceTaxonomy(value: unknown): ResourceTaxonomy {
 
   const categories: ResourceTaxonomyCategory[] = [];
   const byKey = new Map<string, ResourceTaxonomyCategory>();
+  const byUri = new Set<string>();
 
   const visit = (
     key: string,
@@ -117,6 +118,10 @@ export function parseResourceTaxonomy(value: unknown): ResourceTaxonomy {
     const description = requireString(node.description, `resource taxonomy category ${key}.description`);
     const routeable = parseRouteable(node.routeable, `resource taxonomy category ${key}.routeable`);
     const uri = `${parentUri}/${segment}`;
+    if (byUri.has(uri)) {
+      throw new Error(`resource taxonomy contains duplicate destination URI: ${uri}`);
+    }
+    byUri.add(uri);
 
     const category: ResourceTaxonomyCategory = {
       key,

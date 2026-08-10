@@ -17,6 +17,7 @@ import {
   type PreparedAgentResourceRoutingState,
 } from "./state.js";
 import {
+  assertResourceRoutingFallbackCategory,
   loadResourceTaxonomyFile,
   resolveResourceCategoryUri,
   type ResourceTaxonomy,
@@ -110,7 +111,10 @@ export class ResourceRoutingManager {
     }
 
     const path = resolveAgentResourceRoutingPaths(this.config, agentId).taxonomyFile;
-    const pending = this.loadTaxonomy(path);
+    const pending = this.loadTaxonomy(path).then((taxonomy) => {
+      assertResourceRoutingFallbackCategory(taxonomy, this.config.fallbackCategory);
+      return taxonomy;
+    });
     this.taxonomyPromises.set(agentId, pending);
     try {
       return await pending;

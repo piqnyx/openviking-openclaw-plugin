@@ -190,12 +190,26 @@ function normalizeBaseUrl(value: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`resourceRouting endpoint baseUrl must use http or https: ${value}`);
   }
+  if (parsed.username || parsed.password) {
+    throw new Error("resourceRouting endpoint baseUrl must not contain credentials; use apiKey or headers");
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error("resourceRouting endpoint baseUrl must not contain query or fragment");
+  }
   return value.replace(/\/+$/, "");
 }
 
 function normalizeEndpointPath(value: string, label: string): string {
-  if (!value.startsWith("/") || value.startsWith("//") || value.includes("?") || value.includes("#")) {
-    throw new Error(`${label} must be an absolute URL path without query or fragment`);
+  const segments = value.split("/");
+  if (
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    value.includes("?") ||
+    value.includes("#") ||
+    value.includes("\\") ||
+    segments.some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new Error(`${label} must be a safe absolute URL path without traversal, query, or fragment`);
   }
   return value;
 }
@@ -236,6 +250,11 @@ function parseEndpoint(
 function validatePathTemplate(value: string, label: string): string {
   if (!value.includes("{agentId}")) {
     throw new Error(`${label} must contain {agentId} so every isolated agent gets its own file`);
+  }
+  const first = resolveAgentScopedResourceRoutingPath(value, "routing-isolation-a");
+  const second = resolveAgentScopedResourceRoutingPath(value, "routing-isolation-b");
+  if (first === second) {
+    throw new Error(`${label} must resolve to distinct paths for different agents`);
   }
   return value;
 }
