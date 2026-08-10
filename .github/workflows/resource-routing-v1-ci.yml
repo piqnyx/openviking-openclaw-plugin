@@ -25,8 +25,14 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Apply deterministic resource-routing integration
-        run: node .github/scripts/integrate-resource-routing-v1.mjs
+      - name: Apply deterministic resource-routing integration if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q 'parseResourceRoutingConfig' config.ts; then
+            exit 0
+          fi
+          node .github/scripts/integrate-resource-routing-v1.mjs
 
       - name: Refresh lockfile for declared dependencies
         run: npm install --package-lock-only --ignore-scripts
