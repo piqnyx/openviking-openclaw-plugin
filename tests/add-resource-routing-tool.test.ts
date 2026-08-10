@@ -55,6 +55,11 @@ function setup(options: {
           { key: "documents_guides", score: 0.91 },
           { key: "documents", score: 0.72 },
         ],
+        timing: {
+          embeddingMs: 82,
+          rerankerMs: 374,
+          totalMs: 460,
+        },
       },
     }));
 
