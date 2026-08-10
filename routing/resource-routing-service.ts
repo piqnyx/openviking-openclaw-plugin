@@ -203,7 +203,7 @@ export class ResourceRoutingService {
           embeddingModel: this.#config.embedding.model,
           rerankerModel: this.#config.reranker.model,
           decision,
-          timing: { totalMs: performance.now() - started },
+          timing: decision.timing,
           status: "success",
         });
       }
