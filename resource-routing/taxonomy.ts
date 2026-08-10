@@ -16,7 +16,6 @@ export type ResourceTaxonomyNodeInput = {
 
 export type ResourceTaxonomyDocumentInput = {
   schemaVersion?: unknown;
-  fallback?: unknown;
   categories?: unknown;
 };
 
@@ -32,7 +31,6 @@ export type ResourceTaxonomyCategory = {
 
 export type ResourceTaxonomy = {
   schemaVersion: 1;
-  fallback: string;
   categories: ResourceTaxonomyCategory[];
   byKey: ReadonlyMap<string, ResourceTaxonomyCategory>;
 };
@@ -85,14 +83,11 @@ function parseRouteable(value: unknown, label: string): boolean {
 
 export function parseResourceTaxonomy(value: unknown): ResourceTaxonomy {
   const root = asRecord(value, "resource taxonomy");
-  assertAllowedKeys(root, ["schemaVersion", "fallback", "categories"], "resource taxonomy");
+  assertAllowedKeys(root, ["schemaVersion", "categories"], "resource taxonomy");
 
   if (root.schemaVersion !== 1) {
     throw new Error("resource taxonomy schemaVersion must be 1");
   }
-
-  const fallback = requireString(root.fallback, "resource taxonomy fallback");
-  validateKey(fallback, "resource taxonomy fallback");
 
   const categoriesRecord = asRecord(root.categories, "resource taxonomy categories");
   if (Object.keys(categoriesRecord).length === 0) {
@@ -147,17 +142,8 @@ export function parseResourceTaxonomy(value: unknown): ResourceTaxonomy {
     visit(key, node, RESOURCE_ROOT, undefined, 0);
   }
 
-  const fallbackCategory = byKey.get(fallback);
-  if (!fallbackCategory) {
-    throw new Error(`resource taxonomy fallback category does not exist: ${fallback}`);
-  }
-  if (!fallbackCategory.routeable) {
-    throw new Error(`resource taxonomy fallback category must be routeable: ${fallback}`);
-  }
-
   return {
     schemaVersion: 1,
-    fallback,
     categories,
     byKey,
   };
@@ -193,6 +179,16 @@ export function resolveResourceCategoryUri(taxonomy: ResourceTaxonomy, categoryK
     throw new Error(`resource routing selected non-routeable category: ${categoryKey}`);
   }
   return category.uri;
+}
+
+export function assertResourceRoutingFallbackCategory(taxonomy: ResourceTaxonomy, categoryKey: string): void {
+  const category = taxonomy.byKey.get(categoryKey);
+  if (!category) {
+    throw new Error(`resource routing fallback category does not exist in taxonomy: ${categoryKey}`);
+  }
+  if (!category.routeable) {
+    throw new Error(`resource routing fallback category must be routeable: ${categoryKey}`);
+  }
 }
 
 export function listRouteableResourceCategories(taxonomy: ResourceTaxonomy): ResourceTaxonomyCategory[] {
