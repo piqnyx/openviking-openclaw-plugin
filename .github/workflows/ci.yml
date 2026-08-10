@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - agent/resource-routing-taxonomy
   pull_request:
     branches:
       - main
@@ -35,3 +34,6 @@ jobs:
 
       - name: Build and test
         run: npm run verify
+
+      - name: Verify tracked runtime build
+        run: git diff --exit-code -- dist
