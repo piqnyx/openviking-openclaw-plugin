@@ -50,6 +50,27 @@ export type ResourceRoutingManagerOptions = {
   appendAudit?: (filePath: string, record: ResourceRoutingAuditRecord) => Promise<void>;
 };
 
+function compactLogText(value: unknown, maxChars = 600): string {
+  const text = (value instanceof Error ? value.message : String(value)).replace(/\s+/g, " ").trim();
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
+}
+
+function formatScore(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(4) : "invalid";
+}
+
+function formatEmbeddingCandidates(decision: ResourceRoutingDecision): string {
+  return decision.embeddingTop
+    .map((candidate) => `${candidate.key}:${formatScore(candidate.score)}`)
+    .join(",");
+}
+
+function formatRerankerCandidates(decision: ResourceRoutingDecision): string {
+  return (decision.rerankerScores ?? [])
+    .map((candidate) => `${candidate.key}:${formatScore(candidate.score)}`)
+    .join(",");
+}
+
 export class ResourceRoutingManager {
   private readonly embedder: ResourceEmbeddingClient;
   private readonly reranker: ResourceRerankerClient;
@@ -93,7 +114,7 @@ export class ResourceRoutingManager {
         );
         results.push({ agentId, ok: true, cacheRebuilt: state.cache.rebuilt });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = compactLogText(error);
         this.logger.warn(`openviking: resource routing unavailable for agent "${agentId}": ${message}`);
         results.push({ agentId, ok: false, error: message });
       }
@@ -186,15 +207,31 @@ export class ResourceRoutingManager {
     } catch (error) {
       this.logger.warn(
         `openviking: resource routing audit write failed for agent "${record.agentId}": ` +
-          `${error instanceof Error ? error.message : String(error)}`,
+          compactLogText(error),
       );
     }
+  }
+
+  private logDecision(agentId: string, decision: ResourceRoutingDecision): void {
+    if (!this.config.logDecisions) {
+      return;
+    }
+    const rerank = decision.rerankerUsed
+      ? ` rerank=[${formatRerankerCandidates(decision)}]`
+      : "";
+    this.logger.info(
+      `openviking: resource routing decision agent="${agentId}" ` +
+        `category="${decision.categoryKey}" fallback=${decision.fallback} ` +
+        `reranker=${decision.rerankerUsed} cosine=[${formatEmbeddingCandidates(decision)}]${rerank} ` +
+        `timing_ms=${JSON.stringify(decision.timingMs)}`,
+    );
   }
 
   async routeResource(
     agentId: string,
     context: ResourceSemanticInputContext,
   ): Promise<ResourceRoutingDecision> {
+    const routeStartedAt = Date.now();
     const semanticInput = renderResourceSemanticInput(this.config.semanticInputTemplate, {
       ...context,
       agentId,
@@ -206,13 +243,21 @@ export class ResourceRoutingManager {
 
     try {
       state = await this.getAgentState(agentId);
-      const decision = await decideAutomaticResourceRoute({
+      const rawDecision = await decideAutomaticResourceRoute({
         semanticInput,
         config: this.config,
         state,
         embedder: this.embedder,
         reranker: this.reranker,
       });
+      const decision: ResourceRoutingDecision = {
+        ...rawDecision,
+        timingMs: {
+          ...rawDecision.timingMs,
+          total: Date.now() - routeStartedAt,
+        },
+      };
+      this.logDecision(agentId, decision);
       await this.appendAuditBestEffort(
         state.paths.auditFile,
         createResourceRoutingAuditRecord({
@@ -229,6 +274,10 @@ export class ResourceRoutingManager {
       );
       return decision;
     } catch (error) {
+      const message = compactLogText(error);
+      this.logger.warn(
+        `openviking: resource routing failed for agent "${agentId}"; resource not imported: ${message}`,
+      );
       await this.appendAuditBestEffort(
         state?.paths.auditFile ?? defaultAuditPath,
         createResourceRoutingAuditRecord({
@@ -241,7 +290,7 @@ export class ResourceRoutingManager {
           embeddingModel: resourceEmbeddingModelIdentity(this.config),
           outcome: "error",
           errorCode: "routing_infrastructure_error",
-          errorMessage: error instanceof Error ? error.message : String(error),
+          errorMessage: message,
         }),
       );
       throw error;
