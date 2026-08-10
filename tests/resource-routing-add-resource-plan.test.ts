@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ResourceRoutingCategoryError } from "../resource-routing/manager.js";
+
 import {
   AddResourceRoutingError,
   planAddResourceRouting,
@@ -187,7 +189,7 @@ describe("add_resource routing planner", () => {
   it("wraps invalid explicit category without allowing model-generated URI fallback", async () => {
     const routing = manager({
       resolveCategory: vi.fn(async () => {
-        throw new Error("unknown category");
+        throw new ResourceRoutingCategoryError("unknown category");
       }),
     });
     await expect(planAddResourceRouting({
