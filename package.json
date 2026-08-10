@@ -27,6 +27,7 @@
     "commands/setup.ts",
     "config/feature-gates.json",
     "dist/",
+    "docs/",
     "install-manifest.json",
     "openclaw.plugin.json",
     "package.json",
