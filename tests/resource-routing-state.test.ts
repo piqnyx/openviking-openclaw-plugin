@@ -77,7 +77,10 @@ describe("prepareAgentResourceRoutingState", () => {
         ],
       });
     });
-    const writeCache = vi.fn(async () => undefined);
+    let writtenCache: ResourceRoutingCacheDocument | undefined;
+    const writeCache = vi.fn(async (_path: string, cache: ResourceRoutingCacheDocument) => {
+      writtenCache = cache;
+    });
 
     const result = await prepareAgentResourceRoutingState(
       cfg,
@@ -94,9 +97,9 @@ describe("prepareAgentResourceRoutingState", () => {
     expect(result.embeddings.get("inbox")).toEqual([1, 0]);
     expect(result.embeddings.get("docs")).toEqual([0, 1]);
     expect(writeCache).toHaveBeenCalledOnce();
-    const [, cache] = writeCache.mock.calls[0]!;
-    expect(cache.embeddingModel).toBe(resourceEmbeddingModelIdentity(cfg));
-    expect(cache.categories.map((entry: { key: string }) => entry.key)).toEqual(["inbox", "docs"]);
+    expect(writtenCache).toBeDefined();
+    expect(writtenCache!.embeddingModel).toBe(resourceEmbeddingModelIdentity(cfg));
+    expect(writtenCache!.categories.map((entry) => entry.key)).toEqual(["inbox", "docs"]);
   });
 
   it("fails closed when configured fallback is absent instead of building a misleading cache", async () => {
