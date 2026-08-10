@@ -17,6 +17,11 @@ export type ResourceRoutingDecision = {
   embeddingTop: ResourceRoutingCandidate[];
   rerankerUsed: boolean;
   rerankerScores?: Array<{ key: string; score: number }>;
+  timingMs: {
+    embedding: number;
+    reranker?: number;
+    total: number;
+  };
 };
 
 export type ResourceRoutingPreparedState = {
@@ -82,6 +87,7 @@ function fallbackDecision(
   fallbackCategory: string,
   embeddingTop: ResourceRoutingCandidate[],
   reason: ResourceRoutingDecision["fallbackReason"],
+  timingMs: ResourceRoutingDecision["timingMs"],
 ): ResourceRoutingDecision {
   assertResourceRoutingFallbackCategory(taxonomy, fallbackCategory);
   const category = taxonomy.byKey.get(fallbackCategory)!;
@@ -92,6 +98,7 @@ function fallbackDecision(
     fallbackReason: reason,
     embeddingTop,
     rerankerUsed: false,
+    timingMs,
   };
 }
 
@@ -102,6 +109,7 @@ export async function decideAutomaticResourceRoute(options: {
   embedder: ResourceEmbeddingClient;
   reranker: ResourceRerankerClient;
 }): Promise<ResourceRoutingDecision> {
+  const startedAt = Date.now();
   const semanticInput = options.semanticInput.trim();
   if (!semanticInput) {
     throw new Error("resource routing semantic input must not be empty");
@@ -113,7 +121,9 @@ export async function decideAutomaticResourceRoute(options: {
     throw new Error("resource routing taxonomy has no routeable categories");
   }
 
+  const embeddingStartedAt = Date.now();
   const [queryEmbedding] = await options.embedder.embed([semanticInput]);
+  const embeddingMs = Date.now() - embeddingStartedAt;
   if (!queryEmbedding) {
     throw new Error("resource routing embedder returned no query embedding");
   }
@@ -135,6 +145,7 @@ export async function decideAutomaticResourceRoute(options: {
       options.config.fallbackCategory,
       embeddingTop,
       "below-min-score",
+      { embedding: embeddingMs, total: Date.now() - startedAt },
     );
   }
 
@@ -150,6 +161,7 @@ export async function decideAutomaticResourceRoute(options: {
       fallback: false,
       embeddingTop,
       rerankerUsed: false,
+      timingMs: { embedding: embeddingMs, total: Date.now() - startedAt },
     };
   }
 
@@ -160,10 +172,12 @@ export async function decideAutomaticResourceRoute(options: {
     }
     return category;
   });
+  const rerankerStartedAt = Date.now();
   const reranked = await options.reranker.rerank(
     semanticInput,
     rerankCategories.map((category) => category.description),
   );
+  const rerankerMs = Date.now() - rerankerStartedAt;
   const winner = reranked[0];
   if (!winner) {
     throw new Error("resource routing reranker returned no winner");
@@ -183,5 +197,10 @@ export async function decideAutomaticResourceRoute(options: {
       key: embeddingTop[result.index]!.key,
       score: result.score,
     })),
+    timingMs: {
+      embedding: embeddingMs,
+      reranker: rerankerMs,
+      total: Date.now() - startedAt,
+    },
   };
 }
