@@ -47,6 +47,20 @@ describe("add_resource baseline parity", () => {
     expect(routing.routeResource).not.toHaveBeenCalled();
   });
 
+  it("does not add a new whitespace-only source rejection to the disabled legacy path", async () => {
+    const routing = manager(false);
+    const plan = await planAddResourceRouting({
+      agentId: "main",
+      manager: routing,
+      params: { source: "   " },
+    });
+
+    expect(plan.details.mode).toBe("legacy-root");
+    expect(plan.input.pathOrUrl).toBe("   ");
+    expect(routing.resolveCategory).not.toHaveBeenCalled();
+    expect(routing.routeResource).not.toHaveBeenCalled();
+  });
+
   it("does not silently rewrite the legacy to+parent conflict", async () => {
     const routing = manager(true);
     const plan = await planAddResourceRouting({
