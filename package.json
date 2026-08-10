@@ -32,6 +32,7 @@
     "package.json",
     "plugin/",
     "registries/",
+    "resource-routing/",
     "routing/",
     "services/",
     "skills/",
