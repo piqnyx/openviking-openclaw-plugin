@@ -5,10 +5,12 @@ import {
   ResourceRerankerClient,
   type ResourceRoutingHttpTransport,
 } from "./ml-client.js";
+import { renderResourceSemanticInput, type ResourceSemanticInputContext } from "./semantic-input.js";
 import {
   prepareAgentResourceRoutingState,
   type PreparedAgentResourceRoutingState,
 } from "./state.js";
+import { resolveResourceCategoryUri } from "./taxonomy.js";
 
 export type ResourceRoutingManagerLogger = {
   info: (message: string) => void;
@@ -42,6 +44,10 @@ export class ResourceRoutingManager {
     this.embedder = new ResourceEmbeddingClient(config.embedding, options.embeddingTransport);
     this.reranker = new ResourceRerankerClient(config.reranker, options.rerankerTransport);
     this.prepareState = options.prepareState ?? prepareAgentResourceRoutingState;
+  }
+
+  isEnabled(): boolean {
+    return this.config.enabled;
   }
 
   async initializeKnownAgents(agentIds: readonly string[]): Promise<ResourceRoutingAgentInitialization[]> {
@@ -88,6 +94,18 @@ export class ResourceRoutingManager {
     }
   }
 
+  async resolveCategory(agentId: string, categoryKey: string): Promise<{ categoryKey: string; categoryUri: string }> {
+    const key = categoryKey.trim();
+    if (!key) {
+      throw new Error("resource routing category must not be empty");
+    }
+    const state = await this.getAgentState(agentId);
+    return {
+      categoryKey: key,
+      categoryUri: resolveResourceCategoryUri(state.taxonomy, key),
+    };
+  }
+
   async route(agentId: string, semanticInput: string): Promise<ResourceRoutingDecision> {
     const state = await this.getAgentState(agentId);
     return decideAutomaticResourceRoute({
@@ -97,5 +115,16 @@ export class ResourceRoutingManager {
       embedder: this.embedder,
       reranker: this.reranker,
     });
+  }
+
+  async routeResource(
+    agentId: string,
+    context: ResourceSemanticInputContext,
+  ): Promise<ResourceRoutingDecision> {
+    const semanticInput = renderResourceSemanticInput(this.config.semanticInputTemplate, {
+      ...context,
+      agentId,
+    });
+    return this.route(agentId, semanticInput);
   }
 }
