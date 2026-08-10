@@ -1,3 +1,4 @@
+# Triggered after workflow creation so push validation runs with the workflow already present.
 name: Resource routing final validation
 
 on:
