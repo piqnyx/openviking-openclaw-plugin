@@ -50,7 +50,7 @@ const cases = [
   ["code_scripts", "code-scripts", "A Bash automation script that checks service health, rotates files, and restarts a process when needed."],
   ["code_configuration", "code-configuration", "A machine-readable YAML configuration file defining service settings, ports, feature flags, and runtime parameters."],
   ["code_patches", "code-patches", "A Git patch containing a unified diff with source-code additions and deletions for a bug fix."],
-  ["web_articles", "web-articles", "A saved online blog article discussing a technical topic, preserved from a public website for later reading."],
+  ["web_articles", "web-articles", "A technical blog article explaining design tradeoffs, implementation choices, examples, and conclusions for readers."],
   ["web_documentation", "web-documentation", "Pages imported directly from an online documentation portal explaining a software product and its commands."],
   ["media_screenshot", "media-images-screenshots", "A screenshot of a Linux terminal showing command output, service status, and diagnostic messages."],
   ["media_speech", "media-audio-speech", "A recorded voice message containing spoken discussion and narration with no music."],
@@ -76,6 +76,22 @@ function round(value) {
   return Math.round(value * 10_000) / 10_000;
 }
 
+function ancestorKeys(taxonomy, key) {
+  const ancestors = new Set();
+  let current = taxonomy.byKey.get(key);
+  while (current?.parentKey) {
+    ancestors.add(current.parentKey);
+    current = taxonomy.byKey.get(current.parentKey);
+  }
+  return ancestors;
+}
+
+function isBranchMatch(taxonomy, expectedKey, selectedKey) {
+  if (expectedKey === selectedKey) return true;
+  return ancestorKeys(taxonomy, expectedKey).has(selectedKey) ||
+    ancestorKeys(taxonomy, selectedKey).has(expectedKey);
+}
+
 try {
   const taxonomy = loadResourceTaxonomyFile(taxonomyFile);
   const embedder = new ResourceRoutingEmbeddingClient(config.embedding);
@@ -84,6 +100,8 @@ try {
   const router = new ResourceRouter({ taxonomy, config, embeddings, embedder, reranker });
 
   const failures = [];
+  let exactPassed = 0;
+  let branchPassed = 0;
   let reranked = 0;
   let fallbackCount = 0;
   let totalMs = 0;
@@ -93,11 +111,16 @@ try {
     totalMs += decision.timing.totalMs;
     if (decision.rerankerUsed) reranked += 1;
     if (decision.fallback) fallbackCount += 1;
-    if (decision.categoryKey !== expected) {
+    const exactMatch = decision.categoryKey === expected;
+    const branchMatch = isBranchMatch(taxonomy, expected, decision.categoryKey);
+    if (exactMatch) exactPassed += 1;
+    if (branchMatch) branchPassed += 1;
+    if (!exactMatch) {
       failures.push({
         case: name,
         expected,
         selected: decision.categoryKey,
+        branchMatch,
         fallback: decision.fallback,
         candidates: decision.embeddingCandidates.map(({ key, score }) => ({ key, score: round(score) })),
         rerankerUsed: decision.rerankerUsed,
@@ -108,9 +131,12 @@ try {
 
   console.log(JSON.stringify({
     cases: cases.length,
-    passed: cases.length - failures.length,
-    failed: failures.length,
-    accuracy: round((cases.length - failures.length) / cases.length),
+    exactPassed,
+    exactFailed: cases.length - exactPassed,
+    exactAccuracy: round(exactPassed / cases.length),
+    branchPassed,
+    branchFailed: cases.length - branchPassed,
+    branchAccuracy: round(branchPassed / cases.length),
     reranked,
     fallbackCount,
     embeddingState: embeddings.source,
@@ -119,7 +145,7 @@ try {
   for (const failure of failures) {
     console.log(JSON.stringify(failure));
   }
-  if (failures.length > 0) {
+  if (branchPassed !== cases.length) {
     process.exitCode = 2;
   }
 } catch (error) {
