@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/resource-routing-v1
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -34,6 +37,7 @@ jobs:
         run: npm test
 
       - name: Commit lockfile if npm changed it
+        if: github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
