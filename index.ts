@@ -198,9 +198,6 @@ const contextEnginePlugin = {
         logger: api.logger,
       });
     } catch (keysErr) {
-      // Refuse to serve rather than fall back to one shared account: a broken
-      // credential map is exactly the situation where agents would silently
-      // start reading each other's memory.
       api.logger.error(
         `${keysErr instanceof Error ? keysErr.message : String(keysErr)}. ` +
           "Plugin loaded in setup-only mode; fix the agent key file and restart.",
@@ -291,6 +288,13 @@ const contextEnginePlugin = {
     } = queryRuntime;
 
     const resourceRouting = new ResourceRoutingService(cfg.resourceRouting);
+    if (resourceRouting.enabled) {
+      void resourceRouting.preloadAgents(agentKeys.agentNames, api.logger).catch((error) => {
+        api.logger.error(
+          `openviking: resource routing startup preload failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
 
     registerOpenVikingImportTools({
       registerTool: registerOpenVikingTool,
