@@ -14,11 +14,14 @@ const DEFAULT_RERANKER_ENDPOINT_PATH = "/v1/rerank";
 const DEFAULT_RERANKER_MODEL = "bge-reranker-v2-m3";
 const DEFAULT_RERANKER_TIMEOUT_MS = 3_000;
 const DEFAULT_TOP_K = 2;
+const MAX_TOP_K = 1_000;
 const DEFAULT_MIN_SCORE = 0.64;
 const DEFAULT_RERANK_BELOW_MARGIN = 0.06;
 const DEFAULT_FALLBACK_CATEGORY = "inbox";
 const DEFAULT_SEMANTIC_INPUT_TEMPLATE = "{{summary}}";
 const DEFAULT_FAILURE_POLICY = "error" as const;
+const DEFAULT_LOG_DECISIONS = false;
+const HTTP_HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 const ALLOWED_TEMPLATE_FIELDS = new Set([
   "summary",
@@ -49,7 +52,8 @@ export type ResourceRoutingConfigInput = {
   semanticInputTemplate?: unknown;
   fallbackCategory?: unknown;
   failurePolicy?: unknown;
-  embedding?: ResourceRoutingEndpointInput & { dimensions?: unknown };
+  logDecisions?: unknown;
+  embedding?: ResourceRoutingEndpointInput & { dimensions?: unknown; cacheKey?: unknown };
   reranker?: ResourceRoutingEndpointInput;
   retrieval?: {
     topK?: unknown;
@@ -80,7 +84,8 @@ export type ParsedResourceRoutingConfig = {
   semanticInputTemplate: string;
   fallbackCategory: string;
   failurePolicy: "error";
-  embedding: ParsedResourceRoutingEndpoint & { dimensions: number };
+  logDecisions: boolean;
+  embedding: ParsedResourceRoutingEndpoint & { dimensions: number; cacheKey: string };
   reranker: ParsedResourceRoutingEndpoint;
   retrieval: {
     topK: number;
@@ -137,6 +142,13 @@ function stringValue(value: unknown, fallback: string, label: string): string {
   return expandEnv(value.trim());
 }
 
+function optionalStringValue(value: unknown, label: string): string {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  return stringValue(value, "", label);
+}
+
 function booleanValue(value: unknown, fallback: boolean, label: string): boolean {
   if (value === undefined) {
     return fallback;
@@ -165,17 +177,25 @@ function integerInRange(value: unknown, fallback: number, min: number, max: numb
   return parsed;
 }
 
+function assertNoHeaderControls(value: string, label: string): void {
+  if (/[\r\n\0]/.test(value)) {
+    throw new Error(`${label} must not contain CR, LF, or NUL characters`);
+  }
+}
+
 function parseHeaders(value: unknown, label: string): Record<string, string> {
   const record = asRecord(value, label);
   const headers: Record<string, string> = {};
   for (const [key, rawValue] of Object.entries(record)) {
-    if (!key.trim()) {
-      throw new Error(`${label} contains an empty header name`);
+    if (!HTTP_HEADER_NAME_RE.test(key)) {
+      throw new Error(`${label} contains an invalid HTTP header name: ${JSON.stringify(key)}`);
     }
     if (typeof rawValue !== "string") {
       throw new Error(`${label}.${key} must be a string`);
     }
-    headers[key] = expandEnv(rawValue);
+    const expanded = expandEnv(rawValue);
+    assertNoHeaderControls(expanded, `${label}.${key}`);
+    headers[key] = expanded;
   }
   return headers;
 }
@@ -231,16 +251,15 @@ function parseEndpoint(
     ["baseUrl", "endpointPath", "apiKey", "headers", "model", "timeoutMs", ...extraAllowedKeys],
     label,
   );
+  const apiKey = optionalStringValue(record.apiKey, `${label}.apiKey`);
+  assertNoHeaderControls(apiKey, `${label}.apiKey`);
   return {
     baseUrl: normalizeBaseUrl(stringValue(record.baseUrl, defaults.baseUrl, `${label}.baseUrl`)),
     endpointPath: normalizeEndpointPath(
       stringValue(record.endpointPath, defaults.endpointPath, `${label}.endpointPath`),
       `${label}.endpointPath`,
     ),
-    apiKey:
-      record.apiKey === undefined || record.apiKey === null || record.apiKey === ""
-        ? ""
-        : stringValue(record.apiKey, "", `${label}.apiKey`),
+    apiKey,
     headers: parseHeaders(record.headers, `${label}.headers`),
     model: stringValue(record.model, defaults.model, `${label}.model`),
     timeoutMs: integerInRange(record.timeoutMs, defaults.timeoutMs, 100, 300_000, `${label}.timeoutMs`),
@@ -248,6 +267,9 @@ function parseEndpoint(
 }
 
 function validatePathTemplate(value: string, label: string): string {
+  if (value.includes("\0")) {
+    throw new Error(`${label} must not contain NUL characters`);
+  }
   if (!value.includes("{agentId}")) {
     throw new Error(`${label} must contain {agentId} so every isolated agent gets its own file`);
   }
@@ -260,7 +282,15 @@ function validatePathTemplate(value: string, label: string): string {
 }
 
 function validateSemanticInputTemplate(value: string): string {
-  const placeholders = [...value.matchAll(/\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/g)].map((match) => match[1]);
+  if (Array.from(value).length > 8_000) {
+    throw new Error("openviking config resourceRouting.semanticInputTemplate must be at most 8000 characters");
+  }
+  const placeholderRe = /\{\{\s*([A-Za-z][A-Za-z0-9]*)\s*\}\}/g;
+  const placeholders = [...value.matchAll(placeholderRe)].map((match) => match[1]);
+  const stripped = value.replace(placeholderRe, "");
+  if (stripped.includes("{{") || stripped.includes("}}")) {
+    throw new Error("openviking config resourceRouting.semanticInputTemplate contains a malformed placeholder");
+  }
   if (!placeholders.includes("summary")) {
     throw new Error("openviking config resourceRouting.semanticInputTemplate must include {{summary}}");
   }
@@ -283,6 +313,7 @@ export function parseResourceRoutingConfig(value: unknown): ParsedResourceRoutin
       "semanticInputTemplate",
       "fallbackCategory",
       "failurePolicy",
+      "logDecisions",
       "embedding",
       "reranker",
       "retrieval",
@@ -301,7 +332,7 @@ export function parseResourceRoutingConfig(value: unknown): ParsedResourceRoutin
       timeoutMs: DEFAULT_EMBEDDING_TIMEOUT_MS,
     },
     "openviking config resourceRouting.embedding",
-    ["dimensions"],
+    ["dimensions", "cacheKey"],
   );
   const reranker = parseEndpoint(
     cfg.reranker,
@@ -355,6 +386,11 @@ export function parseResourceRoutingConfig(value: unknown): ParsedResourceRoutin
       "openviking config resourceRouting.fallbackCategory",
     ),
     failurePolicy: "error",
+    logDecisions: booleanValue(
+      cfg.logDecisions,
+      DEFAULT_LOG_DECISIONS,
+      "openviking config resourceRouting.logDecisions",
+    ),
     embedding: {
       ...embeddingBase,
       dimensions: integerInRange(
@@ -364,10 +400,20 @@ export function parseResourceRoutingConfig(value: unknown): ParsedResourceRoutin
         65_536,
         "openviking config resourceRouting.embedding.dimensions",
       ),
+      cacheKey: optionalStringValue(
+        embeddingRaw.cacheKey,
+        "openviking config resourceRouting.embedding.cacheKey",
+      ),
     },
     reranker,
     retrieval: {
-      topK: integerInRange(retrieval.topK, DEFAULT_TOP_K, 1, 50, "openviking config resourceRouting.retrieval.topK"),
+      topK: integerInRange(
+        retrieval.topK,
+        DEFAULT_TOP_K,
+        1,
+        MAX_TOP_K,
+        "openviking config resourceRouting.retrieval.topK",
+      ),
       minScore: numberInRange(retrieval.minScore, DEFAULT_MIN_SCORE, -1, 1, "openviking config resourceRouting.retrieval.minScore"),
       rerankBelowMargin: numberInRange(
         retrieval.rerankBelowMargin,
@@ -415,13 +461,16 @@ export const RESOURCE_ROUTING_CONFIG_DEFAULTS = {
   embeddingModel: DEFAULT_EMBEDDING_MODEL,
   embeddingTimeoutMs: DEFAULT_EMBEDDING_TIMEOUT_MS,
   embeddingDimensions: DEFAULT_EMBEDDING_DIMENSIONS,
+  embeddingCacheKey: "",
   rerankerBaseUrl: DEFAULT_RERANKER_BASE_URL,
   rerankerEndpointPath: DEFAULT_RERANKER_ENDPOINT_PATH,
   rerankerModel: DEFAULT_RERANKER_MODEL,
   rerankerTimeoutMs: DEFAULT_RERANKER_TIMEOUT_MS,
   topK: DEFAULT_TOP_K,
+  maxTopK: MAX_TOP_K,
   minScore: DEFAULT_MIN_SCORE,
   rerankBelowMargin: DEFAULT_RERANK_BELOW_MARGIN,
   fallbackCategory: DEFAULT_FALLBACK_CATEGORY,
   semanticInputTemplate: DEFAULT_SEMANTIC_INPUT_TEMPLATE,
+  logDecisions: DEFAULT_LOG_DECISIONS,
 } as const;
