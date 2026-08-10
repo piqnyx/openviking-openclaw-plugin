@@ -31,7 +31,7 @@ Use this skill after `@openviking/openclaw-plugin` is installed and configured. 
 - Do not invent OpenViking REST endpoints. Use the registered OpenClaw tools and commands described below.
 - The agent-visible `add_resource` tool is disabled by default (`enableAddResourceTool=false`). Do not use `add_resource` during search, retrieval, URI reading, or search-result optimization. Use `ov_search` and `ov_read` in those flows.
 - Use manual `/add-resource`, or `add_resource` only when it is explicitly enabled and the user explicitly asks to import, add, upload, save, or index a resource.
-- When automatic resource routing is enabled, inspect or read enough of the resource to understand its actual content before calling `add_resource`, unless that content is already established in the conversation. Supply a short semantic `summary`; never infer it from filename/path alone.
+- When automatic resource routing is enabled, inspect or read enough of the resource to understand its actual content before calling `add_resource`, unless that content is already established in the conversation. Supply a short semantic `summary` describing content and purpose. When provenance is part of the semantic resource type, state it naturally, for example online article, email thread, meeting transcript, or terminal screenshot. Never infer the summary from filename/path alone or copy raw filename/path/MIME/storage metadata into it.
 - Use `add_skill` only when the user explicitly asks to import, add, install, or register an Agent Skill into OpenViking.
 - For local files and directories, pass the local path to the plugin tool. The plugin uploads them through `/api/v1/resources/temp_upload`; do not send raw local filesystem paths to a remote server yourself.
 - Never log or echo API keys. The plugin sends API keys as `X-API-Key` / setup probe headers and masks them in setup output.
@@ -155,7 +155,7 @@ Delete a memory.
 | `query` | No | Search query when `uri` is unknown. |
 | `targetUri` | No | Search scope URI, default `targetUri`. |
 | `limit` | No | Search limit, default `5`. |
-| `scoreThreshold` | No | Search threshold, default `recallScoreThreshold`. |
+| `scoreThreshold` | No | Search threshold `0..1`. Defaults to `recallScoreThreshold`. |
 
 If query mode finds multiple candidates, report candidates and ask the user to choose the exact URI; do not delete ambiguous memories.
 
@@ -186,12 +186,12 @@ This agent tool is disabled by default. Prefer manual `/add-resource` for resour
 
 When `resourceRouting.enabled=true`, destination priority is: explicit `to`, explicit `parent`, explicit semantic `category`, then automatic routing. Explicit routing must never be overwritten by automatic classification.
 
-For automatic routing, first inspect/read enough of the resource to understand its actual content unless the content is already known from the conversation. Then provide `summary` as one short sentence describing semantic content and purpose. Do not use filename/path/MIME/storage location as a substitute for content. The plugin performs deterministic category selection and builds the trusted `viking://resources/...` parent URI; do not invent a URI or category key.
+For automatic routing, first inspect/read enough of the resource to understand its actual content unless the content is already known from the conversation. Then provide `summary` as one short sentence describing semantic content and purpose. When provenance is part of the semantic resource type, state it naturally, for example online article, email thread, meeting transcript, or terminal screenshot. Do not use filename/path/MIME/storage location as a substitute for content or copy those raw values into the summary. The plugin performs deterministic category selection and builds the trusted `viking://resources/...` parent URI; do not invent a URI or category key.
 
 | Parameter | Required | Description |
 |---|---|---|
 | `source` | Yes | Local path, OpenClaw media attachment path, directory path, public URL, or Git URL. |
-| `summary` | Automatic routing only | One short sentence based on known/inspected content describing what the resource is about and what it is useful for. |
+| `summary` | Automatic routing only | One short sentence based on known/inspected content describing what the resource is about and what it is useful for; include semantically relevant provenance such as online article/email/transcript/screenshot when it defines the resource type. |
 | `to` | No | Explicit exact target URI. Bypasses automatic routing. Mutually exclusive with `parent` and `category`. |
 | `parent` | No | Explicit parent URI under `viking://resources`. Bypasses automatic routing. Mutually exclusive with `to` and `category`. |
 | `category` | No | Existing semantic category key from this agent's taxonomy. The plugin resolves it to a trusted URI; never invent keys. |
@@ -211,8 +211,8 @@ Import Agent Skills into `viking://user/skills/...`.
 
 | Parameter | Required | Description |
 |---|---|---|
-| `source` | No | Local `SKILL.md` path or skill directory. Exactly one of `source` or `data` is required. |
-| `data` | No | Raw `SKILL.md` content or an MCP tool dict. Exactly one of `source` or `data` is required. |
+| `source` | No | Local SKILL.md path or skill directory path. Exactly one of `source` or `data` is required. |
+| `data` | No | Raw SKILL.md content or an MCP tool dict. Exactly one of `source` or `data` is required. |
 | `wait` | No | Wait for processing completion. |
 | `timeout` | No | Timeout in seconds when `wait=true`. |
 
