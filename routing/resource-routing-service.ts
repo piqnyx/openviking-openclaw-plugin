@@ -54,6 +54,7 @@ export class ResourceRoutingService {
   readonly #rerankerTransport?: HttpTransport;
   readonly #taxonomies = new Map<string, CompiledResourceTaxonomy>();
   readonly #routerPromises = new Map<string, Promise<ResourceRouter>>();
+  #preloadPromise?: Promise<ResourceRoutingPreloadResult>;
 
   constructor(config: ParsedResourceRoutingConfig, options: ResourceRoutingServiceOptions = {}) {
     this.#config = config;
@@ -152,28 +153,43 @@ export class ResourceRoutingService {
     agentIds: readonly string[],
     logger: ResourceRoutingPreloadLogger,
   ): Promise<ResourceRoutingPreloadResult> {
-    const ready: string[] = [];
-    const failed: Array<{ agentId: string; error: string }> = [];
     if (!this.#config.enabled) {
-      return { ready, failed };
+      return { ready: [], failed: [] };
+    }
+    const existing = this.#preloadPromise;
+    if (existing) {
+      return existing;
     }
 
-    const uniqueAgentIds = [...new Set(agentIds.map((agentId) => agentId.trim()).filter(Boolean))].sort();
-    for (const agentId of uniqueAgentIds) {
-      try {
-        await this.initializeAgent(agentId);
-        ready.push(agentId);
-        logger.info(`openviking: resource routing ready for agent ${agentId}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        failed.push({ agentId, error: message });
-        logger.error(
-          `openviking: resource routing preload failed for agent ${agentId}: ${message}. ` +
-          "Automatic add_resource for this agent remains fail-closed until the taxonomy/config or model service is fixed; restart the gateway after taxonomy/config changes.",
-        );
+    const promise = (async (): Promise<ResourceRoutingPreloadResult> => {
+      const ready: string[] = [];
+      const failed: Array<{ agentId: string; error: string }> = [];
+      const uniqueAgentIds = [...new Set(agentIds.map((agentId) => agentId.trim()).filter(Boolean))].sort();
+      for (const agentId of uniqueAgentIds) {
+        try {
+          await this.initializeAgent(agentId);
+          ready.push(agentId);
+          logger.info(`openviking: resource routing ready for agent ${agentId}`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          failed.push({ agentId, error: message });
+          logger.error(
+            `openviking: resource routing preload failed for agent ${agentId}: ${message}. ` +
+            "Automatic add_resource for this agent remains fail-closed until the taxonomy/config or model service is fixed; restart the gateway after taxonomy/config changes.",
+          );
+        }
+      }
+      return { ready, failed };
+    })();
+
+    this.#preloadPromise = promise;
+    try {
+      return await promise;
+    } finally {
+      if (this.#preloadPromise === promise) {
+        this.#preloadPromise = undefined;
       }
     }
-    return { ready, failed };
   }
 
   async routeAutomatic(input: AutomaticResourceRouteInput): Promise<AutomaticResourceRouteResult> {
@@ -185,6 +201,10 @@ export class ResourceRoutingService {
     const auditFile = resolvePerAgentFileTemplate(this.#config.audit.file, input.agentId);
     const started = performance.now();
     try {
+      const preload = this.#preloadPromise;
+      if (preload) {
+        await preload;
+      }
       const router = await this.#getRouter(input.agentId);
       const decision = await router.route(semanticInput);
       const category = taxonomy.byKey.get(decision.categoryKey);

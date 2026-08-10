@@ -68,4 +68,77 @@ categories:
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("resource routing preload failed for agent igor"));
     expect(embeddingTransport).toHaveBeenCalledTimes(1);
   });
+
+  it("waits for an active preload before starting automatic routing model requests", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ov-routing-preload-race-"));
+    tempDirs.push(dir);
+    const taxonomy = `
+schemaVersion: 1
+fallback: inbox
+categories:
+  inbox:
+    segment: __INBOX__
+    description: Fallback resources.
+`;
+    writeFileSync(join(dir, "igor.yaml"), taxonomy, "utf8");
+    writeFileSync(join(dir, "main.yaml"), taxonomy, "utf8");
+
+    const config = parseResourceRoutingConfig({
+      enabled: true,
+      taxonomyFile: join(dir, "{agentId}.yaml"),
+      cacheFile: join(dir, "cache-{agentId}.json"),
+      audit: { enabled: false, file: join(dir, "audit-{agentId}.jsonl") },
+      embedding: { dimensions: 2 },
+    });
+
+    let releaseFirstRequest!: () => void;
+    const firstRequestGate = new Promise<void>((resolve) => {
+      releaseFirstRequest = resolve;
+    });
+    let markFirstRequestStarted!: () => void;
+    const firstRequestStarted = new Promise<void>((resolve) => {
+      markFirstRequestStarted = resolve;
+    });
+    let requestCount = 0;
+    const embeddingTransport: HttpTransport = vi.fn(async (_url, init) => {
+      requestCount += 1;
+      if (requestCount === 1) {
+        markFirstRequestStarted();
+        await firstRequestGate;
+      }
+      const body = JSON.parse(String(init.body)) as { input: string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map((_entry, index) => ({
+          index,
+          embedding: [1, 0],
+        })),
+      }), { status: 200 });
+    });
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const service = new ResourceRoutingService(config, { embeddingTransport });
+
+    const preloadPromise = service.preloadAgents(["igor"], logger);
+    await firstRequestStarted;
+
+    const routePromise = service.routeAutomatic({
+      agentId: "main",
+      source: "/workspace/verse.md",
+      sourceKind: "local_path",
+      summary: "A short synthetic text resource used to validate routing.",
+    });
+
+    await Promise.resolve();
+    expect(embeddingTransport).toHaveBeenCalledTimes(1);
+
+    releaseFirstRequest();
+    await preloadPromise;
+    const routed = await routePromise;
+
+    expect(routed.category.key).toBe("inbox");
+    expect(embeddingTransport).toHaveBeenCalledTimes(3);
+  });
 });
