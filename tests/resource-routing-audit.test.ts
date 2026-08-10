@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -83,5 +83,27 @@ describe("resource routing audit", () => {
     if (process.platform !== "win32") {
       expect((await stat(file)).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it("repairs permissive permissions on an existing audit file", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const dir = await mkdtemp(join(tmpdir(), "ov-routing-audit-mode-"));
+    const file = join(dir, "main.jsonl");
+    await writeFile(file, "", { encoding: "utf8", mode: 0o600 });
+    await chmod(file, 0o644);
+    expect((await stat(file)).mode & 0o777).toBe(0o644);
+
+    await appendResourceRoutingAudit(file, createResourceRoutingAuditRecord({
+      agentId: "main",
+      source: "private-source",
+      summary: "private summary",
+      includeSummaryPreview: true,
+      summaryPreviewChars: 20,
+      outcome: "success",
+    }));
+
+    expect((await stat(file)).mode & 0o777).toBe(0o600);
   });
 });
