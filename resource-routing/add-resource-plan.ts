@@ -2,7 +2,10 @@ import { basename, extname } from "node:path";
 
 import type { AddResourceInput } from "../client.js";
 import type { ResourceRoutingDecision } from "./decision.js";
-import type { ResourceRoutingManager } from "./manager.js";
+import {
+  ResourceRoutingCategoryError,
+  type ResourceRoutingManager,
+} from "./manager.js";
 
 export type AddResourceRoutingMode =
   | "explicit-to"
@@ -165,9 +168,15 @@ export async function planAddResourceRouting(options: {
         },
       };
     } catch (error) {
+      if (error instanceof ResourceRoutingCategoryError) {
+        throw new AddResourceRoutingError(
+          "invalid_category",
+          `Resource category ${JSON.stringify(category)} is not available for agent ${JSON.stringify(options.agentId)}. ${error.message}`,
+        );
+      }
       throw new AddResourceRoutingError(
-        "invalid_category",
-        `Resource category ${JSON.stringify(category)} is not available for agent ${JSON.stringify(options.agentId)}. ${error instanceof Error ? error.message : String(error)}`,
+        "routing_infrastructure_error",
+        `Resource category routing failed; the resource was not imported. ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
