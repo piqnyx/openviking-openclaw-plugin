@@ -26,6 +26,7 @@ describe("resource routing deterministic ties", () => {
     const taxonomy = parseResourceTaxonomy({
       schemaVersion: 1,
       categories: {
+        inbox: { segment: "__INBOX__", description: "Unclassified resources." },
         zeta: { segment: "zeta", description: "Zeta material." },
         alpha: { segment: "alpha", description: "Alpha material." },
       },
@@ -43,6 +44,7 @@ describe("resource routing deterministic ties", () => {
       state: {
         taxonomy,
         embeddings: new Map([
+          ["inbox", [0, 1]],
           ["zeta", [1, 0]],
           ["alpha", [1, 0]],
         ]),
