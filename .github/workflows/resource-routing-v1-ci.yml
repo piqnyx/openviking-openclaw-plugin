@@ -38,7 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! grep -q 'resourceRoutingManager' plugin/openviking-import-tools.ts; then
-            node .github/scripts/integrate-resource-routing-add-resource.mjs
+            node .github/scripts/integrate-resource-routing-add-resource-v2.mjs
           fi
 
       - name: Refresh lockfile for declared dependencies
