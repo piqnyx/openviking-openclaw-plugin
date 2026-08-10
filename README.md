@@ -270,15 +270,14 @@ The parser is deliberately strict:
 - semantic keys must be safe stable identifiers and unique across the complete tree;
 - destination URIs must be unique;
 - each `segment` must contain only safe letters/numbers/marks plus `_`, `-`, and `.`;
-- `.` / `..`, dot-prefixed or dot-suffixed segments, separators, query syntax, and other unsafe path material are rejected;
-- each segment is limited to **50 Unicode characters**, matching the OpenViking 0.4.12 segment-sanitization bound;
+- `.` / `..`, dot-prefixed or dot-suffixed segments, separators, query syntax, leading/trailing whitespace, and other unsafe path material are rejected;
+- each **individual segment** is limited to **50 Unicode characters**, matching the OpenViking 0.4.12 semantic segment-sanitization bound; this is not a 50-character limit on the full `viking://resources/...` path;
 - category descriptions are limited to 4000 characters;
-- the plugin additionally limits a fully compiled taxonomy URI to **4096 characters** as an operational safety bound;
 - YAML duplicate keys are rejected;
 - YAML aliases/anchors and merge-key tricks are not supported;
 - reused/cyclic node objects are rejected by the programmatic parser.
 
-There is no small artificial nesting-depth limit. The parser walks the tree iteratively rather than recursively, but the compiled URI still has to fit the 4096-character plugin safety bound.
+The plugin does **not** impose a small artificial taxonomy nesting-depth limit. The parser walks the tree iteratively rather than recursively, so deep valid trees are not rejected merely because of the JavaScript call stack. The final URI still has to be usable by the deployed OpenViking/storage stack; the plugin does not invent an undocumented whole-URI length limit of its own.
 
 ### Fallback category
 
@@ -415,7 +414,7 @@ The router preserves caller-supplied `reason` and `instruction` but does not inv
 3. explicit semantic `category` key;
 4. automatic routing from `summary`.
 
-Explicit legacy `to`/`parent` inputs are not normalized or silently rewritten by the router. Do not pass both: the existing OpenViking client validation rejects that mutually exclusive combination, preserving the pre-routing contract.
+`to` and `parent` are mutually exclusive legacy OpenViking inputs. Supplying either one skips category and automatic routing; supplying both is passed through unchanged and rejected by the existing OpenViking client validation, preserving the pre-routing contract rather than silently choosing one. Explicit legacy `to`/`parent` values are not normalized or rewritten by the router.
 
 Explicit `category` never asks the embedding or reranker services. The plugin loads the agent's validated taxonomy, resolves that exact category key to a trusted URI, and uses `create_parent=true`.
 
@@ -476,7 +475,7 @@ Per-agent JSONL audit is enabled by default when resource routing is enabled. By
 - embedding/reranker/total latency;
 - success or routing error.
 
-Raw summary preview is opt-in through `audit.includeSummaryPreview=true` and is bounded by `summaryPreviewChars`.
+Raw summary preview is opt-in through `audit.includeSummaryPreview=true` and is bounded by `summaryPreviewChars`. On POSIX, the audit writer enforces `0600` even when appending to a pre-existing file that had broader permissions.
 
 `resourceRouting.logDecisions=true` additionally writes one compact decision line through the normal OpenClaw plugin logger. It contains category keys, scores, fallback/reranker state, and timing, but not source paths, summary text, or API keys.
 
@@ -490,7 +489,7 @@ OpenViking 0.4.12 supports `parent` with `create_parent=true`. Automatic routing
 viking://resources/projects/openclaw/openviking
 ```
 
-can be created by OpenViking when its directories do not exist yet.
+can be created by OpenViking when its directories do not exist yet. OpenViking's own directory creation path creates missing parent directories before the requested target, so nested taxonomy branches do not require the plugin to create one directory at a time.
 
 The plugin does not create folders in Qdrant or manipulate vectors directly.
 
@@ -498,15 +497,15 @@ The plugin does not create folders in Qdrant or manipulate vectors directly.
 
 The agent-visible tool remains gated by `enableAddResourceTool`.
 
-When resource routing is disabled, its historical behavior remains active. `create_parent` is the only additive OpenViking API-parity field.
+When resource routing is disabled, its historical behavior remains active. `create_parent` is the only additive field added to the agent-visible import surface for OpenViking 0.4.12 parent-creation support.
 
 When routing is enabled, additional parameters are exposed:
 
 | Parameter | Required | Description |
 | --- | --- | --- |
 | `source` | Yes | Local path, media attachment path, directory, public URL, or Git URL. |
-| `to` | No | Exact target Viking URI. Overrides routing. |
-| `parent` | No | Exact parent Viking URI. Overrides routing. |
+| `to` | No | Exact target Viking URI. Mutually exclusive with `parent`; skips category/automatic routing. |
+| `parent` | No | Exact parent Viking URI. Mutually exclusive with `to`; skips category/automatic routing. |
 | `category` | No | Exact semantic key already present in the current agent taxonomy. |
 | `summary` | Automatic only | Concise semantic content/purpose summary. Required only when no explicit destination/category is supplied. |
 | `create_parent` | No | Create an explicitly supplied parent if missing. Automatic/category routing sets it internally. |
@@ -517,7 +516,9 @@ When routing is enabled, additional parameters are exposed:
 
 The `source` field remains the same top-level input used by existing OpenClaw/agent-permissions local-path authorization. Resource routing runs after that permission boundary and does not make a protected local path readable merely because `add_resource` itself is approved.
 
-OpenViking itself decides how an imported source becomes a resource tree. Large Markdown documents, directories, repositories, web collections, and other sources may produce multiple children and semantic artifacts below the selected parent.
+OpenViking itself decides how an imported source becomes a resource tree. Large Markdown documents, directories, repositories, web collections, and other sources may produce multiple children and semantic artifacts below the selected parent. A taxonomy destination directory may simultaneously contain directly imported resources and nested taxonomy/resource directories.
+
+OpenViking generates resource semantic artifacts such as `.abstract.md` and `.overview.md` during its own semantic-processing stage. The router does not fabricate those fields, and it does not copy `summary` into `reason` or `instruction`.
 
 ## `remove_resource`
 
