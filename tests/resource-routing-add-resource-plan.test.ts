@@ -21,14 +21,14 @@ function manager(overrides: Partial<AddResourceRoutingManager> = {}): AddResourc
       fallback: false,
       embeddingTop: [{ key: "docs", uri: "viking://resources/documents", score: 0.9 }],
       rerankerUsed: false,
-        timingMs: { embedding: 1, total: 1 },
+      timingMs: { embedding: 1, total: 1 },
     })),
     ...overrides,
   };
 }
 
 describe("add_resource routing planner", () => {
-  it("preserves strict priority: to > parent > category > automatic", async () => {
+  it("gives legacy explicit targets priority over category/automatic routing without rewriting them", async () => {
     const routing = manager();
     const explicitTo = await planAddResourceRouting({
       agentId: "main",
@@ -36,13 +36,15 @@ describe("add_resource routing planner", () => {
       params: {
         source: "/workspace/draft/a.md",
         to: "viking://resources/exact",
-        parent: "viking://resources/ignored-parent",
+        parent: "viking://resources/conflicting-parent",
         category: "ignored-category",
       },
     });
     expect(explicitTo.details.mode).toBe("explicit-to");
-    expect(explicitTo.input).toMatchObject({ to: "viking://resources/exact" });
-    expect(explicitTo.input.parent).toBeUndefined();
+    expect(explicitTo.input).toMatchObject({
+      to: "viking://resources/exact",
+      parent: "viking://resources/conflicting-parent",
+    });
     expect(routing.resolveCategory).not.toHaveBeenCalled();
     expect(routing.routeResource).not.toHaveBeenCalled();
 
@@ -199,14 +201,9 @@ describe("add_resource routing planner", () => {
         source: "/workspace/draft/a.md",
         category: "invented-by-model",
       },
-    })).rejects.toBeInstanceOf(AddResourceRoutingError);
-    await expect(planAddResourceRouting({
-      agentId: "main",
-      manager: routing,
-      params: {
-        source: "/workspace/draft/a.md",
-        category: "invented-by-model",
-      },
-    })).rejects.toMatchObject({ code: "invalid_category" });
+    })).rejects.toMatchObject({
+      name: "AddResourceRoutingError",
+      code: "invalid_category",
+    });
   });
 });
