@@ -238,7 +238,7 @@ export class ResourceRouter {
       };
     }
 
-    const rerankCandidates = [top, second];
+    const rerankCandidates = embeddingCandidates;
     const rerankerStarted = performance.now();
     const reranked = await this.#reranker.rerank(
       semanticInput,
