@@ -1,4 +1,4 @@
-import { memoryOpenVikingConfigSchema } from "./config.js";
+import { openVikingPluginConfigSchema } from "./plugin-config.js";
 import { loadAgentKeys } from "./agent-keys.js";
 import { registerSetupCli } from "./commands/setup.js";
 import { createOpenVikingBypassRuntime } from "./plugin/openviking-bypass-runtime.js";
@@ -31,6 +31,7 @@ import { formatMessageFaithful } from "./services/context-message-adapter.js";
 import { clampScore, postProcessMemories, pickMemoriesForInjection, } from "./memory-ranking.js";
 import { createMemoryOpenVikingContextEngine, } from "./context-engine.js";
 import { openClawSessionRefToOvStorageId, openClawSessionToOvStorageId, } from "./routing/identity-routing.js";
+import { ResourceRoutingService } from "./routing/resource-routing-service.js";
 import { buildMemoryLinesWithBudget, } from "./auto-recall.js";
 import { normalizeRecallResourceTypes as normalizeResourceTypes, resolveRecallSearchPlan, } from "./registries/recall-resource-types.js";
 import { normalizeRuntimeQueryParams, } from "./query-config.js";
@@ -39,7 +40,7 @@ const contextEnginePlugin = {
     name: "Context Engine (OpenViking)",
     description: "OpenViking-backed context-engine memory with auto-recall/capture",
     kind: "context-engine",
-    configSchema: memoryOpenVikingConfigSchema,
+    configSchema: openVikingPluginConfigSchema,
     register(api) {
         registerOpenVikingFeatureGatesMethod(api);
         const rawCfg = api.pluginConfig && typeof api.pluginConfig === "object" && !Array.isArray(api.pluginConfig)
@@ -56,7 +57,7 @@ const contextEnginePlugin = {
         }
         let cfg;
         try {
-            cfg = memoryOpenVikingConfigSchema.parse(rawCfg);
+            cfg = openVikingPluginConfigSchema.parse(rawCfg);
         }
         catch (parseErr) {
             api.logger.warn(`openviking: config parse failed (${parseErr instanceof Error ? parseErr.message : String(parseErr)}). ` +
@@ -73,9 +74,6 @@ const contextEnginePlugin = {
             });
         }
         catch (keysErr) {
-            // Refuse to serve rather than fall back to one shared account: a broken
-            // credential map is exactly the situation where agents would silently
-            // start reading each other's memory.
             api.logger.error(`${keysErr instanceof Error ? keysErr.message : String(keysErr)}. ` +
                 "Plugin loaded in setup-only mode; fix the agent key file and restart.");
             registerSetupCli(api);
@@ -142,6 +140,12 @@ const contextEnginePlugin = {
             cfg,
         });
         const { searchOpenViking, readOpenVikingContent, multiReadOpenVikingContent, listOpenVikingDirectory, } = queryRuntime;
+        const resourceRouting = new ResourceRoutingService(cfg.resourceRouting);
+        if (resourceRouting.enabled) {
+            void resourceRouting.preloadAgents(agentKeys.agentNames, api.logger).catch((error) => {
+                api.logger.error(`openviking: resource routing startup preload failed: ${error instanceof Error ? error.message : String(error)}`);
+            });
+        }
         registerOpenVikingImportTools({
             registerTool: registerOpenVikingTool,
             getClient,
@@ -150,6 +154,7 @@ const contextEnginePlugin = {
             makeBypassedToolResult,
             enableAddResourceTool: cfg.enableAddResourceTool,
             enableRemoveResourceTool: cfg.enableRemoveResourceTool,
+            resourceRouting,
         });
         registerOpenVikingQueryTools({
             registerTool: registerOpenVikingTool,

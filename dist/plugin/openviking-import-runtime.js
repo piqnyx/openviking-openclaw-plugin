@@ -35,6 +35,7 @@ export function createOpenVikingImportRuntime(deps) {
         pathOrUrl: input.source ?? "",
         to: input.to,
         parent: input.parent,
+        createParent: input.createParent,
         reason: input.reason,
         instruction: input.instruction,
         wait: input.wait,
