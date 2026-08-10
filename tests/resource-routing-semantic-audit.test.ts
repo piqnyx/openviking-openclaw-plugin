@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,6 +85,28 @@ describe("resource routing audit", () => {
     expect(record.finalCategory).toBe("security_audits");
     expect(record.rerankerUsed).toBe(true);
     expect(record.embeddingMs).toBe(82.123);
+    expect(statSync(filePath).mode & 0o777).toBe(0o600);
+  });
+
+  it("repairs an existing audit file that has overly broad permissions", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ov-routing-audit-"));
+    tempDirs.push(dir);
+    const filePath = join(dir, "main.jsonl");
+    writeFileSync(filePath, "", { mode: 0o644 });
+    chmodSync(filePath, 0o644);
+
+    writeResourceRoutingAudit({
+      filePath,
+      agentId: "main",
+      source: "/workspace/a",
+      summary: "A routing audit permission test.",
+      summaryPreviewChars: 0,
+      taxonomyHash: "tax-hash",
+      embeddingModel: "bge-m3",
+      rerankerModel: "bge-reranker-v2-m3",
+      status: "success",
+    });
+
     expect(statSync(filePath).mode & 0o777).toBe(0o600);
   });
 
