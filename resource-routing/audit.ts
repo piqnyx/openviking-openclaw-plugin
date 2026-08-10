@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, chmod, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import type { ResourceRoutingDecision } from "./decision.js";
@@ -82,4 +82,9 @@ export async function appendResourceRoutingAudit(
     encoding: "utf8",
     mode: 0o600,
   });
+  // `mode` only controls creation. Harden an existing file too, because an
+  // operator may enable bounded summary previews in this audit stream.
+  if (process.platform !== "win32") {
+    await chmod(filePath, 0o600);
+  }
 }
