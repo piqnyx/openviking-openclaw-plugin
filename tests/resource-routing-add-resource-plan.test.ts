@@ -19,6 +19,7 @@ function manager(overrides: Partial<AddResourceRoutingManager> = {}): AddResourc
       fallback: false,
       embeddingTop: [{ key: "docs", uri: "viking://resources/documents", score: 0.9 }],
       rerankerUsed: false,
+        timingMs: { embedding: 1, total: 1 },
     })),
     ...overrides,
   };
@@ -115,6 +116,7 @@ describe("add_resource routing planner", () => {
         fallbackReason: "below-min-score" as const,
         embeddingTop: [{ key: "docs", uri: "viking://resources/documents", score: 0.4 }],
         rerankerUsed: false,
+        timingMs: { embedding: 1, total: 1 },
       })),
     });
 

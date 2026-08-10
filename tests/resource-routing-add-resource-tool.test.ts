@@ -36,6 +36,7 @@ function setup(options: {
         fallback: false,
         embeddingTop: [{ key: "docs", uri: "viking://resources/documents", score: 0.91 }],
         rerankerUsed: false,
+        timingMs: { embedding: 1, total: 1 },
       }));
 
   registerOpenVikingImportTools({
