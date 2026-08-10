@@ -121,9 +121,6 @@ export async function planAddResourceRouting(options: {
   manager?: AddResourceRoutingManager;
 }): Promise<AddResourceRoutingPlan> {
   const source = options.params.source;
-  if (typeof source !== "string" || !source.trim()) {
-    throw new Error("add_resource source is required");
-  }
 
   // Preserve the pre-resourceRouting contract for the two legacy explicit
   // target fields. In particular, do not trim/rewrite them and do not silently
@@ -200,6 +197,9 @@ export async function planAddResourceRouting(options: {
     );
   }
 
+  // Use a normalized copy only for semantic metadata. The actual OpenViking
+  // source stays byte-for-byte what the caller supplied so routing does not
+  // become a path-rewriting layer.
   const semanticSource = source.trim();
   const filename = sourceFilename(semanticSource);
   try {
