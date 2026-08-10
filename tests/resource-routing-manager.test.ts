@@ -5,17 +5,20 @@ import { ResourceRoutingManager } from "../resource-routing/manager.js";
 import { parseResourceTaxonomy } from "../resource-routing/taxonomy.js";
 import type { PreparedAgentResourceRoutingState } from "../resource-routing/state.js";
 
-function state(agentId: string): PreparedAgentResourceRoutingState {
-  const taxonomy = parseResourceTaxonomy({
+function taxonomy() {
+  return parseResourceTaxonomy({
     schemaVersion: 1,
     categories: {
       inbox: { segment: "__INBOX__", description: "Unclassified resources." },
       docs: { segment: "documents", description: "General documents." },
     },
   });
+}
+
+function state(agentId: string): PreparedAgentResourceRoutingState {
   return {
     agentId,
-    taxonomy,
+    taxonomy: taxonomy(),
     taxonomyHash: `hash-${agentId}`,
     embeddings: new Map([
       ["inbox", [0, 1]],
@@ -89,5 +92,39 @@ describe("ResourceRoutingManager", () => {
     await expect(manager.getAgentState("main")).rejects.toThrow("temporarily unavailable");
     await expect(manager.getAgentState("main")).resolves.toMatchObject({ agentId: "main" });
     expect(prepareState).toHaveBeenCalledTimes(2);
+  });
+
+  it("resolves an explicit category from taxonomy without requiring embedder/cache state", async () => {
+    const cfg = parseResourceRoutingConfig({ enabled: true, embedding: { dimensions: 2 } });
+    const prepareState = vi.fn(async () => {
+      throw new Error("embedder is down");
+    });
+    const loadTaxonomy = vi.fn(async () => taxonomy());
+    const manager = new ResourceRoutingManager(
+      cfg,
+      { info: vi.fn(), warn: vi.fn() },
+      { prepareState, loadTaxonomy },
+    );
+
+    await expect(manager.resolveCategory("main", "docs")).resolves.toEqual({
+      categoryKey: "docs",
+      categoryUri: "viking://resources/documents",
+    });
+    expect(loadTaxonomy).toHaveBeenCalledOnce();
+    expect(prepareState).not.toHaveBeenCalled();
+  });
+
+  it("caches explicit taxonomy per agent for restart-only semantics", async () => {
+    const cfg = parseResourceRoutingConfig({ enabled: true, embedding: { dimensions: 2 } });
+    const loadTaxonomy = vi.fn(async () => taxonomy());
+    const manager = new ResourceRoutingManager(
+      cfg,
+      { info: vi.fn(), warn: vi.fn() },
+      { loadTaxonomy },
+    );
+
+    await manager.resolveCategory("main", "docs");
+    await manager.resolveCategory("main", "inbox");
+    expect(loadTaxonomy).toHaveBeenCalledOnce();
   });
 });
