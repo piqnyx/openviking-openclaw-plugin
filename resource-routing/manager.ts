@@ -27,6 +27,13 @@ export type ResourceRoutingManagerLogger = {
   warn: (message: string) => void;
 };
 
+export class ResourceRoutingCategoryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResourceRoutingCategoryError";
+  }
+}
+
 export type ResourceRoutingAgentInitialization = {
   agentId: string;
   ok: boolean;
@@ -139,13 +146,17 @@ export class ResourceRoutingManager {
   async resolveCategory(agentId: string, categoryKey: string): Promise<{ categoryKey: string; categoryUri: string }> {
     const key = categoryKey.trim();
     if (!key) {
-      throw new Error("resource routing category must not be empty");
+      throw new ResourceRoutingCategoryError("resource routing category must not be empty");
     }
     const taxonomy = await this.getAgentTaxonomy(agentId);
-    return {
-      categoryKey: key,
-      categoryUri: resolveResourceCategoryUri(taxonomy, key),
-    };
+    try {
+      return {
+        categoryKey: key,
+        categoryUri: resolveResourceCategoryUri(taxonomy, key),
+      };
+    } catch (error) {
+      throw new ResourceRoutingCategoryError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async route(agentId: string, semanticInput: string): Promise<ResourceRoutingDecision> {
