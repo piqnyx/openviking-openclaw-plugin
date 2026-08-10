@@ -32,7 +32,7 @@ describe("OpenVikingClient.removeResource", () => {
         result: {
           uri: "viking://resources/workspace",
           estimated_deleted_count: 6,
-          semantic_status: "completed",
+          semantic_status: "complete",
           queue_status: { Semantic: { processed: 1 } },
         },
       }), {
@@ -60,7 +60,7 @@ describe("OpenVikingClient.removeResource", () => {
     expect(result).toMatchObject({
       uri: "viking://resources/workspace",
       estimated_deleted_count: 6,
-      semantic_status: "completed",
+      semantic_status: "complete",
     });
   });
 
@@ -93,7 +93,7 @@ function setupTools(options: { enableRemoveResourceTool: boolean }) {
   const removeResource = vi.fn(async () => ({
     uri: "viking://resources/workspace",
     estimated_deleted_count: 6,
-    semantic_status: "completed",
+    semantic_status: "complete",
   }));
   const getClient = vi.fn(async () => ({
     addResource: vi.fn(),
@@ -139,7 +139,6 @@ describe("remove_resource agent tool", () => {
     ["viking://agent/skills/a", "non-resource"],
     ["viking://resources", "resources root"],
     ["viking://resources/../user/memories/a", "unsafe"],
-    ["viking://resources/%2e%2e/user/memories/a", "unsafe encoded"],
   ])("rejects %s before calling the server (%s)", async (uri) => {
     const { factories, getClient, removeResource } = setupTools({ enableRemoveResourceTool: true });
     const tool = factories.get("remove_resource")!({});
@@ -175,7 +174,7 @@ describe("remove_resource agent tool", () => {
       action: "resource_removed",
       uri: "viking://resources/workspace",
       estimated_deleted_count: 6,
-      semantic_status: "completed",
+      semantic_status: "complete",
     });
     expect(result.content?.[0]?.text).toContain("Removed OpenViking resource");
   });

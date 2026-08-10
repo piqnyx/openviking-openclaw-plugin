@@ -213,6 +213,45 @@ export type RemoveResourceResult = {
   queue_status?: unknown;
 };
 
+export type RemovableResourceUriValidation =
+  | { ok: true; uri: string }
+  | { ok: false; reason: string };
+
+const RESOURCE_ROOT_URI = "viking://resources";
+
+export function validateRemovableResourceUri(value: string): RemovableResourceUriValidation {
+  const uri = value.trim().replace(/\/+$/, "");
+  if (!uri) {
+    return { ok: false, reason: "A resource URI is required." };
+  }
+  if (uri === RESOURCE_ROOT_URI) {
+    return {
+      ok: false,
+      reason: "Refusing to delete the viking://resources root. List it with ov_list and remove its child resources instead.",
+    };
+  }
+  if (!uri.startsWith(`${RESOURCE_ROOT_URI}/`)) {
+    return { ok: false, reason: `Refusing to delete non-resource URI: ${uri}` };
+  }
+
+  const relative = uri.slice(RESOURCE_ROOT_URI.length + 1);
+  const rawSegments = relative.split("/");
+  if (rawSegments.some((segment) => segment.length === 0)) {
+    return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
+  }
+  for (const segment of rawSegments) {
+    if (
+      segment === "." ||
+      segment === ".." ||
+      segment.includes("\\") ||
+      segment.includes("?")
+    ) {
+      return { ok: false, reason: `Refusing unsafe resource URI: ${uri}` };
+    }
+  }
+  return { ok: true, uri };
+}
+
 export type AddSkillInput = {
   path?: string;
   data?: unknown;
@@ -992,10 +1031,11 @@ export class OpenVikingClient {
   }
 
   async removeResource(input: RemoveResourceInput, actorPeerId?: string): Promise<RemoveResourceResult> {
-    const uri = input.uri.trim();
-    if (!uri) {
-      throw new Error("uri is required");
+    const validation = validateRemovableResourceUri(input.uri);
+    if (!validation.ok) {
+      throw new Error(validation.reason);
     }
+    const uri = validation.uri;
 
     const query = new URLSearchParams({
       uri,
