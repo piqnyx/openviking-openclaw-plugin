@@ -1,4 +1,9 @@
-import type { ParsedResourceRoutingConfig } from "./config.js";
+import {
+  appendResourceRoutingAudit,
+  createResourceRoutingAuditRecord,
+  type ResourceRoutingAuditRecord,
+} from "./audit.js";
+import { resolveAgentResourceRoutingPaths, type ParsedResourceRoutingConfig } from "./config.js";
 import { decideAutomaticResourceRoute, type ResourceRoutingDecision } from "./decision.js";
 import {
   ResourceEmbeddingClient,
@@ -8,6 +13,7 @@ import {
 import { renderResourceSemanticInput, type ResourceSemanticInputContext } from "./semantic-input.js";
 import {
   prepareAgentResourceRoutingState,
+  resourceEmbeddingModelIdentity,
   type PreparedAgentResourceRoutingState,
 } from "./state.js";
 import { resolveResourceCategoryUri } from "./taxonomy.js";
@@ -28,6 +34,7 @@ export type ResourceRoutingManagerOptions = {
   embeddingTransport?: ResourceRoutingHttpTransport;
   rerankerTransport?: ResourceRoutingHttpTransport;
   prepareState?: typeof prepareAgentResourceRoutingState;
+  appendAudit?: (filePath: string, record: ResourceRoutingAuditRecord) => Promise<void>;
 };
 
 export class ResourceRoutingManager {
@@ -35,6 +42,7 @@ export class ResourceRoutingManager {
   private readonly reranker: ResourceRerankerClient;
   private readonly statePromises = new Map<string, Promise<PreparedAgentResourceRoutingState>>();
   private readonly prepareState: typeof prepareAgentResourceRoutingState;
+  private readonly appendAudit: (filePath: string, record: ResourceRoutingAuditRecord) => Promise<void>;
 
   constructor(
     private readonly config: ParsedResourceRoutingConfig,
@@ -44,6 +52,7 @@ export class ResourceRoutingManager {
     this.embedder = new ResourceEmbeddingClient(config.embedding, options.embeddingTransport);
     this.reranker = new ResourceRerankerClient(config.reranker, options.rerankerTransport);
     this.prepareState = options.prepareState ?? prepareAgentResourceRoutingState;
+    this.appendAudit = options.appendAudit ?? appendResourceRoutingAudit;
   }
 
   isEnabled(): boolean {
@@ -117,6 +126,23 @@ export class ResourceRoutingManager {
     });
   }
 
+  private async appendAuditBestEffort(
+    filePath: string,
+    record: ResourceRoutingAuditRecord,
+  ): Promise<void> {
+    if (!this.config.audit.enabled) {
+      return;
+    }
+    try {
+      await this.appendAudit(filePath, record);
+    } catch (error) {
+      this.logger.warn(
+        `openviking: resource routing audit write failed for agent "${record.agentId}": ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   async routeResource(
     agentId: string,
     context: ResourceSemanticInputContext,
@@ -125,6 +151,52 @@ export class ResourceRoutingManager {
       ...context,
       agentId,
     });
-    return this.route(agentId, semanticInput);
+    const source = context.source ?? "";
+    const summary = context.summary;
+    const defaultAuditPath = resolveAgentResourceRoutingPaths(this.config, agentId).auditFile;
+    let state: PreparedAgentResourceRoutingState | undefined;
+
+    try {
+      state = await this.getAgentState(agentId);
+      const decision = await decideAutomaticResourceRoute({
+        semanticInput,
+        config: this.config,
+        state,
+        embedder: this.embedder,
+        reranker: this.reranker,
+      });
+      await this.appendAuditBestEffort(
+        state.paths.auditFile,
+        createResourceRoutingAuditRecord({
+          agentId,
+          source,
+          summary,
+          includeSummaryPreview: this.config.audit.includeSummaryPreview,
+          summaryPreviewChars: this.config.audit.summaryPreviewChars,
+          taxonomyHash: state.taxonomyHash,
+          embeddingModel: resourceEmbeddingModelIdentity(this.config),
+          decision,
+          outcome: "success",
+        }),
+      );
+      return decision;
+    } catch (error) {
+      await this.appendAuditBestEffort(
+        state?.paths.auditFile ?? defaultAuditPath,
+        createResourceRoutingAuditRecord({
+          agentId,
+          source,
+          summary,
+          includeSummaryPreview: this.config.audit.includeSummaryPreview,
+          summaryPreviewChars: this.config.audit.summaryPreviewChars,
+          taxonomyHash: state?.taxonomyHash,
+          embeddingModel: resourceEmbeddingModelIdentity(this.config),
+          outcome: "error",
+          errorCode: "routing_infrastructure_error",
+          errorMessage: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      throw error;
+    }
   }
 }
