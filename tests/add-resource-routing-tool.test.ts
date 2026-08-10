@@ -8,6 +8,19 @@ type ToolFactory = (ctx: Record<string, unknown>) => {
   execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
 };
 
+function makeCategory(key: string, uri: string) {
+  const segments = uri.split("/");
+  return {
+    key,
+    segment: segments.at(-1) ?? key,
+    description: `${key} category`,
+    routeable: true,
+    uri,
+    parentKey: null,
+    depth: 1,
+  };
+}
+
 function setup(options: {
   routingEnabled?: boolean;
   routeFailure?: Error;
@@ -22,19 +35,12 @@ function setup(options: {
     removeResource: vi.fn(),
     addSkill: vi.fn(),
   }));
-  const resolveCategory = vi.fn((_agentId: string, key: string) => ({
-    key,
-    uri: `viking://resources/${key}`,
-    routeable: true,
-  }));
+  const resolveCategory = vi.fn((_agentId: string, key: string) =>
+    makeCategory(key, `viking://resources/${key}`));
   const routeAutomatic = options.routeFailure
     ? vi.fn(async () => { throw options.routeFailure; })
     : vi.fn(async () => ({
-      category: {
-        key: "documents_guides",
-        uri: "viking://resources/documents/guides",
-        routeable: true,
-      },
+      category: makeCategory("documents_guides", "viking://resources/documents/guides"),
       semanticInput: "A setup guide for configuring OpenClaw.",
       decision: {
         categoryKey: "documents_guides",
