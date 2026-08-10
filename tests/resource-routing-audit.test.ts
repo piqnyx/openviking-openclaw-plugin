@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -55,7 +55,7 @@ describe("resource routing audit", () => {
     expect(record.outcome).toBe("error");
   });
 
-  it("appends one JSON object per line", async () => {
+  it("appends one private JSON object per line", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ov-routing-audit-"));
     const file = join(dir, "main.jsonl");
     const first = createResourceRoutingAuditRecord({
@@ -80,5 +80,8 @@ describe("resource routing audit", () => {
     const lines = (await readFile(file, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     expect(lines).toHaveLength(2);
     expect(lines.map((entry) => entry.outcome)).toEqual(["success", "error"]);
+    if (process.platform !== "win32") {
+      expect((await stat(file)).mode & 0o777).toBe(0o600);
+    }
   });
 });
