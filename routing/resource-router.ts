@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import type { ParsedResourceRoutingConfig } from "./resource-routing-config.js";
 import {
   loadResourceRoutingEmbeddingCache,
@@ -24,6 +26,12 @@ export type ResourceRoutingEmbeddingState = {
   categories: readonly ResourceRoutingEmbeddedCategory[];
 };
 
+export type ResourceRoutingDecisionTiming = {
+  embeddingMs: number;
+  rerankerMs?: number;
+  totalMs: number;
+};
+
 export type ResourceRoutingDecision = {
   categoryKey: string;
   uri: string;
@@ -35,6 +43,7 @@ export type ResourceRoutingDecision = {
     key: string;
     score: number;
   }[];
+  timing: ResourceRoutingDecisionTiming;
 };
 
 type BuildEmbeddingStateInput = {
@@ -157,7 +166,10 @@ export class ResourceRouter {
     if (typeof semanticInput !== "string" || !semanticInput.trim()) {
       throw new Error("resource routing semantic input must be a non-empty string");
     }
+    const started = performance.now();
+    const embeddingStarted = performance.now();
     const [queryEmbedding] = await this.#embedder.embed([semanticInput]);
+    const embeddingMs = performance.now() - embeddingStarted;
     if (!queryEmbedding) {
       throw new Error("resource routing embedder returned no query embedding");
     }
@@ -184,6 +196,10 @@ export class ResourceRouter {
         fallbackReason: "below_min_score",
         embeddingCandidates,
         rerankerUsed: false,
+        timing: {
+          embeddingMs,
+          totalMs: performance.now() - started,
+        },
       };
     }
 
@@ -203,14 +219,20 @@ export class ResourceRouter {
         fallback: false,
         embeddingCandidates,
         rerankerUsed: false,
+        timing: {
+          embeddingMs,
+          totalMs: performance.now() - started,
+        },
       };
     }
 
     const rerankCandidates = [top, second];
+    const rerankerStarted = performance.now();
     const reranked = await this.#reranker.rerank(
       semanticInput,
       rerankCandidates.map((candidate) => candidate.description),
     );
+    const rerankerMs = performance.now() - rerankerStarted;
     const rerankerScores = reranked.map((result) => {
       const candidate = rerankCandidates[result.index];
       if (!candidate) {
@@ -233,6 +255,11 @@ export class ResourceRouter {
       embeddingCandidates,
       rerankerUsed: true,
       rerankerScores,
+      timing: {
+        embeddingMs,
+        rerankerMs,
+        totalMs: performance.now() - started,
+      },
     };
   }
 }
