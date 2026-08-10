@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertResourceRoutingFallbackCategory,
   listRouteableResourceCategories,
   parseResourceTaxonomy,
   parseResourceTaxonomyYaml,
@@ -15,7 +16,6 @@ import {
 function makeTaxonomy() {
   return parseResourceTaxonomy({
     schemaVersion: 1,
-    fallback: "inbox",
     categories: {
       inbox: {
         segment: "__INBOX__",
@@ -66,7 +66,6 @@ describe("resource taxonomy", () => {
   it("accepts YAML and preserves semantic keys separately from path segments", () => {
     const taxonomy = parseResourceTaxonomyYaml(`
       schemaVersion: 1
-      fallback: inbox
       categories:
         inbox:
           segment: __INBOX__
@@ -81,18 +80,23 @@ describe("resource taxonomy", () => {
   });
 
   it.each([
-    [{ schemaVersion: 2, fallback: "inbox", categories: {} }, "schemaVersion"],
-    [{ schemaVersion: 1, fallback: "missing", categories: { inbox: { segment: "inbox", description: "x" } } }, "does not exist"],
-    [{ schemaVersion: 1, fallback: "inbox", categories: { inbox: { segment: "../x", description: "x" } } }, "safe resource URI segment"],
-    [{ schemaVersion: 1, fallback: "inbox", categories: { inbox: { segment: "inbox", description: "x", routeable: false } } }, "must be routeable"],
+    [{ schemaVersion: 2, categories: {} }, "schemaVersion"],
+    [{ schemaVersion: 1, categories: { inbox: { segment: "../x", description: "x" } } }, "safe resource URI segment"],
+    [{ schemaVersion: 1, fallback: "inbox", categories: { inbox: { segment: "inbox", description: "x" } } }, "unknown keys"],
   ])("rejects invalid taxonomy (%s)", (value, message) => {
     expect(() => parseResourceTaxonomy(value)).toThrow(message);
+  });
+
+  it("validates the config-owned fallback key against the taxonomy", () => {
+    const taxonomy = makeTaxonomy();
+    expect(() => assertResourceRoutingFallbackCategory(taxonomy, "inbox")).not.toThrow();
+    expect(() => assertResourceRoutingFallbackCategory(taxonomy, "missing")).toThrow("does not exist");
+    expect(() => assertResourceRoutingFallbackCategory(taxonomy, "grouping")).toThrow("must be routeable");
   });
 
   it("rejects duplicate YAML keys before taxonomy validation", () => {
     expect(() => parseResourceTaxonomyYaml(`
       schemaVersion: 1
-      fallback: inbox
       categories:
         inbox:
           segment: inbox
