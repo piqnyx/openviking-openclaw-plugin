@@ -14,6 +14,7 @@ import {
   planAddResourceRouting,
   type AddResourceRoutingManager,
 } from "../resource-routing/add-resource-plan.js";
+import { RESOURCE_ROUTING_MAX_SUMMARY_CHARS } from "../resource-routing/semantic-input.js";
 
 export type OpenVikingImportToolContext = {
   sessionKey?: string;
@@ -48,6 +49,55 @@ export type OpenVikingImportToolsDeps = {
   resourceRoutingManager?: AddResourceRoutingManager;
 };
 
+const BASE_ADD_RESOURCE_DESCRIPTION =
+  "Use only when the user explicitly asks to import, add, upload, save, or index a document, directory, URL, Git repository, or OpenClaw media attachment into OpenViking resources. " +
+  "Never use this during search, retrieval, URI reading, or search-result optimization; use ov_search and ov_read for those flows. " +
+  "For a '[media attached: /path ...]' document, set source to that exact local media path. Do not invent OpenViking upload REST endpoints.";
+
+function addResourceDescription(routingEnabled: boolean): string {
+  if (!routingEnabled) {
+    return BASE_ADD_RESOURCE_DESCRIPTION;
+  }
+  return (
+    "Use only when the user explicitly asks to import, add, upload, save, or index a document, directory, URL, Git repository, or OpenClaw media attachment into OpenViking resources. " +
+    "Never use this during search, retrieval, URI reading, or search-result optimization; use ov_search and ov_read for those flows. " +
+    "When no explicit destination is supplied, always provide summary as one short sentence describing the resource semantic content and purpose; do not merely repeat its filename, path, MIME type, or storage location. " +
+    "Explicit to or parent overrides all routing. Explicit category selects an existing configured taxonomy category without semantic classification. Do not invent category names or viking:// URIs. " +
+    "For a '[media attached: /path ...]' document, set source to that exact local media path. Do not invent OpenViking upload REST endpoints."
+  );
+}
+
+function addResourceParameters(routingEnabled: boolean) {
+  const common = {
+    source: Type.String({ description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL" }),
+    to: Type.Optional(Type.String({ description: "Exact target URI, e.g. viking://resources/project-docs" })),
+    parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources" })),
+    create_parent: Type.Optional(Type.Boolean({ description: "Create an explicitly supplied parent path when missing." })),
+    reason: Type.Optional(Type.String({ description: "Reason or note for adding this resource" })),
+    instruction: Type.Optional(Type.String({ description: "Processing instruction for semantic extraction" })),
+    wait: Type.Optional(Type.Boolean({ description: "Wait for processing to complete" })),
+    timeout: Type.Optional(Type.Number({ description: "Timeout in seconds when wait is true" })),
+  };
+  if (!routingEnabled) {
+    return Type.Object(common);
+  }
+  return Type.Object({
+    source: common.source,
+    to: Type.Optional(Type.String({ description: "Exact target URI. Overrides parent, category, and automatic routing." })),
+    parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources. Overrides category and automatic routing." })),
+    category: Type.Optional(Type.String({ description: "Existing semantic category key from the configured per-agent resource taxonomy. Do not invent category names." })),
+    summary: Type.Optional(Type.String({
+      maxLength: RESOURCE_ROUTING_MAX_SUMMARY_CHARS,
+      description: "One short sentence describing semantic content and purpose. Required only for automatic routing when no to, parent, or category is supplied.",
+    })),
+    create_parent: Type.Optional(Type.Boolean({ description: "Create an explicitly supplied parent path when missing. Automatic/category routing sets this true itself." })),
+    reason: Type.Optional(Type.String({ description: "OpenViking reason/note for adding this resource. This is not the routing summary." })),
+    instruction: common.instruction,
+    wait: common.wait,
+    timeout: common.timeout,
+  });
+}
+
 function formatResourceImportText(result: AddResourceResult): string {
   const root = result.root_uri ? ` ${result.root_uri}` : "";
   const warnings = result.warnings?.length ? ` Warnings: ${result.warnings.join("; ")}` : "";
@@ -80,28 +130,13 @@ function formatSkillImportText(result: AddSkillResult): string {
 
 export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): void {
   if (deps.enableAddResourceTool) {
+    const routingEnabled = deps.resourceRoutingManager?.isEnabled() === true;
     deps.registerTool(
       (ctx: OpenVikingImportToolContext) => ({
         name: "add_resource",
         label: "Add Resource (OpenViking)",
-        description:
-          "Use only when the user explicitly asks to import, add, upload, save, or index a document, directory, URL, Git repository, or OpenClaw media attachment into OpenViking resources. " +
-          "Never use this during search, retrieval, URI reading, or search-result optimization; use ov_search and ov_read for those flows. " +
-          "For automatic resource routing, always provide summary as one short sentence describing the resource semantic content and purpose; do not merely repeat its filename, path, MIME type, or storage location. " +
-          "Explicit to or parent overrides all routing. Explicit category selects an existing configured taxonomy category without semantic classification. Do not invent category names or viking:// URIs. " +
-          "For a '[media attached: /path ...]' document, set source to that exact local media path. Do not invent OpenViking upload REST endpoints.",
-        parameters: Type.Object({
-          source: Type.String({ description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL" }),
-          to: Type.Optional(Type.String({ description: "Exact target URI, e.g. viking://resources/project-docs" })),
-          parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources. Overrides category and automatic routing." })),
-          category: Type.Optional(Type.String({ description: "Existing semantic category key from the configured per-agent resource taxonomy. Do not invent category names." })),
-          summary: Type.Optional(Type.String({ description: "One short sentence describing semantic content and purpose. Required only for automatic routing when no to, parent, or category is supplied." })),
-          create_parent: Type.Optional(Type.Boolean({ description: "Create an explicitly supplied parent path when missing. Automatic/category routing sets this true itself." })),
-          reason: Type.Optional(Type.String({ description: "Reason or note for adding this resource" })),
-          instruction: Type.Optional(Type.String({ description: "Processing instruction for semantic extraction" })),
-          wait: Type.Optional(Type.Boolean({ description: "Wait for processing to complete" })),
-          timeout: Type.Optional(Type.Number({ description: "Timeout in seconds when wait is true" })),
-        }),
+        description: addResourceDescription(routingEnabled),
+        parameters: addResourceParameters(routingEnabled),
         async execute(_toolCallId: string, params: Record<string, unknown>) {
           if (deps.isBypassedSession(ctx)) {
             return deps.makeBypassedToolResult("add_resource");
@@ -144,7 +179,7 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
             content: [{ type: "text" as const, text: formatResourceImportText(result) }],
             details: {
               action: "resource_imported",
-              routing: plan.details,
+              ...(routingEnabled ? { routing: plan.details } : {}),
               ...result,
             },
           };
