@@ -169,7 +169,7 @@ export class ResourceRoutingService {
         failed.push({ agentId, error: message });
         logger.error(
           `openviking: resource routing preload failed for agent ${agentId}: ${message}. ` +
-          "Automatic add_resource for this agent will fail closed until the configuration or local model service is fixed and the gateway is restarted.",
+          "Automatic add_resource for this agent remains fail-closed until the taxonomy/config or model service is fixed; restart the gateway after taxonomy/config changes.",
         );
       }
     }
@@ -203,7 +203,11 @@ export class ResourceRoutingService {
           embeddingModel: this.#config.embedding.model,
           rerankerModel: this.#config.reranker.model,
           decision,
-          timing: decision.timing,
+          timing: {
+            embeddingMs: decision.timing.embeddingMs,
+            rerankerMs: decision.timing.rerankerMs,
+            totalMs: performance.now() - started,
+          },
           status: "success",
         });
       }
