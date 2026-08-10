@@ -102,6 +102,25 @@ describe("ResourceEmbeddingClient", () => {
     await expect(new ResourceEmbeddingClient(cfg.embedding, malformed).embed(["x"]))
       .rejects.toThrow(/malformed JSON/);
   });
+
+  it("aborts a stalled transport at the configured timeout", async () => {
+    const cfg = parseResourceRoutingConfig({
+      embedding: { dimensions: 3, timeoutMs: 100 },
+    });
+    const stalled: ResourceRoutingHttpTransport = vi.fn(async (_url, init) => new Promise<Response>((_resolve, reject) => {
+      if (!init.signal) {
+        reject(new Error("missing AbortSignal"));
+        return;
+      }
+      init.signal.addEventListener("abort", () => reject(new Error("transport aborted")), { once: true });
+    }));
+
+    const started = Date.now();
+    await expect(new ResourceEmbeddingClient(cfg.embedding, stalled).embed(["x"]))
+      .rejects.toThrow(/transport aborted/);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(stalled).toHaveBeenCalledOnce();
+  });
 });
 
 describe("ResourceRerankerClient", () => {
