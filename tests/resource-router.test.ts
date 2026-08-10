@@ -63,8 +63,8 @@ const taxonomy = compileResourceTaxonomy({
   },
 });
 
-function embeddingClientFor(vector: number[], transportSpy?: ReturnType<typeof vi.fn>) {
-  const transport: HttpTransport = transportSpy ?? vi.fn(async () => new Response(JSON.stringify({
+function embeddingClientFor(vector: number[], transportOverride?: HttpTransport) {
+  const transport: HttpTransport = transportOverride ?? vi.fn(async () => new Response(JSON.stringify({
     data: [{ index: 0, embedding: vector }],
   }), { status: 200 }));
   return new ResourceRoutingEmbeddingClient({
@@ -104,7 +104,7 @@ describe("buildResourceRoutingEmbeddingState", () => {
       taxonomy,
       agentId: "main",
       config,
-      embedder: embeddingClientFor([1, 0], firstTransport as ReturnType<typeof vi.fn>),
+      embedder: embeddingClientFor([1, 0], firstTransport),
     });
     expect(first.source).toBe("recomputed");
     expect(first.cacheMissReason).toBe("missing");
@@ -117,7 +117,7 @@ describe("buildResourceRoutingEmbeddingState", () => {
       taxonomy,
       agentId: "main",
       config,
-      embedder: embeddingClientFor([1, 0], forbiddenTransport as ReturnType<typeof vi.fn>),
+      embedder: embeddingClientFor([1, 0], forbiddenTransport),
     });
     expect(second.source).toBe("cache");
     expect(forbiddenTransport).not.toHaveBeenCalled();
@@ -248,7 +248,7 @@ describe("ResourceRouter", () => {
         ],
       },
       embedder: embeddingClientFor([1, 0]),
-      reranker: rerankerClient(vi.fn(async () => new Response("reranker down", { status: 503 }))),
+      reranker: rerankerClient(vi.fn(async () => new Response("reranker down", { status: 503 })) as HttpTransport),
     });
 
     await expect(router.route("Security audit findings."))
