@@ -16,6 +16,25 @@ function jsonResponse(value: unknown): Response {
   });
 }
 
+function taxonomy() {
+  return parseResourceTaxonomy({
+    schemaVersion: 1,
+    categories: {
+      inbox: { segment: "__INBOX__", description: "Unclassified resources." },
+      alpha: { segment: "alpha", description: "Alpha project materials." },
+      beta: { segment: "beta", description: "Beta project materials." },
+      gamma: { segment: "gamma", description: "Gamma project materials." },
+    },
+  });
+}
+
+const embeddings = new Map([
+  ["inbox", [0, 1]],
+  ["alpha", [1, 0]],
+  ["beta", [0.99, 0.1]],
+  ["gamma", [0.98, 0.2]],
+]);
+
 describe("resource routing topK", () => {
   it("passes the configured cosine topK candidate set to the conditional reranker", async () => {
     const cfg = parseResourceRoutingConfig({
@@ -25,15 +44,6 @@ describe("resource routing topK", () => {
         topK: 3,
         minScore: -1,
         rerankBelowMargin: 2,
-      },
-    });
-    const taxonomy = parseResourceTaxonomy({
-      schemaVersion: 1,
-      categories: {
-        inbox: { segment: "__INBOX__", description: "Unclassified resources." },
-        alpha: { segment: "alpha", description: "Alpha project materials." },
-        beta: { segment: "beta", description: "Beta project materials." },
-        gamma: { segment: "gamma", description: "Gamma project materials." },
       },
     });
     const embeddingTransport: ResourceRoutingHttpTransport = async () => jsonResponse({
@@ -57,15 +67,7 @@ describe("resource routing topK", () => {
     const result = await decideAutomaticResourceRoute({
       semanticInput: "Gamma project release and maintenance notes.",
       config: cfg,
-      state: {
-        taxonomy,
-        embeddings: new Map([
-          ["inbox", [0, 1]],
-          ["alpha", [1, 0]],
-          ["beta", [0.99, 0.1]],
-          ["gamma", [0.98, 0.2]],
-        ]),
-      },
+      state: { taxonomy: taxonomy(), embeddings },
       embedder: new ResourceEmbeddingClient(cfg.embedding, embeddingTransport),
       reranker: new ResourceRerankerClient(cfg.reranker, rerankTransport),
     });
@@ -74,5 +76,36 @@ describe("resource routing topK", () => {
     expect(result.embeddingTop.map((candidate) => candidate.key)).toEqual(["alpha", "beta", "gamma"]);
     expect(result.categoryKey).toBe("gamma");
     expect(result.rerankerUsed).toBe(true);
+  });
+
+  it("never reranks when topK=1 because there is no competing candidate", async () => {
+    const cfg = parseResourceRoutingConfig({
+      enabled: true,
+      embedding: { dimensions: 2 },
+      retrieval: {
+        topK: 1,
+        minScore: -1,
+        rerankBelowMargin: 2,
+      },
+    });
+    const embeddingTransport: ResourceRoutingHttpTransport = async () => jsonResponse({
+      data: [{ index: 0, embedding: [1, 0] }],
+    });
+    const rerankTransport: ResourceRoutingHttpTransport = vi.fn(async () => {
+      throw new Error("reranker must not be called for topK=1");
+    });
+
+    const result = await decideAutomaticResourceRoute({
+      semanticInput: "Alpha project notes.",
+      config: cfg,
+      state: { taxonomy: taxonomy(), embeddings },
+      embedder: new ResourceEmbeddingClient(cfg.embedding, embeddingTransport),
+      reranker: new ResourceRerankerClient(cfg.reranker, rerankTransport),
+    });
+
+    expect(result.embeddingTop.map((candidate) => candidate.key)).toEqual(["alpha"]);
+    expect(result.categoryKey).toBe("alpha");
+    expect(result.rerankerUsed).toBe(false);
+    expect(rerankTransport).not.toHaveBeenCalled();
   });
 });
