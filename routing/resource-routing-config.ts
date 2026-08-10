@@ -203,9 +203,14 @@ function parseEndpoint(
   value: unknown,
   defaults: { baseUrl: string; model: string },
   label: string,
+  extraAllowedKeys: readonly string[] = [],
 ): ParsedResourceRoutingEndpointConfig {
   const endpoint = toRecord(value, label);
-  assertAllowedKeys(endpoint, ["baseUrl", "model", "apiKey", "headers", "timeoutMs"], label);
+  assertAllowedKeys(
+    endpoint,
+    ["baseUrl", "model", "apiKey", "headers", "timeoutMs", ...extraAllowedKeys],
+    label,
+  );
   const rawApiKey = endpoint.apiKey === undefined
     ? ""
     : stringValue(endpoint.apiKey, "", `${label}.apiKey`);
@@ -261,15 +266,11 @@ export function parseResourceRoutingConfig(value: unknown): ParsedResourceRoutin
   }
 
   const embeddingRaw = toRecord(cfg.embedding, "openviking resourceRouting.embedding");
-  assertAllowedKeys(
-    embeddingRaw,
-    ["baseUrl", "model", "apiKey", "headers", "timeoutMs", "dimensions"],
-    "openviking resourceRouting.embedding",
-  );
   const embedding = parseEndpoint(
     embeddingRaw,
     { baseUrl: DEFAULT_EMBEDDING_BASE_URL, model: DEFAULT_EMBEDDING_MODEL },
     "openviking resourceRouting.embedding",
+    ["dimensions"],
   );
 
   const reranker = parseEndpoint(
