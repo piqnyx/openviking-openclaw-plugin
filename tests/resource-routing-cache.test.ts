@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -113,11 +113,26 @@ describe("resource routing cache", () => {
     }
   });
 
-  it("writes cache atomically with private file permissions semantics", async () => {
+  it("writes and replaces cache atomically with mode 0600 and no temp-file debris", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ov-routing-cache-"));
     const path = join(dir, "nested", "cache.json");
-    const cache = makeCache();
-    await writeResourceRoutingCacheAtomic(path, cache);
-    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(cache);
+    const first = makeCache();
+    await writeResourceRoutingCacheAtomic(path, first);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(first);
+
+    const fileStat = await stat(path);
+    if (process.platform !== "win32") {
+      expect(fileStat.mode & 0o777).toBe(0o600);
+    }
+
+    const second: ResourceRoutingCacheDocument = {
+      ...first,
+      embeddingModel: "bge-m3-replaced",
+    };
+    await writeResourceRoutingCacheAtomic(path, second);
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(second);
+
+    const siblings = await readdir(dirname(path));
+    expect(siblings.filter((name) => name.startsWith("cache.json.tmp-"))).toEqual([]);
   });
 });
