@@ -296,6 +296,7 @@ const contextEnginePlugin = {
       isBypassedSession,
       makeBypassedToolResult,
       enableAddResourceTool: cfg.enableAddResourceTool,
+      enableRemoveResourceTool: cfg.enableRemoveResourceTool,
     });
 
     registerOpenVikingQueryTools({

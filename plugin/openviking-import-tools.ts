@@ -1,8 +1,11 @@
 import { Type } from "@sinclair/typebox";
 
+import { validateRemovableResourceUri } from "../client.js";
 import type {
   AddResourceInput,
   AddResourceResult,
+  RemoveResourceInput,
+  RemoveResourceResult,
   AddSkillInput,
   AddSkillResult,
 } from "../client.js";
@@ -25,6 +28,7 @@ export type OpenVikingImportSession = {
 
 export type OpenVikingImportClient = {
   addResource: (input: AddResourceInput, agentId?: string) => Promise<AddResourceResult>;
+  removeResource: (input: RemoveResourceInput, agentId?: string) => Promise<RemoveResourceResult>;
   addSkill: (input: AddSkillInput, agentId?: string) => Promise<AddSkillResult>;
 };
 
@@ -35,12 +39,31 @@ export type OpenVikingImportToolsDeps = {
   isBypassedSession: (ctx?: OpenVikingImportToolContext) => boolean;
   makeBypassedToolResult: (toolName: string) => unknown;
   enableAddResourceTool: boolean;
+  enableRemoveResourceTool: boolean;
 };
 
 function formatResourceImportText(result: AddResourceResult): string {
   const root = result.root_uri ? ` ${result.root_uri}` : "";
   const warnings = result.warnings?.length ? ` Warnings: ${result.warnings.join("; ")}` : "";
   return `Imported OpenViking resource.${root}${warnings}`.trim();
+}
+
+function formatResourceRemovalText(result: RemoveResourceResult, requestedUri: string): string {
+  const uri = result.uri ?? requestedUri;
+  const details: string[] = [];
+  if (typeof result.estimated_deleted_count === "number") {
+    details.push(`estimated deleted entries: ${result.estimated_deleted_count}`);
+  }
+  if (result.semantic_status === "complete") {
+    details.push("semantic refresh complete");
+  } else if (result.semantic_status === "queued") {
+    details.push("semantic refresh queued; consistency work is still pending");
+  } else if (result.semantic_status === "failed") {
+    details.push("semantic refresh failed after resource removal");
+  } else if (result.semantic_status) {
+    details.push(`semantic status: ${result.semantic_status}`);
+  }
+  return `Removed OpenViking resource: ${uri}.${details.length ? ` ${details.join("; ")}.` : ""}`;
 }
 
 function formatSkillImportText(result: AddSkillResult): string {
@@ -93,6 +116,65 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
         },
       }),
       { name: "add_resource" },
+    );
+  }
+
+  if (deps.enableRemoveResourceTool) {
+    deps.registerTool(
+      (ctx: OpenVikingImportToolContext) => ({
+        name: "remove_resource",
+        label: "Remove Resource (OpenViking)",
+        description:
+          "Use when the user explicitly asks to delete or remove content from OpenViking resources. " +
+          "This tool is restricted to descendants of viking://resources/ and must never be used for memories, sessions, skills, or other namespaces. " +
+          "To clear all resources, first use ov_list on viking://resources, then remove each top-level child; the viking://resources root itself cannot be deleted. " +
+          "Set recursive=true for a non-empty resource directory. Set wait=true when subsequent work must wait for OpenViking semantic refresh to finish.",
+        parameters: Type.Object({
+          uri: Type.String({
+            description: "Exact resource URI below viking://resources/, for example viking://resources/project-docs or viking://resources/project-docs/file.pdf. The viking://resources root itself is not allowed.",
+          }),
+          recursive: Type.Optional(Type.Boolean({
+            description: "Remove the entire subtree below uri. Required for non-empty resource directories; default false.",
+          })),
+          wait: Type.Optional(Type.Boolean({
+            description: "Wait for OpenViking semantic refresh associated with the removal to complete. The agent tool defaults to true; set false only when asynchronous cleanup is explicitly desired.",
+          })),
+          timeout: Type.Optional(Type.Number({
+            description: "Server-side wait timeout in seconds when wait=true.",
+          })),
+        }),
+        async execute(_toolCallId: string, params: Record<string, unknown>) {
+          if (deps.isBypassedSession(ctx)) {
+            return deps.makeBypassedToolResult("remove_resource");
+          }
+          const requestedUri = typeof params.uri === "string" ? params.uri : "";
+          const validation = validateRemovableResourceUri(requestedUri);
+          if (!validation.ok) {
+            return {
+              content: [{ type: "text" as const, text: validation.reason }],
+              details: { action: "rejected", uri: requestedUri || undefined },
+            };
+          }
+
+          const session = deps.resolvePluginSessionRouting(ctx);
+          const client = await deps.getClient(session.agentId);
+          const result = await client.removeResource({
+            uri: validation.uri,
+            recursive: typeof params.recursive === "boolean" ? params.recursive : undefined,
+            wait: typeof params.wait === "boolean" ? params.wait : true,
+            timeout: typeof params.timeout === "number" ? params.timeout : undefined,
+          }, session.actorPeerId);
+          return {
+            content: [{ type: "text" as const, text: formatResourceRemovalText(result, validation.uri) }],
+            details: {
+              action: "resource_removed",
+              ...result,
+              uri: result.uri ?? validation.uri,
+            },
+          };
+        },
+      }),
+      { name: "remove_resource" },
     );
   }
 

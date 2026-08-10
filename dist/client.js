@@ -10,6 +10,36 @@ import { defaultResourcePackager, } from "./adapters/resource-packager.js";
 function userSessionUri(sessionId) {
     return `viking://user/sessions/${encodeURIComponent(sessionId)}`;
 }
+const RESOURCE_ROOT_URI = "viking://resources";
+export function validateRemovableResourceUri(value) {
+    const uri = value.trim().replace(/\/+$/, "");
+    if (!uri) {
+        return { ok: false, reason: "A resource URI is required." };
+    }
+    if (uri === RESOURCE_ROOT_URI) {
+        return {
+            ok: false,
+            reason: "Refusing to delete the viking://resources root. List it with ov_list and remove its child resources instead.",
+        };
+    }
+    if (!uri.startsWith(`${RESOURCE_ROOT_URI}/`)) {
+        return { ok: false, reason: `Refusing to delete non-resource URI: ${uri}` };
+    }
+    const relative = uri.slice(RESOURCE_ROOT_URI.length + 1);
+    const rawSegments = relative.split("/");
+    if (rawSegments.some((segment) => segment.length === 0)) {
+        return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
+    }
+    for (const segment of rawSegments) {
+        if (segment === "." ||
+            segment === ".." ||
+            segment.includes("\\") ||
+            segment.includes("?")) {
+            return { ok: false, reason: `Refusing unsafe resource URI: ${uri}` };
+        }
+    }
+    return { ok: true, uri };
+}
 const DEFAULT_WAIT_REQUEST_TIMEOUT_MS = 120_000;
 export const DEFAULT_PHASE2_POLL_TIMEOUT_MS = 300_000;
 const WAIT_REQUEST_TIMEOUT_BUFFER_MS = 5_000;
@@ -498,6 +528,23 @@ export class OpenVikingClient {
     }
     async deleteSession(sessionId) {
         await this.request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    }
+    async removeResource(input, actorPeerId) {
+        const validation = validateRemovableResourceUri(input.uri);
+        if (!validation.ok) {
+            throw new Error(validation.reason);
+        }
+        const uri = validation.uri;
+        const query = new URLSearchParams({
+            uri,
+            recursive: String(input.recursive ?? false),
+            wait: String(input.wait ?? false),
+        });
+        if (typeof input.timeout === "number") {
+            query.set("timeout", String(input.timeout));
+        }
+        const requestTimeoutMs = input.wait ? resolveWaitRequestTimeoutMs(this.timeoutMs, input.timeout) : undefined;
+        return this.request(`/api/v1/fs?${query.toString()}`, { method: "DELETE" }, requestTimeoutMs, actorPeerId);
     }
     async deleteUri(uri, actorPeerId) {
         await this.request(`/api/v1/fs?uri=${encodeURIComponent(uri)}&recursive=false`, {

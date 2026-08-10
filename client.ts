@@ -197,6 +197,61 @@ export type AddResourceResult = {
   meta?: unknown;
 };
 
+export type RemoveResourceInput = {
+  uri: string;
+  recursive?: boolean;
+  wait?: boolean;
+  timeout?: number;
+};
+
+export type RemoveResourceResult = {
+  uri?: string;
+  estimated_deleted_count?: number;
+  memory_cleanup?: unknown;
+  semantic_root_uri?: string;
+  semantic_status?: string;
+  queue_status?: unknown;
+};
+
+export type RemovableResourceUriValidation =
+  | { ok: true; uri: string }
+  | { ok: false; reason: string };
+
+const RESOURCE_ROOT_URI = "viking://resources";
+
+export function validateRemovableResourceUri(value: string): RemovableResourceUriValidation {
+  const uri = value.trim().replace(/\/+$/, "");
+  if (!uri) {
+    return { ok: false, reason: "A resource URI is required." };
+  }
+  if (uri === RESOURCE_ROOT_URI) {
+    return {
+      ok: false,
+      reason: "Refusing to delete the viking://resources root. List it with ov_list and remove its child resources instead.",
+    };
+  }
+  if (!uri.startsWith(`${RESOURCE_ROOT_URI}/`)) {
+    return { ok: false, reason: `Refusing to delete non-resource URI: ${uri}` };
+  }
+
+  const relative = uri.slice(RESOURCE_ROOT_URI.length + 1);
+  const rawSegments = relative.split("/");
+  if (rawSegments.some((segment) => segment.length === 0)) {
+    return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
+  }
+  for (const segment of rawSegments) {
+    if (
+      segment === "." ||
+      segment === ".." ||
+      segment.includes("\\") ||
+      segment.includes("?")
+    ) {
+      return { ok: false, reason: `Refusing unsafe resource URI: ${uri}` };
+    }
+  }
+  return { ok: true, uri };
+}
+
 export type AddSkillInput = {
   path?: string;
   data?: unknown;
@@ -974,6 +1029,33 @@ export class OpenVikingClient {
   async deleteSession(sessionId: string): Promise<void> {
     await this.request(`/api/v1/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
   }
+
+  async removeResource(input: RemoveResourceInput, actorPeerId?: string): Promise<RemoveResourceResult> {
+    const validation = validateRemovableResourceUri(input.uri);
+    if (!validation.ok) {
+      throw new Error(validation.reason);
+    }
+    const uri = validation.uri;
+
+    const query = new URLSearchParams({
+      uri,
+      recursive: String(input.recursive ?? false),
+      wait: String(input.wait ?? false),
+    });
+    if (typeof input.timeout === "number") {
+      query.set("timeout", String(input.timeout));
+    }
+
+    const requestTimeoutMs =
+      input.wait ? resolveWaitRequestTimeoutMs(this.timeoutMs, input.timeout) : undefined;
+    return this.request<RemoveResourceResult>(
+      `/api/v1/fs?${query.toString()}`,
+      { method: "DELETE" },
+      requestTimeoutMs,
+      actorPeerId,
+    );
+  }
+
   async deleteUri(uri: string, actorPeerId?: string): Promise<void> {
     await this.request(`/api/v1/fs?uri=${encodeURIComponent(uri)}&recursive=false`, {
       method: "DELETE",

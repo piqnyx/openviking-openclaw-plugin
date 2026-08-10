@@ -1,79 +1,123 @@
-# OpenViking для OpenClaw — по отдельному аккаунту на агента
+# OpenViking for OpenClaw with per-agent account isolation
 
-Форк [`@openviking/openclaw-plugin`](https://github.com/volcengine/OpenViking/tree/main/examples/openclaw-plugin)
-версии **2026.7.15**. Единственное отличие: плагин выбирает API-ключ OpenViking
-по тому, какой агент OpenClaw делает запрос, вместо одного общего ключа на весь
-гейтвей.
+This repository is a focused fork of the OpenViking OpenClaw context-engine plugin, based on upstream plugin version **2026.7.15**.
 
-Апстрим разделяет агентов только «пирами» внутри одного аккаунта
-(`peer_role: "assistant"`) — общая файловая система, общие ресурсы, разделение
-только на уровне выборки. Здесь каждому агенту соответствует свой
-аккаунт/пользователь на сервере OpenViking, поэтому изоляция проходит по границе
-арендатора: чужое пространство недоступно ни на чтение, ни на поиск, ни через
-ресурсы, и в веб-панели OpenViking аккаунты видны по отдельности.
+The fork keeps the upstream context-engine behavior while routing each OpenClaw agent to a separate OpenViking account/API key. Release **2026.7.15-isolation.6** also adds a guarded `remove_resource` tool backed by the OpenViking filesystem DELETE API.
 
-Плагин при этом работает в режиме `peer_role: "none"` — он считает, что сервер
-принадлежит ему одному, и не создаёт вложенных папок под пиров. Разделение
-целиком на стороне сервера, по ключу.
+## Design goals
 
-## Что именно изменено относительно апстрима
+- Preserve upstream OpenViking/OpenClaw behavior unless a change is required for per-agent account isolation or `remove_resource`.
+- Keep each OpenClaw agent in a separate OpenViking account.
+- Route unattributed traffic to a dedicated system account instead of guessing another agent.
+- Keep destructive resource deletion disabled unless explicitly enabled.
+- Let OpenViking perform deletion, vector cleanup, resource-memory reference cleanup, and semantic refresh using its own server-side implementation.
+- Return OpenViking deletion status to the calling agent instead of reporting success before consistency work has finished.
 
-| Файл | Изменение |
-|---|---|
-| `agent-keys.ts` | Новый. Чтение файла ключей, правила fail-closed |
-| `plugin/openviking-client-runtime.ts` | Пул клиентов: по одному на аккаунт OpenViking вместо единственного |
-| `plugin/openviking-session-routing-runtime.ts` | Нераспознанная сессия больше не выдаёт себя за агента `main` |
-| `config.ts`, `openclaw.plugin.json` | Новая опция `agentKeysFile` |
-| ~12 файлов рантайма | `getClient()` → `getClient(agentId)`; идентификатор агента доводится до места выбора ключа |
+## Compatibility
 
-Остальной код апстримовый и не тронут.
+| Component | Version |
+| --- | --- |
+| Forked OpenViking OpenClaw plugin | 2026.7.15 |
+| This release | 2026.7.15-isolation.6 |
+| Minimum OpenClaw | 2026.5.27 |
+| Minimum OpenViking for this release | 0.4.4 |
+| Recommended/tested OpenViking | 0.4.12 |
 
-## Установка
+`remove_resource` relies on the OpenViking filesystem DELETE API with `wait`/`timeout` support and semantic cleanup status. OpenViking 0.4.12 is the deployment target used for the final implementation audit.
 
-Предполагается, что OpenClaw уже стоит, а на сервере OpenViking заранее созданы
-аккаунты и пользователи — по одному на агента плюс системный:
+## Changes from upstream
 
-```
-openclaw-system / agent-system     ← резервный, для неатрибутированного трафика
+The isolation layer is intentionally narrow:
+
+| Area | Change |
+| --- | --- |
+| `agent-keys.ts` | Loads the per-agent API-key map and enforces fail-closed key rules. |
+| `plugin/openviking-client-runtime.ts` | Maintains one OpenViking client per configured account instead of one shared client. |
+| `plugin/openviking-session-routing-runtime.ts` | Sends unresolved sessions to the system account instead of guessing `main`. |
+| `config.ts`, `openclaw.plugin.json` | Add `agentKeysFile` and related configuration. |
+| Runtime call sites | Pass the resolved OpenClaw agent ID to client selection. |
+
+Release `isolation.6` adds only the resource-removal path on top of that baseline:
+
+| Area | Change |
+| --- | --- |
+| `client.ts` | Adds the OpenViking `removeResource()` client call and a resource-only destructive URI guard. |
+| `plugin/openviking-import-tools.ts` | Registers the agent-facing `remove_resource` tool. |
+| `config.ts`, `registries/openviking-tools.ts` | Add the explicit destructive-tool gate and the `resource_manage` tool group. |
+| Plugin manifest/schema | Expose `enableRemoveResourceTool` and `remove_resource`. |
+| Tests | Cover API contract, destructive boundary, per-agent routing, wait behavior, and configuration gating. |
+
+The existing `add_resource` path, memory tools, session routing logic, context engine, recall logic, and per-agent client runtime are not rewritten for `remove_resource`.
+
+## Account model
+
+Create one OpenViking account/user for every OpenClaw agent plus a system fallback account. For example:
+
+```text
+openclaw-system / agent-system
 openclaw-main   / agent-main
 openclaw-igor   / agent-igor
-...
+openclaw-kate   / agent-kate
 ```
 
-Сборка и установка:
+The plugin normally runs with:
+
+```jsonc
+{
+  "peer_role": "none",
+  "peer_prefix": ""
+}
+```
+
+Isolation is therefore enforced by the OpenViking account/API-key boundary rather than by peer folders inside one shared account.
+
+## Build and verify
 
 ```bash
-cd /home/openclaw/memory/openviking-openclaw-plugin && npm install && npm run verify
+npm ci
+npm run verify
+npm run typecheck
 ```
 
-`verify` — это сборка плюс тесты. После неё:
+`npm run verify` performs a clean TypeScript build and runs the Vitest suite. `npm run typecheck` checks the full TypeScript project, including tests.
+
+OpenClaw loads `dist/`, so rebuild after any source change.
+
+## OpenClaw installation
+
+Register the checked-out plugin directory as a linked plugin:
 
 ```bash
-openclaw plugins install --link /home/openclaw/memory/openviking-openclaw-plugin --force
+openclaw plugins install --link /path/to/openviking-openclaw-plugin --force
 ```
 
-`--link` регистрирует каталог как есть, без копирования: пересобрал — и новый
-`dist/` подхватится после перезапуска. `--force` нужен потому, что источник не
-ClawHub.
+The plugin ID remains `openviking`, matching upstream. Do not register the upstream plugin and this fork at the same time because both use the same plugin ID and context-engine slot.
 
-Идентификатор плагина остался `openviking`, поэтому конфиг, имена инструментов и
-слот совпадают с апстримом. Ставить обе версии одновременно нельзя — они займут
-один и тот же id.
+If a fresh installation is disabled until configuration is present:
 
-## Конфигурация в `openclaw.json`
+```bash
+openclaw plugins enable openviking
+```
+
+## OpenClaw configuration
+
+Example:
 
 ```jsonc
 {
   "plugins": {
-    "slots": { "contextEngine": "openviking" },
+    "slots": {
+      "contextEngine": "openviking"
+    },
     "entries": {
       "openviking": {
         "config": {
           "baseUrl": "http://127.0.0.1:1933",
           "peer_role": "none",
           "peer_prefix": "",
-          "apiKey": "<ключ аккаунта openclaw-system>",
-          "agentKeysFile": "/home/openclaw/memory/secrets/openviking-keys/secrets.conf"
+          "apiKey": "<system-account-api-key>",
+          "agentKeysFile": "/home/openclaw/memory/secrets/openviking-keys/secrets.conf",
+          "enableRemoveResourceTool": true
         }
       }
     }
@@ -81,110 +125,198 @@ ClawHub.
 }
 ```
 
-- `apiKey` — ключ **системного** аккаунта. Это резерв: в него попадает всё, что
-  не удалось привязать к конкретному агенту.
-- `peer_prefix` обязан быть пустым: имена в файле ключей сравниваются с
-  идентификатором агента OpenClaw, а непустой префикс превратил бы `main` в
-  `<prefix>_main`.
-- `agentKeysFile` можно не указывать — тогда берётся
-  `/home/openclaw/memory/secrets/openviking-keys/secrets.conf` или значение
-  переменной окружения `OPENVIKING_AGENT_KEYS_FILE`.
+Important fields:
 
-Если плагин ставится с нуля, OpenClaw может оставить его выключенным до
-появления конфига — тогда после правки `openclaw.json`:
+- `apiKey` is the system-account key used only when an OpenClaw request cannot be attributed to a configured agent.
+- `agentKeysFile` maps OpenClaw agent IDs to their dedicated OpenViking API keys.
+- `peer_prefix` should remain empty for the account-per-agent deployment model.
+- `enableRemoveResourceTool` is `false` unless explicitly set to `true`.
 
-```bash
-openclaw plugins enable openviking
+Enabling `remove_resource` through `enabledTools`, `enabledTools: "all"`, or a tool group does **not** bypass the destructive safety flag. `enableRemoveResourceTool: true` is required. `disabledTools` still wins and can disable it again.
+
+## Agent key file
+
+Default path:
+
+```text
+/home/openclaw/memory/secrets/openviking-keys/secrets.conf
 ```
 
-## Файл ключей
+Recommended permissions:
 
 ```bash
 install -d -m 700 /home/openclaw/memory/secrets/openviking-keys
 install -m 600 /dev/null /home/openclaw/memory/secrets/openviking-keys/secrets.conf
 ```
 
-Содержимое — по строке на агента, имя слева совпадает с id агента в
-`agents.entries` OpenClaw:
+Example content:
 
 ```ini
-# /home/openclaw/memory/secrets/openviking-keys/secrets.conf
-main  = <ключ аккаунта openclaw-main>
-igor  = <ключ аккаунта openclaw-igor>
-willi = <ключ аккаунта openclaw-willi>
-kate  = <ключ аккаунта openclaw-kate>
-tina  = <ключ аккаунта openclaw-tina>
+main = <openclaw-main-api-key>
+igor = <openclaw-igor-api-key>
+kate = <openclaw-kate-api-key>
 ```
 
-Комментарии — `#` или `;`, значение можно брать в кавычки, заголовок секции
-`[agents]` допускается и игнорируется. Файл читается **один раз при старте**:
-добавили агента — перезапустили гейтвей.
+The parser accepts blank lines, `#`/`;` comments, quoted values, and an optional `[agents]` section header.
 
-Плагин откажется стартовать (и уйдёт в setup-only режим с ошибкой в логе), если:
+The plugin refuses unsafe key maps, including:
 
-- файл указан, но не читается;
-- строка не разбирается, имя агента содержит недопустимые символы или значение пустое;
-- один агент объявлен дважды;
-- **два агента используют один и тот же ключ** — это молча слило бы их память;
-- ключ агента совпадает с системным;
-- ключи агентов заданы, а системный `apiKey` пустой.
+- duplicate agent IDs;
+- empty or malformed entries;
+- two agents sharing the same API key;
+- an agent key equal to the system key;
+- configured agent keys without a system fallback key;
+- an explicitly configured key file that cannot be read.
 
-Права мягче `600` — предупреждение в лог, не отказ.
+A key file readable by users other than its owner produces a permissions warning. The file is loaded at gateway startup, so restart the gateway after changing it.
 
-## Как определяется агент и что будет, если не определился
+## Agent attribution
 
-Агент берётся из контекста OpenClaw: из `agentId`, который сообщают хуки, либо из
-ключа сессии вида `agent:<id>:...`. Оба варианта работают независимо от
-`peer_role`.
+The plugin resolves the agent from OpenClaw context and session identity, then selects that agent's OpenViking client/API key.
 
-Если привязать сессию к агенту не удалось, апстрим молча подставляет литерал
-`main`. Здесь это отдельный случай: запрос уходит в системный аккаунт, а в лог
-пишется предупреждение (один раз на сессию):
+If attribution fails, the request is routed to the dedicated system OpenViking account. It is never silently assigned to another configured agent.
 
-```
-openviking: no agent could be resolved for session <id> — routing to the system
-OpenViking account instead of guessing an agent
+Routing diagnostics can be enabled with:
+
+```jsonc
+{
+  "logFindRequests": true
+}
 ```
 
-То же самое происходит с агентом, которого нет в файле ключей. Данные никогда не
-попадают в аккаунт другого агента — только в свой или в системный.
+or:
 
-Без агентского контекста работает ровно одна вещь — health-check при старте
-гейтвея; он идёт под системным ключом.
+```bash
+OPENVIKING_LOG_ROUTING=1
+```
 
-## Проверка после запуска
+API keys are not written to routing logs.
+
+## `remove_resource`
+
+`remove_resource` deletes a file or directory below `viking://resources/` through the OpenViking filesystem API.
+
+Example agent-level parameters:
+
+```json
+{
+  "uri": "viking://resources/workspace",
+  "recursive": true,
+  "wait": true,
+  "timeout": 900
+}
+```
+
+### Safety boundary
+
+The tool accepts only descendants of:
+
+```text
+viking://resources/
+```
+
+It refuses:
+
+- `viking://resources` itself;
+- memories, sessions, skills, and other namespaces;
+- empty path segments;
+- raw `.` or `..` path segments;
+- raw backslash path separators;
+- ambiguous raw `?` suffixes.
+
+The validator intentionally does **not** percent-decode Viking URI path components. OpenViking treats percent sequences in the received Viking URI as literal path data; the plugin does not invent a second decoding step before a destructive operation.
+
+To remove all resources, list `viking://resources` first and remove its top-level children individually. The root itself cannot be deleted through this tool.
+
+### Recursive deletion
+
+`recursive` defaults to `false`, matching the OpenViking API. A non-empty directory therefore requires:
+
+```json
+{
+  "recursive": true
+}
+```
+
+The plugin does not silently promote a failed non-recursive request into a recursive delete.
+
+### Waiting and consistency
+
+The agent-facing tool defaults `wait` to `true`.
+
+With `wait=true`, the plugin sends the DELETE request with OpenViking wait semantics and waits for that request to finish. OpenViking remains responsible for filesystem deletion, vector-index cleanup, resource-memory reference cleanup, and semantic refresh.
+
+The plugin does not perform its own Qdrant deletion, reindex, relation repair, or semantic refresh.
+
+The structured OpenViking result is propagated in tool `details`, including fields such as:
+
+- `uri`;
+- `estimated_deleted_count`;
+- `memory_cleanup`;
+- `semantic_root_uri`;
+- `semantic_status`;
+- `queue_status`.
+
+Known semantic states on the tested OpenViking server are:
+
+- `complete`: the waited semantic refresh completed;
+- `queued`: consistency work was queued and is still pending, normally when `wait=false` was explicitly requested;
+- `failed`: the resource was removed but semantic refresh reported a failure.
+
+If the DELETE request itself fails or times out, the tool throws instead of returning a false success. Because OpenViking deletion is idempotent for valid URIs, callers can inspect the resource state and retry deliberately when necessary.
+
+### Tool groups
+
+`remove_resource` belongs to:
+
+```text
+resource_manage
+```
+
+The existing import group remains:
+
+```text
+import = add_resource, add_skill
+```
+
+This keeps destructive resource management separate from resource ingestion.
+
+## Post-start checks
+
+Confirm that per-agent credentials loaded:
 
 ```bash
 grep -a "openviking: per-agent credentials loaded" /tmp/openclaw/openclaw-$(date +%F).log
 ```
 
-Ожидаемая строка перечисляет агентов, для которых нашлись ключи (сами ключи не
-логируются никогда). Дальше — написать каждому агенту по факту, сделать коммит
-сессии и посмотреть в веб-панели OpenViking, что аккаунты заполняются по
-отдельности.
+Then verify, in this order:
 
-Подробный лог маршрутизации включается `"logFindRequests": true` в конфиге
-плагина либо `OPENVIKING_LOG_ROUTING=1`; в нём видно, какой аккаунт выбран для
-запроса.
+1. the `openviking` context engine is loaded;
+2. normal recall still works for an existing agent;
+3. `add_resource` still imports a disposable resource into that agent's account;
+4. another agent cannot see that resource through its own OpenViking account;
+5. `remove_resource` removes the disposable resource;
+6. a recursive test directory disappears together with its descendants;
+7. a protected URI such as `viking://resources` is rejected before an HTTP DELETE is sent.
 
-## Обновление
+## Updating an existing linked installation
+
+For an existing checkout:
 
 ```bash
-cd /home/openclaw/memory/openviking-openclaw-plugin && npm run verify
+npm ci
+npm run verify
+npm run typecheck
 ```
 
-и перезапуск гейтвея. Пересобирать нужно после любой правки исходников — OpenClaw
-загружает `dist/`, а не `.ts`.
+After rebuilding, restart the OpenClaw gateway so it loads the new `dist/` files.
 
-## Замечания
+For a production replacement, keep the previous working source directory and the existing agent-key file intact until the new checkout has passed startup and smoke checks. This makes rollback a registration/configuration change instead of a data-recovery exercise.
 
-- Смена ключа у агента означает смену аккаунта: старая память останется в
-  прежнем аккаунте и перестанет находиться. Ключи стоит считать постоянными.
-- При `tools.profile: "minimal"` инструменты плагина нужно перечислять и в
-  `tools.alsoAllow`, и в `tools.sandbox.tools.allow` у каждого агента.
-- Слот `contextEngine` эксклюзивный: `openviking` вытесняет `legacy` и
-  `memory-core`.
+## Minimal tool profiles
 
-## Лицензия
+When OpenClaw uses a restrictive tool profile, plugin tools must also be allowed by the relevant OpenClaw tool policy. Enabling a tool in this plugin does not override OpenClaw's own tool/sandbox permissions.
 
-MIT, как и у апстрима.
+## License
+
+MIT, matching the upstream OpenViking OpenClaw plugin.
