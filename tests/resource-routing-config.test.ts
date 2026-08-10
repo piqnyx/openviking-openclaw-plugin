@@ -16,6 +16,7 @@ describe("resource routing config", () => {
       endpointPath: "/v1/embeddings",
       model: "bge-m3",
       dimensions: 1024,
+      cacheKey: "",
     });
     expect(cfg.reranker).toMatchObject({
       baseUrl: "http://127.0.0.1:18080",
@@ -30,9 +31,10 @@ describe("resource routing config", () => {
     expect(cfg.semanticInputTemplate).toBe("{{summary}}");
     expect(cfg.fallbackCategory).toBe("inbox");
     expect(cfg.failurePolicy).toBe("error");
+    expect(cfg.logDecisions).toBe(false);
   });
 
-  it("accepts custom model endpoints, auth material, thresholds and semantic template", () => {
+  it("accepts custom model endpoints, auth material, cache identity, thresholds and semantic template", () => {
     const cfg = parseResourceRoutingConfig({
       enabled: true,
       taxonomyFile: "/srv/openviking/taxonomies/{agentId}.yaml",
@@ -40,6 +42,7 @@ describe("resource routing config", () => {
       auditFile: "/srv/openviking/audit/{agentId}.jsonl",
       fallbackCategory: "unclassified",
       semanticInputTemplate: "{{summary}}\nSource kind: {{sourceKind}}",
+      logDecisions: true,
       embedding: {
         baseUrl: "https://embed.example.test/api",
         endpointPath: "/v1/embeddings",
@@ -48,6 +51,7 @@ describe("resource routing config", () => {
         model: "custom-embed",
         timeoutMs: 9000,
         dimensions: 1536,
+        cacheKey: "weights-2026-08",
       },
       reranker: {
         baseUrl: "https://rerank.example.test",
@@ -57,7 +61,7 @@ describe("resource routing config", () => {
         timeoutMs: 11000,
       },
       retrieval: {
-        topK: 4,
+        topK: 128,
         minScore: 0.51,
         rerankBelowMargin: 0.08,
       },
@@ -71,11 +75,18 @@ describe("resource routing config", () => {
     expect(cfg.enabled).toBe(true);
     expect(cfg.embedding.model).toBe("custom-embed");
     expect(cfg.embedding.dimensions).toBe(1536);
+    expect(cfg.embedding.cacheKey).toBe("weights-2026-08");
     expect(cfg.embedding.headers).toEqual({ "X-Tenant": "alpha" });
     expect(cfg.reranker.model).toBe("custom-reranker");
-    expect(cfg.retrieval.topK).toBe(4);
+    expect(cfg.retrieval.topK).toBe(128);
     expect(cfg.fallbackCategory).toBe("unclassified");
     expect(cfg.semanticInputTemplate).toContain("{{sourceKind}}");
+    expect(cfg.logDecisions).toBe(true);
+  });
+
+  it("allows a large configurable cosine candidate set but keeps a hard operational cap", () => {
+    expect(parseResourceRoutingConfig({ retrieval: { topK: 1000 } }).retrieval.topK).toBe(1000);
+    expect(() => parseResourceRoutingConfig({ retrieval: { topK: 1001 } })).toThrow(/between 1 and 1000/);
   });
 
   it("resolves isolated per-agent paths from templates", () => {
@@ -94,9 +105,24 @@ describe("resource routing config", () => {
     },
   );
 
-  it("requires summary to remain part of the semantic input", () => {
+  it("requires a well-formed summary placeholder in semantic input templates", () => {
     expect(() => parseResourceRoutingConfig({ semanticInputTemplate: "{{filename}}" })).toThrow(/must include \{\{summary\}\}/);
     expect(() => parseResourceRoutingConfig({ semanticInputTemplate: "{{summary}} {{madeUpField}}" })).toThrow(/unknown fields/);
+    expect(() => parseResourceRoutingConfig({ semanticInputTemplate: "{{summary" })).toThrow(/malformed placeholder/);
+  });
+
+  it("rejects unsafe HTTP auth/header configuration before runtime requests", () => {
+    expect(() => parseResourceRoutingConfig({
+      embedding: { apiKey: "abc\r\nInjected: yes" },
+    })).toThrow(/must not contain CR, LF, or NUL/);
+
+    expect(() => parseResourceRoutingConfig({
+      reranker: { headers: { "Bad Header": "value" } },
+    })).toThrow(/invalid HTTP header name/);
+
+    expect(() => parseResourceRoutingConfig({
+      reranker: { headers: { "X-Test": "ok\nInjected" } },
+    })).toThrow(/must not contain CR, LF, or NUL/);
   });
 
   it("rejects masking infrastructure failures through a configurable fallback policy", () => {
