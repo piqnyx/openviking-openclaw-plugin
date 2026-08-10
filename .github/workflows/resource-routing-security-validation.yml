@@ -1,0 +1,151 @@
+name: Resource routing security validation
+
+on:
+  push:
+    branches:
+      - agent/resource-routing-v1
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Apply reviewed URI and endpoint hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('resource-routing/taxonomy.ts')
+          s = p.read_text()
+          old = r'''const SEGMENT_RE = /^[^/\\?\0]+$/u;'''
+          new = r'''const SEGMENT_RE = /^[\p{L}\p{N}\p{M}_.-]+$/u;'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          if new not in s:
+              raise SystemExit('taxonomy segment regex hardening anchor missing')
+          old_block = '''function validateSegment(segment: string, label: string): void {
+  if (segment === "." || segment === ".." || !SEGMENT_RE.test(segment)) {
+    throw new Error(`${label} is not a safe resource URI segment`);
+  }
+  if (segment.trim() !== segment) {
+    throw new Error(`${label} must not have leading or trailing whitespace`);
+  }
+}'''
+          new_block = '''function validateSegment(segment: string, label: string): void {
+  if (segment === "." || segment === ".." || !SEGMENT_RE.test(segment)) {
+    throw new Error(`${label} is not a safe resource URI segment`);
+  }
+  if (Array.from(segment).length > 50) {
+    throw new Error(`${label} must be at most 50 characters`);
+  }
+}'''
+          if old_block in s:
+              s = s.replace(old_block, new_block, 1)
+          if new_block not in s:
+              raise SystemExit('taxonomy segment length hardening anchor missing')
+          p.write_text(s)
+
+          p = Path('resource-routing/config.ts')
+          s = p.read_text()
+          old_block = '''  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`resourceRouting endpoint baseUrl must use http or https: ${value}`);
+  }
+  return value.replace(/\\/+$/, "");
+}
+
+function normalizeEndpointPath(value: string, label: string): string {
+  if (!value.startsWith("/") || value.startsWith("//") || value.includes("?") || value.includes("#")) {
+    throw new Error(`${label} must be an absolute URL path without query or fragment`);
+  }
+  return value;
+}'''
+          new_block = '''  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`resourceRouting endpoint baseUrl must use http or https: ${value}`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("resourceRouting endpoint baseUrl must not contain credentials; use apiKey or headers");
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error("resourceRouting endpoint baseUrl must not contain query or fragment");
+  }
+  return value.replace(/\\/+$/, "");
+}
+
+function normalizeEndpointPath(value: string, label: string): string {
+  const segments = value.split("/");
+  if (
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    value.includes("?") ||
+    value.includes("#") ||
+    value.includes("\\\\") ||
+    segments.some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new Error(`${label} must be a safe absolute URL path without traversal, query, or fragment`);
+  }
+  return value;
+}'''
+          if old_block in s:
+              s = s.replace(old_block, new_block, 1)
+          if new_block not in s:
+              raise SystemExit('endpoint URL hardening anchor missing')
+          p.write_text(s)
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build and tests
+        run: npm run verify
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > /tmp/openviking-pack.json
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const data = JSON.parse(fs.readFileSync('/tmp/openviking-pack.json', 'utf8'));
+          const files = new Set(data[0].files.map((entry) => entry.path));
+          for (const required of [
+            'resource-routing/default-taxonomy.yaml',
+            'dist/resource-routing/manager.js',
+            'dist/resource-routing/taxonomy.js',
+            'dist/resource-routing/config.js',
+          ]) {
+            if (!files.has(required)) throw new Error(`package is missing ${required}`);
+          }
+          NODE
+
+      - name: Commit verified hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'resource-routing-ci'
+          git config user.email 'actions@users.noreply.github.com'
+          git add resource-routing/taxonomy.ts resource-routing/config.ts
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Harden resource routing URI and endpoint validation [skip ci]'
+          git push origin HEAD:agent/resource-routing-v1
