@@ -41,6 +41,14 @@ jobs:
             node .github/scripts/integrate-resource-routing-add-resource-v2.mjs
           fi
 
+      - name: Apply strict resource-routing config hardening if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q '"timeoutMs", "dimensions"' resource-routing/config.ts; then
+            node .github/scripts/harden-resource-routing-config.mjs
+          fi
+
       - name: Normalize narrow TypeScript test fixtures
         shell: bash
         run: |
@@ -91,6 +99,8 @@ jobs:
             plugin/openviking-import-tools.ts \
             openclaw.plugin.json \
             install-manifest.json \
+            resource-routing/agent-paths.ts \
+            resource-routing/config.ts \
             resource-routing/default-taxonomy.yaml \
             tests/resource-routing-add-resource-plan.test.ts \
             tests/resource-routing-add-resource-tool.test.ts \
@@ -98,5 +108,5 @@ jobs:
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m 'Integrate automatic add_resource routing [skip ci]'
+          git commit -m 'Finalize resource routing integration hardening [skip ci]'
           git push origin HEAD:agent/resource-routing-v1
