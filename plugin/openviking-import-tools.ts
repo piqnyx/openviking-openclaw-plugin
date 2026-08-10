@@ -9,6 +9,11 @@ import type {
   AddSkillInput,
   AddSkillResult,
 } from "../client.js";
+import {
+  AddResourceRoutingError,
+  planAddResourceRouting,
+  type AddResourceRoutingManager,
+} from "../resource-routing/add-resource-plan.js";
 
 export type OpenVikingImportToolContext = {
   sessionKey?: string;
@@ -40,6 +45,7 @@ export type OpenVikingImportToolsDeps = {
   makeBypassedToolResult: (toolName: string) => unknown;
   enableAddResourceTool: boolean;
   enableRemoveResourceTool: boolean;
+  resourceRoutingManager?: AddResourceRoutingManager;
 };
 
 function formatResourceImportText(result: AddResourceResult): string {
@@ -81,11 +87,16 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
         description:
           "Use only when the user explicitly asks to import, add, upload, save, or index a document, directory, URL, Git repository, or OpenClaw media attachment into OpenViking resources. " +
           "Never use this during search, retrieval, URI reading, or search-result optimization; use ov_search and ov_read for those flows. " +
+          "For automatic resource routing, always provide summary as one short sentence describing the resource semantic content and purpose; do not merely repeat its filename, path, MIME type, or storage location. " +
+          "Explicit to or parent overrides all routing. Explicit category selects an existing configured taxonomy category without semantic classification. Do not invent category names or viking:// URIs. " +
           "For a '[media attached: /path ...]' document, set source to that exact local media path. Do not invent OpenViking upload REST endpoints.",
         parameters: Type.Object({
           source: Type.String({ description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL" }),
           to: Type.Optional(Type.String({ description: "Exact target URI, e.g. viking://resources/project-docs" })),
-          parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources" })),
+          parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources. Overrides category and automatic routing." })),
+          category: Type.Optional(Type.String({ description: "Existing semantic category key from the configured per-agent resource taxonomy. Do not invent category names." })),
+          summary: Type.Optional(Type.String({ description: "One short sentence describing semantic content and purpose. Required only for automatic routing when no to, parent, or category is supplied." })),
+          create_parent: Type.Optional(Type.Boolean({ description: "Create an explicitly supplied parent path when missing. Automatic/category routing sets this true itself." })),
           reason: Type.Optional(Type.String({ description: "Reason or note for adding this resource" })),
           instruction: Type.Optional(Type.String({ description: "Processing instruction for semantic extraction" })),
           wait: Type.Optional(Type.Boolean({ description: "Wait for processing to complete" })),
@@ -96,20 +107,44 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
             return deps.makeBypassedToolResult("add_resource");
           }
           const session = deps.resolvePluginSessionRouting(ctx);
+          let plan;
+          try {
+            plan = await planAddResourceRouting({
+              agentId: session.agentId,
+              manager: deps.resourceRoutingManager,
+              params: {
+                source: typeof params.source === "string" ? params.source : "",
+                to: typeof params.to === "string" ? params.to : undefined,
+                parent: typeof params.parent === "string" ? params.parent : undefined,
+                category: typeof params.category === "string" ? params.category : undefined,
+                summary: typeof params.summary === "string" ? params.summary : undefined,
+                createParent: typeof params.create_parent === "boolean" ? params.create_parent : undefined,
+                reason: typeof params.reason === "string" ? params.reason : undefined,
+                instruction: typeof params.instruction === "string" ? params.instruction : undefined,
+                wait: typeof params.wait === "boolean" ? params.wait : undefined,
+                timeout: typeof params.timeout === "number" ? params.timeout : undefined,
+              },
+            });
+          } catch (error) {
+            if (error instanceof AddResourceRoutingError) {
+              return {
+                content: [{ type: "text" as const, text: error.message }],
+                details: {
+                  action: error.code === "routing_infrastructure_error" ? "resource_routing_failed" : "resource_routing_rejected",
+                  code: error.code,
+                },
+              };
+            }
+            throw error;
+          }
+
           const client = await deps.getClient(session.agentId);
-          const result = await client.addResource({
-            pathOrUrl: typeof params.source === "string" ? params.source : "",
-            to: typeof params.to === "string" ? params.to : undefined,
-            parent: typeof params.parent === "string" ? params.parent : undefined,
-            reason: typeof params.reason === "string" ? params.reason : undefined,
-            instruction: typeof params.instruction === "string" ? params.instruction : undefined,
-            wait: typeof params.wait === "boolean" ? params.wait : undefined,
-            timeout: typeof params.timeout === "number" ? params.timeout : undefined,
-          }, session.actorPeerId);
+          const result = await client.addResource(plan.input, session.actorPeerId);
           return {
             content: [{ type: "text" as const, text: formatResourceImportText(result) }],
             details: {
               action: "resource_imported",
+              routing: plan.details,
               ...result,
             },
           };

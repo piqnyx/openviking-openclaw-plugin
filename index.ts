@@ -1,4 +1,5 @@
 import { memoryOpenVikingConfigSchema } from "./config.js";
+import { ResourceRoutingManager } from "./resource-routing/manager.js";
 import { loadAgentKeys, type AgentKeyResolver } from "./agent-keys.js";
 import { registerSetupCli } from "./commands/setup.js";
 import { createOpenVikingBypassRuntime } from "./plugin/openviking-bypass-runtime.js";
@@ -208,6 +209,8 @@ const contextEnginePlugin = {
       return;
     }
 
+    const resourceRoutingManager = new ResourceRoutingManager(cfg.resourceRouting, api.logger);
+
     if (cfg.peer_role !== "none") {
       api.logger.warn(
         `openviking: peer_role="${cfg.peer_role}" also splits every account into per-peer ` +
@@ -297,6 +300,7 @@ const contextEnginePlugin = {
       makeBypassedToolResult,
       enableAddResourceTool: cfg.enableAddResourceTool,
       enableRemoveResourceTool: cfg.enableRemoveResourceTool,
+      resourceRoutingManager,
     });
 
     registerOpenVikingQueryTools({
@@ -424,6 +428,15 @@ const contextEnginePlugin = {
 
     registerSetupCli(api);
     const recallTraceHttpRoutesRegistered = registerRecallTraceRoutes(api);
+
+    if (cfg.resourceRouting.enabled) {
+      api.registerService({
+        id: "openviking-resource-routing",
+        start: async () => {
+          await resourceRoutingManager.initializeKnownAgents(agentKeys.agentNames);
+        },
+      });
+    }
 
     api.registerService(createOpenVikingService({
       cfg,

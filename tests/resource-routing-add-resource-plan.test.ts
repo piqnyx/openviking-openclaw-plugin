@@ -112,7 +112,7 @@ describe("add_resource routing planner", () => {
         categoryKey: "inbox",
         categoryUri: "viking://resources/__INBOX__",
         fallback: true,
-        fallbackReason: "below-min-score",
+        fallbackReason: "below-min-score" as const,
         embeddingTop: [{ key: "docs", uri: "viking://resources/documents", score: 0.4 }],
         rerankerUsed: false,
       })),
