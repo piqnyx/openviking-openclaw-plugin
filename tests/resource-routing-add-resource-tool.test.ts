@@ -58,7 +58,7 @@ function setup(options: {
 }
 
 describe("routed add_resource tool", () => {
-  it("keeps source as the top-level local-input selector and exposes routing hints", () => {
+  it("keeps source as the top-level local-input selector and exposes routing hints when enabled", () => {
     const { factories } = setup();
     const tool = factories.get("add_resource")!({ agentId: "main" });
     expect(Object.keys(tool.parameters.properties ?? {})).toEqual([
@@ -75,6 +75,48 @@ describe("routed add_resource tool", () => {
     ]);
     expect(tool.description).toContain("one short sentence");
     expect(tool.description).toContain("Do not invent category names");
+  });
+
+  it("preserves the baseline tool surface and client call when routing is disabled", async () => {
+    const { factories, addResource, getClient, resolveCategory, routeResource } = setup({ routingEnabled: false });
+    const tool = factories.get("add_resource")!({ agentId: "main" });
+
+    expect(Object.keys(tool.parameters.properties ?? {})).toEqual([
+      "source",
+      "to",
+      "parent",
+      "create_parent",
+      "reason",
+      "instruction",
+      "wait",
+      "timeout",
+    ]);
+    expect(tool.description).not.toContain("automatic routing");
+    expect(tool.description).not.toContain("summary");
+
+    const result = await tool.execute("call-disabled", {
+      source: "/workspace/draft/legacy.md",
+      reason: "legacy reason",
+      instruction: "legacy instruction",
+      wait: false,
+      timeout: 42,
+    }) as { details?: Record<string, unknown> };
+
+    expect(getClient).toHaveBeenCalledTimes(1);
+    expect(addResource).toHaveBeenCalledWith({
+      pathOrUrl: "/workspace/draft/legacy.md",
+      reason: "legacy reason",
+      instruction: "legacy instruction",
+      wait: false,
+      timeout: 42,
+    }, "main_peer");
+    expect(resolveCategory).not.toHaveBeenCalled();
+    expect(routeResource).not.toHaveBeenCalled();
+    expect(result.details).toEqual({
+      action: "resource_imported",
+      root_uri: "viking://resources/file.md",
+      status: "success",
+    });
   });
 
   it("returns an actionable summary error before opening an OpenViking client", async () => {
