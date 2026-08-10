@@ -1,0 +1,26 @@
+name: Resource routing development CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - resource-routing/**
+      - tests/resource-routing-*.test.ts
+      - config.ts
+      - config/resource-taxonomy.default.yaml
+      - package.json
+      - package-lock.json
+      - openclaw.plugin.json
+      - install-manifest.json
+      - .github/workflows/resource-routing-dev-ci.yml
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run verify
+      - run: npm run typecheck
+      - run: git diff --check
