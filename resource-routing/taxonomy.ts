@@ -9,7 +9,6 @@ const SEGMENT_RE = /^[\p{L}\p{N}\p{M}_.-]+$/u;
 const RESERVED_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 export const RESOURCE_TAXONOMY_MAX_SEGMENT_CHARS = 50;
 export const RESOURCE_TAXONOMY_MAX_DESCRIPTION_CHARS = 4_000;
-export const RESOURCE_TAXONOMY_MAX_URI_CHARS = 4_096;
 
 export type ResourceTaxonomyNodeInput = {
   segment?: unknown;
@@ -62,6 +61,14 @@ function requireString(value: unknown, label: string, maxChars?: number): string
     throw new Error(`${label} must be at most ${maxChars} characters`);
   }
   return normalized;
+}
+
+function requireSegment(value: unknown, label: string): string {
+  const segment = requireString(value, label);
+  if (value !== segment) {
+    throw new Error(`${label} must not contain leading or trailing whitespace`);
+  }
+  return segment;
 }
 
 function validateKey(key: string, label: string): void {
@@ -140,7 +147,7 @@ export function parseResourceTaxonomy(value: unknown): ResourceTaxonomy {
     seenNodeObjects.add(node);
     assertAllowedKeys(node, ["segment", "description", "routeable", "children"], `resource taxonomy category ${key}`);
 
-    const segment = requireString(node.segment, `resource taxonomy category ${key}.segment`);
+    const segment = requireSegment(node.segment, `resource taxonomy category ${key}.segment`);
     validateSegment(segment, `resource taxonomy category ${key}.segment`);
     const description = requireString(
       node.description,
@@ -149,11 +156,6 @@ export function parseResourceTaxonomy(value: unknown): ResourceTaxonomy {
     );
     const routeable = parseRouteable(node.routeable, `resource taxonomy category ${key}.routeable`);
     const uri = `${parentUri}/${segment}`;
-    if (Array.from(uri).length > RESOURCE_TAXONOMY_MAX_URI_CHARS) {
-      throw new Error(
-        `resource taxonomy category ${key} compiles to a URI longer than ${RESOURCE_TAXONOMY_MAX_URI_CHARS} characters`,
-      );
-    }
     if (byUri.has(uri)) {
       throw new Error(`resource taxonomy contains duplicate destination URI: ${uri}`);
     }
