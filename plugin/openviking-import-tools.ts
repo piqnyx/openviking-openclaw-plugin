@@ -62,7 +62,7 @@ function addResourceDescription(routingEnabled: boolean): string {
     "Use only when the user explicitly asks to import, add, upload, save, or index a document, directory, URL, Git repository, or OpenClaw media attachment into OpenViking resources. " +
     "Never use this during search, retrieval, URI reading, or search-result optimization; use ov_search and ov_read for those flows. " +
     "When no explicit destination is supplied, always provide summary as one short sentence describing the resource semantic content and purpose; do not merely repeat its filename, path, MIME type, or storage location. " +
-    "Explicit to or parent overrides all routing. Explicit category selects an existing configured taxonomy category without semantic classification. Do not invent category names or viking:// URIs. " +
+    "Use at most one of to or parent; either explicit target skips category and automatic routing. Explicit category selects an existing configured taxonomy category without semantic classification. Do not invent category names or viking:// URIs. " +
     "For a '[media attached: /path ...]' document, set source to that exact local media path. Do not invent OpenViking upload REST endpoints."
   );
 }
@@ -70,8 +70,8 @@ function addResourceDescription(routingEnabled: boolean): string {
 function addResourceParameters(routingEnabled: boolean) {
   const common = {
     source: Type.String({ description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL" }),
-    to: Type.Optional(Type.String({ description: "Exact target URI, e.g. viking://resources/project-docs" })),
-    parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources" })),
+    to: Type.Optional(Type.String({ description: "Exact target URI, e.g. viking://resources/project-docs. Mutually exclusive with parent." })),
+    parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources. Mutually exclusive with to." })),
     create_parent: Type.Optional(Type.Boolean({ description: "Create an explicitly supplied parent path when missing." })),
     reason: Type.Optional(Type.String({ description: "Reason or note for adding this resource" })),
     instruction: Type.Optional(Type.String({ description: "Processing instruction for semantic extraction" })),
@@ -83,8 +83,8 @@ function addResourceParameters(routingEnabled: boolean) {
   }
   return Type.Object({
     source: common.source,
-    to: Type.Optional(Type.String({ description: "Exact target URI. Overrides parent, category, and automatic routing." })),
-    parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources. Overrides category and automatic routing." })),
+    to: Type.Optional(Type.String({ description: "Exact target URI. Mutually exclusive with parent; skips category and automatic routing." })),
+    parent: Type.Optional(Type.String({ description: "Parent URI under viking://resources. Mutually exclusive with to; skips category and automatic routing." })),
     category: Type.Optional(Type.String({ description: "Existing semantic category key from the configured per-agent resource taxonomy. Do not invent category names." })),
     summary: Type.Optional(Type.String({
       maxLength: RESOURCE_ROUTING_MAX_SUMMARY_CHARS,
