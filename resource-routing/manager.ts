@@ -16,7 +16,11 @@ import {
   resourceEmbeddingModelIdentity,
   type PreparedAgentResourceRoutingState,
 } from "./state.js";
-import { resolveResourceCategoryUri } from "./taxonomy.js";
+import {
+  loadResourceTaxonomyFile,
+  resolveResourceCategoryUri,
+  type ResourceTaxonomy,
+} from "./taxonomy.js";
 
 export type ResourceRoutingManagerLogger = {
   info: (message: string) => void;
@@ -34,6 +38,7 @@ export type ResourceRoutingManagerOptions = {
   embeddingTransport?: ResourceRoutingHttpTransport;
   rerankerTransport?: ResourceRoutingHttpTransport;
   prepareState?: typeof prepareAgentResourceRoutingState;
+  loadTaxonomy?: typeof loadResourceTaxonomyFile;
   appendAudit?: (filePath: string, record: ResourceRoutingAuditRecord) => Promise<void>;
 };
 
@@ -41,7 +46,9 @@ export class ResourceRoutingManager {
   private readonly embedder: ResourceEmbeddingClient;
   private readonly reranker: ResourceRerankerClient;
   private readonly statePromises = new Map<string, Promise<PreparedAgentResourceRoutingState>>();
+  private readonly taxonomyPromises = new Map<string, Promise<ResourceTaxonomy>>();
   private readonly prepareState: typeof prepareAgentResourceRoutingState;
+  private readonly loadTaxonomy: typeof loadResourceTaxonomyFile;
   private readonly appendAudit: (filePath: string, record: ResourceRoutingAuditRecord) => Promise<void>;
 
   constructor(
@@ -51,7 +58,11 @@ export class ResourceRoutingManager {
   ) {
     this.embedder = new ResourceEmbeddingClient(config.embedding, options.embeddingTransport);
     this.reranker = new ResourceRerankerClient(config.reranker, options.rerankerTransport);
-    this.prepareState = options.prepareState ?? prepareAgentResourceRoutingState;
+    this.loadTaxonomy = options.loadTaxonomy ?? loadResourceTaxonomyFile;
+    this.prepareState = options.prepareState ?? ((routingConfig, agentId, embedder) =>
+      prepareAgentResourceRoutingState(routingConfig, agentId, embedder, {
+        loadTaxonomy: async () => this.getAgentTaxonomy(agentId),
+      }));
     this.appendAudit = options.appendAudit ?? appendResourceRoutingAudit;
   }
 
@@ -82,6 +93,28 @@ export class ResourceRoutingManager {
     return results;
   }
 
+  async getAgentTaxonomy(agentId: string): Promise<ResourceTaxonomy> {
+    if (!this.config.enabled) {
+      throw new Error("resource routing is disabled");
+    }
+    const existing = this.taxonomyPromises.get(agentId);
+    if (existing) {
+      return existing;
+    }
+
+    const path = resolveAgentResourceRoutingPaths(this.config, agentId).taxonomyFile;
+    const pending = this.loadTaxonomy(path);
+    this.taxonomyPromises.set(agentId, pending);
+    try {
+      return await pending;
+    } catch (error) {
+      if (this.taxonomyPromises.get(agentId) === pending) {
+        this.taxonomyPromises.delete(agentId);
+      }
+      throw error;
+    }
+  }
+
   async getAgentState(agentId: string): Promise<PreparedAgentResourceRoutingState> {
     if (!this.config.enabled) {
       throw new Error("resource routing is disabled");
@@ -108,10 +141,10 @@ export class ResourceRoutingManager {
     if (!key) {
       throw new Error("resource routing category must not be empty");
     }
-    const state = await this.getAgentState(agentId);
+    const taxonomy = await this.getAgentTaxonomy(agentId);
     return {
       categoryKey: key,
-      categoryUri: resolveResourceCategoryUri(state.taxonomy, key),
+      categoryUri: resolveResourceCategoryUri(taxonomy, key),
     };
   }
 
