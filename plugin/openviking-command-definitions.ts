@@ -18,6 +18,7 @@ export type AddResourceCommandInput = {
   source?: string;
   to?: string;
   parent?: string;
+  createParent?: boolean;
   reason?: string;
   instruction?: string;
   wait?: boolean;
