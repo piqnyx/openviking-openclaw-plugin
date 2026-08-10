@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -9,10 +9,18 @@ export type ResourceRoutingCachedCategory = {
   embedding: number[];
 };
 
+export type ResourceRoutingEmbeddingIdentityInput = {
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  headers: Record<string, string>;
+};
+
 export type ResourceRoutingEmbeddingCache = {
   schemaVersion: typeof RESOURCE_ROUTING_CACHE_SCHEMA_VERSION;
   taxonomyHash: string;
   embeddingModel: string;
+  embeddingIdentity: string;
   dimensions: number;
   categories: ResourceRoutingCachedCategory[];
 };
@@ -20,6 +28,7 @@ export type ResourceRoutingEmbeddingCache = {
 export type ResourceRoutingCacheExpectation = {
   taxonomyHash: string;
   embeddingModel: string;
+  embeddingIdentity: string;
   dimensions: number;
   categoryKeys: readonly string[];
 };
@@ -27,6 +36,21 @@ export type ResourceRoutingCacheExpectation = {
 export type ResourceRoutingCacheLoadResult =
   | { hit: true; cache: ResourceRoutingEmbeddingCache }
   | { hit: false; reason: string };
+
+export function computeResourceRoutingEmbeddingIdentity(
+  input: ResourceRoutingEmbeddingIdentityInput,
+): string {
+  const canonicalHeaders = Object.entries(input.headers)
+    .sort(([left], [right]) => left.toLowerCase().localeCompare(right.toLowerCase()))
+    .map(([name, value]) => [name.toLowerCase(), value] as const);
+  const canonical = JSON.stringify({
+    baseUrl: input.baseUrl.replace(/\/+$/, ""),
+    model: input.model,
+    apiKey: input.apiKey,
+    headers: canonicalHeaders,
+  });
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
 
 function nonEmptyString(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) {
@@ -65,7 +89,14 @@ export function parseResourceRoutingEmbeddingCache(value: unknown): ResourceRout
     throw new Error("resource routing cache must be an object");
   }
   const raw = value as Record<string, unknown>;
-  const allowed = new Set(["schemaVersion", "taxonomyHash", "embeddingModel", "dimensions", "categories"]);
+  const allowed = new Set([
+    "schemaVersion",
+    "taxonomyHash",
+    "embeddingModel",
+    "embeddingIdentity",
+    "dimensions",
+    "categories",
+  ]);
   const unknown = Object.keys(raw).filter((key) => !allowed.has(key));
   if (unknown.length > 0) {
     throw new Error(`resource routing cache has unknown keys: ${unknown.join(", ")}`);
@@ -107,6 +138,7 @@ export function parseResourceRoutingEmbeddingCache(value: unknown): ResourceRout
     schemaVersion: RESOURCE_ROUTING_CACHE_SCHEMA_VERSION,
     taxonomyHash: nonEmptyString(raw.taxonomyHash, "resource routing cache taxonomyHash"),
     embeddingModel: nonEmptyString(raw.embeddingModel, "resource routing cache embeddingModel"),
+    embeddingIdentity: nonEmptyString(raw.embeddingIdentity, "resource routing cache embeddingIdentity"),
     dimensions,
     categories,
   };
@@ -145,6 +177,9 @@ export function loadResourceRoutingEmbeddingCache(
   }
   if (parsed.embeddingModel !== expected.embeddingModel) {
     return { hit: false, reason: "embedding_model_mismatch" };
+  }
+  if (parsed.embeddingIdentity !== expected.embeddingIdentity) {
+    return { hit: false, reason: "embedding_identity_mismatch" };
   }
   if (parsed.dimensions !== expected.dimensions) {
     return { hit: false, reason: "dimensions_mismatch" };
