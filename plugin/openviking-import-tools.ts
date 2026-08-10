@@ -129,11 +129,11 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
           "Use only when the user explicitly asks to import, add, upload, save, or index a document, directory, URL, Git repository, or OpenClaw media attachment into OpenViking resources. " +
           "Never use this during search, retrieval, URI reading, or search-result optimization; use ov_search and ov_read for those flows. " +
           "For a '[media attached: /path ...]' document, set source to that exact local media path. Do not invent OpenViking upload REST endpoints. " +
-          "When automatic resource routing is enabled and neither to, parent, nor category is supplied, you MUST provide summary: one short sentence describing what the resource is about and what it is useful for. Describe semantic content and purpose, not its filename, path, MIME type, or storage location. " +
+          "When automatic resource routing is enabled and neither to, parent, nor category is supplied, you MUST provide summary: one short sentence describing what the resource is about and what it is useful for. Before writing that summary, inspect or read enough of the resource to understand its actual content unless the content is already established in the conversation; never guess from its filename or path. Describe semantic content and purpose, not its filename, path, MIME type, or storage location. " +
           "Use category only for an existing semantic category key from the configured taxonomy; never invent category keys or resource URIs. Explicit to/parent/category bypass automatic classification.",
         parameters: Type.Object({
           source: Type.String({ description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL" }),
-          summary: Type.Optional(Type.String({ description: "Required for automatic routing: one short sentence describing the resource's semantic content and purpose. Do not merely repeat filename/path/type." })),
+          summary: Type.Optional(Type.String({ description: "Required for automatic routing: one short sentence based on known or inspected resource content, describing its semantic content and purpose. Never guess from filename/path/type." })),
           to: Type.Optional(Type.String({ description: "Explicit exact target URI. Bypasses automatic routing. Mutually exclusive with parent and category." })),
           parent: Type.Optional(Type.String({ description: "Explicit parent URI under viking://resources. Bypasses automatic routing. Mutually exclusive with to and category." })),
           category: Type.Optional(Type.String({ description: "Explicit existing semantic category key from this agent's taxonomy. The plugin resolves it to a trusted URI; do not provide a URI here." })),
@@ -204,7 +204,7 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
             const summary = typeof params.summary === "string" ? params.summary.trim() : "";
             if (!summary) {
               return rejectedResourceImport(
-                "Automatic resource routing requires `summary`. Describe in one short sentence what the resource is about and what it is useful for, then retry add_resource with that summary. Do not merely repeat its filename, path, MIME type, or storage location.",
+                "Automatic resource routing requires `summary`. Inspect or read enough of the resource to understand its actual content, describe in one short sentence what it is about and what it is useful for, then retry add_resource with that summary. Do not guess from or merely repeat its filename, path, MIME type, or storage location.",
                 { routing: "automatic", source },
               );
             }
