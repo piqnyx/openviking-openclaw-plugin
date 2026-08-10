@@ -31,6 +31,7 @@ Use this skill after `@openviking/openclaw-plugin` is installed and configured. 
 - Do not invent OpenViking REST endpoints. Use the registered OpenClaw tools and commands described below.
 - The agent-visible `add_resource` tool is disabled by default (`enableAddResourceTool=false`). Do not use `add_resource` during search, retrieval, URI reading, or search-result optimization. Use `ov_search` and `ov_read` in those flows.
 - Use manual `/add-resource`, or `add_resource` only when it is explicitly enabled and the user explicitly asks to import, add, upload, save, or index a resource.
+- When automatic resource routing is enabled, inspect or read enough of the resource to understand its actual content before calling `add_resource`, unless that content is already established in the conversation. Supply a short semantic `summary`; never infer it from filename/path alone.
 - Use `add_skill` only when the user explicitly asks to import, add, install, or register an Agent Skill into OpenViking.
 - For local files and directories, pass the local path to the plugin tool. The plugin uploads them through `/api/v1/resources/temp_upload`; do not send raw local filesystem paths to a remote server yourself.
 - Never log or echo API keys. The plugin sends API keys as `X-API-Key` / setup probe headers and masks them in setup output.
@@ -85,6 +86,7 @@ Core config lives under `plugins.entries.openviking.config`:
 | `traceRecall` | `false` | Record recall traces in memory. |
 | `traceRecallPersist` | `false` | Persist recall traces as local JSONL files. |
 | `traceRecallDir` | `~/.openclaw/openviking/recall-traces` | Recall trace directory when persistence is enabled. |
+| `resourceRouting` | disabled | Optional per-agent YAML taxonomy with deterministic embedding/reranker routing for `add_resource`. |
 
 Normal setup command:
 
@@ -182,15 +184,24 @@ Import resources into `viking://resources/...`.
 
 This agent tool is disabled by default. Prefer manual `/add-resource` for resource ingestion. If `enableAddResourceTool=true` exposes the tool, use it only for explicit import/index requests and never as part of search/retrieval optimization.
 
+When `resourceRouting.enabled=true`, destination priority is: explicit `to`, explicit `parent`, explicit semantic `category`, then automatic routing. Explicit routing must never be overwritten by automatic classification.
+
+For automatic routing, first inspect/read enough of the resource to understand its actual content unless the content is already known from the conversation. Then provide `summary` as one short sentence describing semantic content and purpose. Do not use filename/path/MIME/storage location as a substitute for content. The plugin performs deterministic category selection and builds the trusted `viking://resources/...` parent URI; do not invent a URI or category key.
+
 | Parameter | Required | Description |
 |---|---|---|
 | `source` | Yes | Local path, OpenClaw media attachment path, directory path, public URL, or Git URL. |
-| `to` | No | Exact target URI, e.g. `viking://resources/project-docs`. Mutually exclusive with `parent`. |
-| `parent` | No | Parent URI under `viking://resources`. Mutually exclusive with `to`. |
+| `summary` | Automatic routing only | One short sentence based on known/inspected content describing what the resource is about and what it is useful for. |
+| `to` | No | Explicit exact target URI. Bypasses automatic routing. Mutually exclusive with `parent` and `category`. |
+| `parent` | No | Explicit parent URI under `viking://resources`. Bypasses automatic routing. Mutually exclusive with `to` and `category`. |
+| `category` | No | Existing semantic category key from this agent's taxonomy. The plugin resolves it to a trusted URI; never invent keys. |
+| `create_parent` | No | Used only with explicit `parent`. Automatic/category routing manages this and forces parent creation as needed. |
 | `reason` | No | Reason/note for import. |
-| `instruction` | No | Processing instruction for semantic extraction. |
+| `instruction` | No | Processing instruction for OpenViking semantic extraction. |
 | `wait` | No | Wait for processing completion. |
 | `timeout` | No | Timeout in seconds when `wait=true`. |
+
+If automatic routing cannot classify the summary confidently, the plugin uses the configured taxonomy fallback category (normally the visible inbox). If the embedding/reranker/taxonomy infrastructure fails, the resource is **not imported**; report the routing failure instead of pretending the operation succeeded.
 
 The current OpenClaw tool exposes the parameters above. The underlying client also supports server-facing resource options such as `strict`, `ignore_dirs`, `include`, `exclude`, and `preserve_structure` for command/internal paths; do not pass them to the tool unless the registered schema exposes them.
 
@@ -258,6 +269,7 @@ The plugin refuses to read/search a tool-result ref from another session.
 
 ```text
 /add-resource ./README.md --to viking://resources/openviking-readme --wait
+/add-resource ./README.md --parent viking://resources/docs --create-parent --wait
 /add-skill ./skills/openviking-context-database --wait --timeout=30
 /ov-search "OpenViking install" --uri viking://resources/openviking-readme --limit=5
 /ov-recall-trace --turn latest --source auto_recall --include-content
