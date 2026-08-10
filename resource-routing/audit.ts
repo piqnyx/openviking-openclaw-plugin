@@ -66,6 +66,7 @@ export function createResourceRoutingAuditRecord(options: {
     finalCategory: decision?.categoryKey,
     fallback: decision?.fallback,
     fallbackReason: decision?.fallbackReason,
+    timingMs: decision?.timingMs,
     outcome: options.outcome,
     errorCode: options.errorCode,
     errorMessage: options.errorMessage,
