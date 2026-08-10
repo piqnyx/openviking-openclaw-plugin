@@ -2,52 +2,68 @@
 
 This repository is a focused fork of the OpenViking OpenClaw context-engine plugin, based on upstream plugin version **2026.7.15**.
 
-The fork keeps the upstream context-engine behavior while routing each OpenClaw agent to a separate OpenViking account/API key. Release **2026.7.15-isolation.6** also adds a guarded `remove_resource` tool backed by the OpenViking filesystem DELETE API.
+The fork keeps the upstream context-engine behavior while routing each OpenClaw agent to a separate OpenViking account/API key. Release **2026.7.15-isolation.7** adds configurable per-agent resource routing on top of the guarded resource-management support introduced in `isolation.6`.
 
 ## Design goals
 
-- Preserve upstream OpenViking/OpenClaw behavior unless a change is required for per-agent account isolation or `remove_resource`.
+- Preserve existing OpenViking/OpenClaw behavior when optional fork features are disabled.
 - Keep each OpenClaw agent in a separate OpenViking account.
-- Route unattributed traffic to a dedicated system account instead of guessing another agent.
-- Keep destructive resource deletion disabled unless explicitly enabled.
-- Let OpenViking perform deletion, vector cleanup, resource-memory reference cleanup, and semantic refresh using its own server-side implementation.
-- Return OpenViking deletion status to the calling agent instead of reporting success before consistency work has finished.
+- Never guess another agent when tenant attribution is missing.
+- Keep destructive resource deletion explicitly gated.
+- Let OpenViking own resource parsing, tree construction, semantic summaries, vector indexing, deletion, and consistency work.
+- Let the plugin choose resource destinations without allowing an embedding model or reranker to generate Viking URIs.
+- Fail closed on routing infrastructure failures instead of disguising them as semantic uncertainty.
 
 ## Compatibility
 
 | Component | Version |
 | --- | --- |
 | Forked OpenViking OpenClaw plugin | 2026.7.15 |
-| This release | 2026.7.15-isolation.6 |
+| This release | 2026.7.15-isolation.7 |
 | Minimum OpenClaw | 2026.5.27 |
-| Minimum OpenViking for this release | 0.4.4 |
+| Base plugin minimum OpenViking | 0.4.4 |
 | Recommended/tested OpenViking | 0.4.12 |
 
-`remove_resource` relies on the OpenViking filesystem DELETE API with `wait`/`timeout` support and semantic cleanup status. OpenViking 0.4.12 is the deployment target used for the final implementation audit.
+The automatic resource router is designed and audited against OpenViking **0.4.12**, including its `parent` + `create_parent` resource-import behavior. Keep `resourceRouting.enabled=false` on older deployments unless equivalent server behavior has been verified.
 
-## Changes from upstream
+## Release highlights
 
-The isolation layer is intentionally narrow:
+### Per-agent account isolation
 
-| Area | Change |
-| --- | --- |
-| `agent-keys.ts` | Loads the per-agent API-key map and enforces fail-closed key rules. |
-| `plugin/openviking-client-runtime.ts` | Maintains one OpenViking client per configured account instead of one shared client. |
-| `plugin/openviking-session-routing-runtime.ts` | Sends unresolved sessions to the system account instead of guessing `main`. |
-| `config.ts`, `openclaw.plugin.json` | Add `agentKeysFile` and related configuration. |
-| Runtime call sites | Pass the resolved OpenClaw agent ID to client selection. |
+Each OpenClaw agent selects its own OpenViking API key and therefore its own OpenViking account. Sessions, memories, skills, resources, and account-level namespaces remain separated by the server-side account boundary.
 
-Release `isolation.6` adds only the resource-removal path on top of that baseline:
+### Guarded `remove_resource`
 
-| Area | Change |
-| --- | --- |
-| `client.ts` | Adds the OpenViking `removeResource()` client call and a resource-only destructive URI guard. |
-| `plugin/openviking-import-tools.ts` | Registers the agent-facing `remove_resource` tool. |
-| `config.ts`, `registries/openviking-tools.ts` | Add the explicit destructive-tool gate and the `resource_manage` tool group. |
-| Plugin manifest/schema | Expose `enableRemoveResourceTool` and `remove_resource`. |
-| Tests | Cover API contract, destructive boundary, per-agent routing, wait behavior, and configuration gating. |
+The optional destructive tool can delete descendants of `viking://resources/`, but never the `viking://resources` root. OpenViking remains responsible for physical deletion, vector cleanup, memory-reference cleanup, and semantic refresh.
 
-The existing `add_resource` path, memory tools, session routing logic, context engine, recall logic, and per-agent client runtime are not rewritten for `remove_resource`.
+### Automatic resource routing
+
+When enabled, `add_resource` can classify a short agent-provided semantic summary into a user-controlled per-agent YAML taxonomy:
+
+```text
+agent summary
+    |
+    v
+BGE-style embedding
+    |
+    v
+cosine top-K against cached category embeddings
+    |
+    +-- confident ------------------------------------+
+    |                                                  |
+    +-- close candidates -> conditional reranker ------+
+                                                       |
+                                                       v
+                                            validated category key
+                                                       |
+                                                       v
+                                            plugin-built trusted URI
+                                                       |
+                                                       v
+                                      OpenViking parent + create_parent
+```
+
+The taxonomy may be deeply nested, but classification is **not hierarchical**. All routeable categories are flattened into one candidate set. A bad decision at a parent level therefore cannot permanently exclude a better child candidate.
 
 ## Account model
 
@@ -69,7 +85,7 @@ The plugin normally runs with:
 }
 ```
 
-Isolation is therefore enforced by the OpenViking account/API-key boundary rather than by peer folders inside one shared account.
+Isolation is enforced by the OpenViking account/API-key boundary rather than by peer folders inside one shared account.
 
 ## Build and verify
 
@@ -79,9 +95,15 @@ npm run verify
 npm run typecheck
 ```
 
-`npm run verify` performs a clean TypeScript build and runs the Vitest suite. `npm run typecheck` checks the full TypeScript project, including tests.
+`npm run verify` performs a clean TypeScript build and runs the complete Vitest suite, including the existing baseline tests and resource-routing tests. OpenClaw loads `dist/`, so rebuild after source changes.
 
-OpenClaw loads `dist/`, so rebuild after any source change.
+Before publishing a release, also inspect package contents:
+
+```bash
+npm pack --dry-run
+```
+
+The package must contain `resource-routing/default-taxonomy.yaml` and the compiled routing runtime.
 
 ## OpenClaw installation
 
@@ -99,9 +121,9 @@ If a fresh installation is disabled until configuration is present:
 openclaw plugins enable openviking
 ```
 
-## OpenClaw configuration
+## Core OpenClaw configuration
 
-Example:
+Example without automatic resource routing:
 
 ```jsonc
 {
@@ -117,6 +139,7 @@ Example:
           "peer_prefix": "",
           "apiKey": "<system-account-api-key>",
           "agentKeysFile": "/home/openclaw/memory/secrets/openviking-keys/secrets.conf",
+          "enableAddResourceTool": true,
           "enableRemoveResourceTool": true
         }
       }
@@ -127,12 +150,11 @@ Example:
 
 Important fields:
 
-- `apiKey` is the system-account key used only when an OpenClaw request cannot be attributed to a configured agent.
-- `agentKeysFile` maps OpenClaw agent IDs to their dedicated OpenViking API keys.
-- `peer_prefix` should remain empty for the account-per-agent deployment model.
-- `enableRemoveResourceTool` is `false` unless explicitly set to `true`.
-
-Enabling `remove_resource` through `enabledTools`, `enabledTools: "all"`, or a tool group does **not** bypass the destructive safety flag. `enableRemoveResourceTool: true` is required. `disabledTools` still wins and can disable it again.
+- `apiKey` is the system-account key used only when a request cannot be attributed to a configured agent.
+- `agentKeysFile` maps exact OpenClaw agent IDs to dedicated OpenViking API keys.
+- `peer_prefix` should normally remain empty for the account-per-agent deployment model.
+- `enableAddResourceTool` and `enableRemoveResourceTool` are independent safety gates.
+- Enabling a tool through `enabledTools` or a tool group does not bypass its safety gate.
 
 ## Agent key file
 
@@ -159,38 +181,343 @@ kate = <openclaw-kate-api-key>
 
 The parser accepts blank lines, `#`/`;` comments, quoted values, and an optional `[agents]` section header.
 
-The plugin refuses unsafe key maps, including:
+The plugin refuses unsafe key maps, including duplicate agent IDs, malformed entries, shared agent keys, an agent key equal to the system key, and explicitly configured key files that cannot be read. A key file readable by users other than its owner produces a permissions warning. Restart the gateway after changing the file.
 
-- duplicate agent IDs;
-- empty or malformed entries;
-- two agents sharing the same API key;
-- an agent key equal to the system key;
-- configured agent keys without a system fallback key;
-- an explicitly configured key file that cannot be read.
+## Resource routing
 
-A key file readable by users other than its owner produces a permissions warning. The file is loaded at gateway startup, so restart the gateway after changing it.
+`resourceRouting` is optional and defaults to disabled. When disabled, the historical `add_resource` path remains the active behavior and no taxonomy, cache, embedder, reranker, or routing service is used.
 
-## Agent attribution
+### Per-agent taxonomy files
 
-The plugin resolves the agent from OpenClaw context and session identity, then selects that agent's OpenViking client/API key.
+The default path template is:
 
-If attribution fails, the request is routed to the dedicated system OpenViking account. It is never silently assigned to another configured agent.
+```text
+~/.openclaw/{agentId}.yaml
+```
 
-Routing diagnostics can be enabled with:
+For agents named `main` and `igor`, that resolves to:
+
+```text
+~/.openclaw/main.yaml
+~/.openclaw/igor.yaml
+```
+
+A starter taxonomy is shipped with the plugin:
+
+```text
+resource-routing/default-taxonomy.yaml
+```
+
+Copy it once for each agent and edit those copies:
+
+```bash
+cp resource-routing/default-taxonomy.yaml ~/.openclaw/main.yaml
+cp resource-routing/default-taxonomy.yaml ~/.openclaw/igor.yaml
+```
+
+The taxonomy is intentionally per-agent because each agent has its own isolated OpenViking resources.
+
+### YAML schema
+
+Minimal example:
+
+```yaml
+schemaVersion: 1
+
+categories:
+  inbox:
+    segment: __INBOX__
+    description: Resources that cannot be confidently classified elsewhere.
+
+  projects:
+    segment: projects
+    description: Materials tied to a specific project.
+    children:
+      openclaw:
+        segment: openclaw
+        description: OpenClaw implementation, configuration, operation and documentation.
+        children:
+          openviking:
+            segment: openviking
+            description: OpenViking integration, memory, resources and resource routing for OpenClaw.
+
+  organization-only:
+    segment: organization
+    description: A grouping branch that must never be selected directly.
+    routeable: false
+    children:
+      leaf:
+        segment: leaf
+        description: A real routing destination below the grouping branch.
+```
+
+Each category has:
+
+- a globally unique **semantic key**, represented by the YAML mapping key such as `openviking`;
+- a `segment`, used only by trusted plugin code to build the Viking URI;
+- a semantic `description`, embedded during cache construction;
+- optional `routeable: false`; the default is `true`;
+- optional nested `children`.
+
+A category may be routeable **and** contain children. That allows a directory to contain resources directly while also containing more specific subdirectories. Tree depth does not need to be uniform.
+
+### Taxonomy validation rules
+
+The parser is deliberately strict:
+
+- `schemaVersion` must be `1`;
+- unknown fields are rejected;
+- semantic keys must be safe stable identifiers and unique across the complete tree;
+- destination URIs must be unique;
+- each `segment` must contain only safe letters/numbers/marks plus `_`, `-`, and `.`;
+- `.` / `..`, dot-prefixed or dot-suffixed segments, separators, query syntax, and other unsafe path material are rejected;
+- each segment is limited to **50 Unicode characters**, matching the OpenViking 0.4.12 segment-sanitization bound;
+- category descriptions are limited to 4000 characters;
+- the plugin additionally limits a fully compiled taxonomy URI to **4096 characters** as an operational safety bound;
+- YAML duplicate keys are rejected;
+- YAML aliases/anchors and merge-key tricks are not supported;
+- reused/cyclic node objects are rejected by the programmatic parser.
+
+There is no small artificial nesting-depth limit. The parser walks the tree iteratively rather than recursively, but the compiled URI still has to fit the 4096-character plugin safety bound.
+
+### Fallback category
+
+Fallback is configured by **semantic key**, not by URI:
 
 ```jsonc
 {
-  "logFindRequests": true
+  "fallbackCategory": "inbox"
 }
 ```
 
-or:
+The default taxonomy maps the semantic key `inbox` to the visible root folder:
 
-```bash
-OPENVIKING_LOG_ROUTING=1
+```text
+viking://resources/__INBOX__
 ```
 
-API keys are not written to routing logs.
+At startup the configured fallback must exist in that agent's taxonomy and must be routeable. Otherwise automatic routing for that agent is unavailable.
+
+### Routing configuration
+
+Full example using the tested local llama.cpp services:
+
+```jsonc
+{
+  "resourceRouting": {
+    "enabled": true,
+
+    "taxonomyFile": "~/.openclaw/{agentId}.yaml",
+    "cacheFile": "~/.openclaw/cache/openviking-resource-routing/{agentId}.json",
+    "auditFile": "~/.openclaw/logs/openviking-resource-routing/{agentId}.jsonl",
+
+    "semanticInputTemplate": "{{summary}}",
+    "fallbackCategory": "inbox",
+    "failurePolicy": "error",
+    "logDecisions": false,
+
+    "embedding": {
+      "baseUrl": "http://127.0.0.1:18081",
+      "endpointPath": "/v1/embeddings",
+      "model": "bge-m3",
+      "dimensions": 1024,
+      "timeoutMs": 30000,
+      "apiKey": "",
+      "headers": {},
+      "cacheKey": ""
+    },
+
+    "reranker": {
+      "baseUrl": "http://127.0.0.1:18080",
+      "endpointPath": "/v1/rerank",
+      "model": "bge-reranker-v2-m3",
+      "timeoutMs": 3000,
+      "apiKey": "",
+      "headers": {}
+    },
+
+    "retrieval": {
+      "topK": 2,
+      "minScore": 0.64,
+      "rerankBelowMargin": 0.06
+    },
+
+    "audit": {
+      "enabled": true,
+      "includeSummaryPreview": false,
+      "summaryPreviewChars": 240
+    }
+  }
+}
+```
+
+The endpoints are configurable and may point at other compatible services. `baseUrl`, `endpointPath`, `model`, `apiKey`, custom headers, and timeouts are not tied to the local defaults. Nested `apiKey` and header values may use `${ENV_NAME}` expansion so secrets do not need to be stored literally in `openclaw.json`.
+
+`embedding.dimensions` must match the returned dense embedding dimension exactly.
+
+`embedding.cacheKey` is an operator-controlled cache revision. It is normally empty. Change it when self-hosted embedding weights change behind the same `baseUrl` and `model` name so the category cache is deliberately invalidated and rebuilt.
+
+### Retrieval settings
+
+`retrieval.topK` is the number of best cosine candidates retained after the embedding stage. When the top candidates are close enough to require reranking, the reranker receives this retained candidate set. It is configurable from `1` to `1000`.
+
+The tested starting baseline is:
+
+```text
+topK = 2
+minScore = 0.64
+rerankBelowMargin = 0.06
+```
+
+These are calibration defaults, not universal truths. Increasing `topK` lets the reranker consider more alternatives but increases reranking latency. Tune the values with real routing audit data rather than treating the defaults as sacred constants.
+
+### Semantic input
+
+For automatic routing the agent must provide `summary`: one concise sentence describing **what the resource is about and what it is useful for**.
+
+The default semantic input is deliberately:
+
+```text
+{{summary}}
+```
+
+Filename, source path, MIME type, and other technical metadata are **not** automatically mixed into the embedding query. Testing found summary-only routing materially more reliable for the intended taxonomy.
+
+A custom `semanticInputTemplate` may explicitly add supported metadata later, for example:
+
+```text
+{{summary}}
+Source kind: {{sourceKind}}
+```
+
+Supported template fields are `summary`, `filename`, `extension`, `mimeType`, `sourceKind`, `source`, `reason`, `instruction`, and `agentId`. The template must contain `{{summary}}`. Malformed and unknown placeholders are rejected at config parse time.
+
+Routing summaries are capped at 4000 characters. If automatic routing is required and `summary` is missing or empty, `add_resource` returns an actionable validation error and does **not** call OpenViking.
+
+### `summary` is not `reason`
+
+Do not automatically copy a routing summary into OpenViking `reason`.
+
+They have different semantics:
+
+- `summary` is input only to this plugin's category router;
+- `reason` is an OpenViking resource-import field that can participate in OpenViking's normal memory-extraction pipeline and create/update memories that reference the resource;
+- `instruction` is an OpenViking semantic-processing instruction.
+
+The router preserves caller-supplied `reason` and `instruction` but does not invent either one.
+
+### Routing priority
+
+`add_resource` resolves destination intent in this order:
+
+1. explicit `to`;
+2. explicit `parent`;
+3. explicit semantic `category` key;
+4. automatic routing from `summary`.
+
+Explicit legacy `to`/`parent` inputs are not normalized or silently rewritten by the router. Do not pass both: the existing OpenViking client validation rejects that mutually exclusive combination, preserving the pre-routing contract.
+
+Explicit `category` never asks the embedding or reranker services. The plugin loads the agent's validated taxonomy, resolves that exact category key to a trusted URI, and uses `create_parent=true`.
+
+Automatic routing and explicit category selection never accept a model-generated URI. Only plugin code converts a known taxonomy key into `viking://resources/...`.
+
+### Semantic uncertainty versus infrastructure failure
+
+These cases are intentionally different.
+
+**Semantic uncertainty** means the routing stack is healthy but cannot confidently classify the summary, for example because the best cosine score is below `minScore`. The resource is still imported into the configured fallback category such as `__INBOX__`.
+
+**Infrastructure failure** includes conditions such as:
+
+- embedder HTTP failure or timeout;
+- malformed embedding response;
+- embedding dimension mismatch;
+- reranker failure when reranking is required;
+- malformed reranker response;
+- missing/invalid taxonomy;
+- missing/non-routeable fallback key;
+- corrupt cache that cannot be rebuilt;
+- an internally selected category that is not part of the validated taxonomy.
+
+Infrastructure failure is fail-closed: the plugin does **not** call OpenViking `add_resource`. The tool reports the routing failure and the plugin emits a warning so the model service or configuration can be repaired instead of silently filling the inbox with hidden failures.
+
+### Category embedding cache
+
+Category descriptions are embedded once and cached per agent. Cache correctness is based on:
+
+- canonical taxonomy SHA-256;
+- embedding model identity (`model + baseUrl + endpointPath`);
+- optional `embedding.cacheKey`;
+- configured embedding dimensions;
+- cache schema version;
+- exact routeable category-key set.
+
+The cache is not trusted merely because its timestamp looks recent. A stale, malformed, wrong-model, wrong-dimension, or incomplete cache is rebuilt.
+
+Cache files are written through a temporary file and atomic rename with private `0600` file mode on POSIX systems. Prepared vectors remain in memory for the running plugin process.
+
+Taxonomy v1 is **restart-only**: edit an agent YAML file, then restart the gateway. On restart the taxonomy hash is compared with the cache; changed semantic routing data triggers a rebuild.
+
+The first startup after a new taxonomy, model, dimensions, or cache key may therefore take longer than a normal routed resource request.
+
+### Routing diagnostics
+
+Two complementary diagnostics are available.
+
+Per-agent JSONL audit is enabled by default when resource routing is enabled. By default it stores hashes rather than raw provenance:
+
+- timestamp and agent ID;
+- source SHA-256;
+- summary SHA-256;
+- taxonomy hash and embedding model identity;
+- cosine candidates and scores;
+- whether reranking ran and its candidate scores;
+- final category and fallback reason;
+- embedding/reranker/total latency;
+- success or routing error.
+
+Raw summary preview is opt-in through `audit.includeSummaryPreview=true` and is bounded by `summaryPreviewChars`.
+
+`resourceRouting.logDecisions=true` additionally writes one compact decision line through the normal OpenClaw plugin logger. It contains category keys, scores, fallback/reranker state, and timing, but not source paths, summary text, or API keys.
+
+Routing infrastructure failures are warning-logged even when `logDecisions=false`.
+
+### `create_parent`
+
+OpenViking 0.4.12 supports `parent` with `create_parent=true`. Automatic routing and explicit semantic category routing use this so a taxonomy path such as:
+
+```text
+viking://resources/projects/openclaw/openviking
+```
+
+can be created by OpenViking when its directories do not exist yet.
+
+The plugin does not create folders in Qdrant or manipulate vectors directly.
+
+## `add_resource`
+
+The agent-visible tool remains gated by `enableAddResourceTool`.
+
+When resource routing is disabled, its historical behavior remains active. `create_parent` is the only additive OpenViking API-parity field.
+
+When routing is enabled, additional parameters are exposed:
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `source` | Yes | Local path, media attachment path, directory, public URL, or Git URL. |
+| `to` | No | Exact target Viking URI. Overrides routing. |
+| `parent` | No | Exact parent Viking URI. Overrides routing. |
+| `category` | No | Exact semantic key already present in the current agent taxonomy. |
+| `summary` | Automatic only | Concise semantic content/purpose summary. Required only when no explicit destination/category is supplied. |
+| `create_parent` | No | Create an explicitly supplied parent if missing. Automatic/category routing sets it internally. |
+| `reason` | No | OpenViking reason/note. Not the routing summary. |
+| `instruction` | No | OpenViking semantic-processing instruction. |
+| `wait` | No | Wait for processing completion. |
+| `timeout` | No | Timeout in seconds when `wait=true`. |
+
+The `source` field remains the same top-level input used by existing OpenClaw/agent-permissions local-path authorization. Resource routing runs after that permission boundary and does not make a protected local path readable merely because `add_resource` itself is approved.
+
+OpenViking itself decides how an imported source becomes a resource tree. Large Markdown documents, directories, repositories, web collections, and other sources may produce multiple children and semantic artifacts below the selected parent.
 
 ## `remove_resource`
 
@@ -215,57 +542,27 @@ The tool accepts only descendants of:
 viking://resources/
 ```
 
-It refuses:
+It refuses the root itself, memories/sessions/skills/other namespaces, empty path segments, raw `.`/`..`, raw backslash separators, and ambiguous raw `?` suffixes.
 
-- `viking://resources` itself;
-- memories, sessions, skills, and other namespaces;
-- empty path segments;
-- raw `.` or `..` path segments;
-- raw backslash path separators;
-- ambiguous raw `?` suffixes.
+The validator intentionally does not percent-decode Viking URI path components because OpenViking 0.4.12 treats those percent sequences as literal path data.
 
-The validator intentionally does **not** percent-decode Viking URI path components. OpenViking treats percent sequences in the received Viking URI as literal path data; the plugin does not invent a second decoding step before a destructive operation.
+To clear all resources, list `viking://resources` first and remove its top-level children individually.
 
-To remove all resources, list `viking://resources` first and remove its top-level children individually. The root itself cannot be deleted through this tool.
+### Recursive deletion and consistency
 
-### Recursive deletion
+`recursive` defaults to `false`. A non-empty directory therefore requires `recursive=true`; the plugin does not silently promote a failed non-recursive request.
 
-`recursive` defaults to `false`, matching the OpenViking API. A non-empty directory therefore requires:
+The agent-facing tool defaults `wait` to `true`. OpenViking remains responsible for filesystem deletion, vector-index cleanup, resource-memory reference cleanup, and semantic refresh.
 
-```json
-{
-  "recursive": true
-}
-```
+Known semantic states on the tested server are:
 
-The plugin does not silently promote a failed non-recursive request into a recursive delete.
-
-### Waiting and consistency
-
-The agent-facing tool defaults `wait` to `true`.
-
-With `wait=true`, the plugin sends the DELETE request with OpenViking wait semantics and waits for that request to finish. OpenViking remains responsible for filesystem deletion, vector-index cleanup, resource-memory reference cleanup, and semantic refresh.
-
-The plugin does not perform its own Qdrant deletion, reindex, relation repair, or semantic refresh.
-
-The structured OpenViking result is propagated in tool `details`, including fields such as:
-
-- `uri`;
-- `estimated_deleted_count`;
-- `memory_cleanup`;
-- `semantic_root_uri`;
-- `semantic_status`;
-- `queue_status`.
-
-Known semantic states on the tested OpenViking server are:
-
-- `complete`: the waited semantic refresh completed;
-- `queued`: consistency work was queued and is still pending, normally when `wait=false` was explicitly requested;
+- `complete`: waited semantic refresh completed;
+- `queued`: consistency work is still pending;
 - `failed`: the resource was removed but semantic refresh reported a failure.
 
-If the DELETE request itself fails or times out, the tool throws instead of returning a false success. Because OpenViking deletion is idempotent for valid URIs, callers can inspect the resource state and retry deliberately when necessary.
+The plugin performs no blind retry for `queued` or `failed` and never deletes Qdrant records itself.
 
-### Tool groups
+## Tool groups
 
 `remove_resource` belongs to:
 
@@ -273,31 +570,56 @@ If the DELETE request itself fails or times out, the tool throws instead of retu
 resource_manage
 ```
 
-The existing import group remains:
+The import group remains:
 
 ```text
 import = add_resource, add_skill
 ```
 
-This keeps destructive resource management separate from resource ingestion.
+This keeps destructive resource management separate from ingestion.
+
+## Agent attribution diagnostics
+
+The plugin resolves the agent from OpenClaw context/session identity and selects that agent's OpenViking client/API key.
+
+If attribution fails, the request uses the dedicated system OpenViking account. It is never silently assigned to another configured agent.
+
+Existing tenant-routing diagnostics can be enabled with:
+
+```jsonc
+{
+  "logFindRequests": true
+}
+```
+
+or:
+
+```bash
+OPENVIKING_LOG_ROUTING=1
+```
+
+API keys are not written to routing logs.
 
 ## Post-start checks
 
-Confirm that per-agent credentials loaded:
+After installing or updating the plugin:
+
+1. confirm per-agent credentials loaded;
+2. confirm the `openviking` context engine is active;
+3. confirm normal recall still works for existing data;
+4. if resource routing is enabled, confirm every configured agent reports a taxonomy/cache initialization result;
+5. import a disposable resource with automatic routing and inspect its actual `root_uri`/parent in OpenViking;
+6. verify a second agent cannot list/search/read that first agent's resource;
+7. test a semantically uncertain summary and confirm it is imported into the configured inbox;
+8. stop or misconfigure the routing model endpoint and confirm the import is blocked rather than sent to inbox;
+9. verify explicit `to`, explicit `parent`, and explicit `category` each bypass automatic classification as documented;
+10. verify `remove_resource` still requires the external approval policy expected by the OpenClaw deployment and that the OpenViking root cannot be deleted.
+
+Useful narrow startup log check:
 
 ```bash
-grep -a "openviking: per-agent credentials loaded" /tmp/openclaw/openclaw-$(date +%F).log
+grep -aE 'openviking: (per-agent credentials loaded|resource routing ready|resource routing unavailable|resource routing failed)' /tmp/openclaw/openclaw-$(date +%F).log | tail -n 30
 ```
-
-Then verify, in this order:
-
-1. the `openviking` context engine is loaded;
-2. normal recall still works for an existing agent;
-3. `add_resource` still imports a disposable resource into that agent's account;
-4. another agent cannot see that resource through its own OpenViking account;
-5. `remove_resource` removes the disposable resource;
-6. a recursive test directory disappears together with its descendants;
-7. a protected URI such as `viking://resources` is rejected before an HTTP DELETE is sent.
 
 ## Updating an existing linked installation
 
@@ -309,13 +631,21 @@ npm run verify
 npm run typecheck
 ```
 
-After rebuilding, restart the OpenClaw gateway so it loads the new `dist/` files.
+Rebuild and restart the OpenClaw gateway so it loads the new `dist/` files.
 
-For a production replacement, keep the previous working source directory and the existing agent-key file intact until the new checkout has passed startup and smoke checks. This makes rollback a registration/configuration change instead of a data-recovery exercise.
+For production replacement, keep the previous working source directory and existing agent-key file intact until the new checkout has passed startup and smoke checks. The release is designed so `resourceRouting.enabled=false` preserves the historical resource-import path.
+
+## Rollback
+
+Use a normal Git rollback rather than manipulating OpenViking/Qdrant data.
+
+When this feature is squash-merged, the resource-routing release is represented by one commit in `main`, so it can be reverted with one normal `git revert <release-commit>` if necessary. Existing OpenViking resources and vectors do not need to be deleted to roll back plugin code.
+
+For an immediate deployment rollback, point the linked plugin back at the previously verified checkout, rebuild if required, and restart the gateway.
 
 ## Minimal tool profiles
 
-When OpenClaw uses a restrictive tool profile, plugin tools must also be allowed by the relevant OpenClaw tool policy. Enabling a tool in this plugin does not override OpenClaw's own tool/sandbox permissions.
+When OpenClaw uses a restrictive tool profile, plugin tools must also be allowed by the relevant OpenClaw tool policy. Enabling a tool in this plugin does not override OpenClaw's own tool, filesystem, local-input, or sandbox permissions.
 
 ## License
 
