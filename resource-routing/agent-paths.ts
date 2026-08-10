@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const AGENT_PLACEHOLDER = "{agentId}";
@@ -32,7 +32,7 @@ export function resolveAgentScopedResourceRoutingPath(template: string, agentId:
     throw new Error(`resource routing path template must contain ${AGENT_PLACEHOLDER}`);
   }
   const expanded = expandHome(normalizedTemplate.split(AGENT_PLACEHOLDER).join(normalizedAgentId));
-  return isAbsolute(expanded) ? resolve(expanded) : resolve(expanded);
+  return resolve(expanded);
 }
 
 export function defaultResourceTaxonomyPath(agentId: string, openClawHome = join(homedir(), ".openclaw")): string {

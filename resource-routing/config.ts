@@ -209,9 +209,14 @@ function parseEndpoint(
     timeoutMs: number;
   },
   label: string,
+  extraAllowedKeys: readonly string[] = [],
 ): ParsedResourceRoutingEndpoint {
   const record = asRecord(value, label);
-  assertAllowedKeys(record, ["baseUrl", "endpointPath", "apiKey", "headers", "model", "timeoutMs", "dimensions"], label);
+  assertAllowedKeys(
+    record,
+    ["baseUrl", "endpointPath", "apiKey", "headers", "model", "timeoutMs", ...extraAllowedKeys],
+    label,
+  );
   return {
     baseUrl: normalizeBaseUrl(stringValue(record.baseUrl, defaults.baseUrl, `${label}.baseUrl`)),
     endpointPath: normalizeEndpointPath(
@@ -277,6 +282,7 @@ export function parseResourceRoutingConfig(value: unknown): ParsedResourceRoutin
       timeoutMs: DEFAULT_EMBEDDING_TIMEOUT_MS,
     },
     "openviking config resourceRouting.embedding",
+    ["dimensions"],
   );
   const reranker = parseEndpoint(
     cfg.reranker,
