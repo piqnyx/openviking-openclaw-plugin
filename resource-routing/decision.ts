@@ -61,6 +61,10 @@ export function cosineSimilarity(left: readonly number[], right: readonly number
   return Math.max(-1, Math.min(1, score));
 }
 
+function compareStableKeys(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function rankEmbeddingCandidates(
   queryEmbedding: readonly number[],
   categories: readonly ResourceTaxonomyCategory[],
@@ -78,7 +82,7 @@ function rankEmbeddingCandidates(
       score: cosineSimilarity(queryEmbedding, embedding),
     };
   });
-  candidates.sort((left, right) => right.score - left.score || left.key.localeCompare(right.key));
+  candidates.sort((left, right) => right.score - left.score || compareStableKeys(left.key, right.key));
   return candidates.slice(0, Math.min(topK, candidates.length));
 }
 
