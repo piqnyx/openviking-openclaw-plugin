@@ -1,0 +1,388 @@
+name: Audit remove_resource finalization
+
+on:
+  push:
+    branches:
+      - audit/remove-resource-final
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.event.head_commit.message == 'audit: run remove_resource finalization'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: audit/remove-resource-final
+
+      - name: Require audited feature ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor d7832fa9373dbb829df71f9f6288af54aeee6566 HEAD
+
+      - name: Apply staged hardening and final surgical fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check changes/remove-resource-hardening.patch
+          git apply changes/remove-resource-hardening.patch
+          rm -f changes/remove-resource-hardening.patch
+          rmdir changes 2>/dev/null || true
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          client = Path('client.ts')
+          text = client.read_text()
+          old = '''  for (const segment of rawSegments) {
+            let decoded = segment;
+            try {
+              decoded = decodeURIComponent(segment);
+            } catch {
+              return { ok: false, reason: `Refusing malformed resource URI: ${uri}` };
+            }
+            if (decoded === "." || decoded === ".." || decoded.includes("/")) {
+              return { ok: false, reason: `Refusing unsafe resource URI: ${uri}` };
+            }
+          }'''
+          new = '''  for (const segment of rawSegments) {
+            if (
+              segment === "." ||
+              segment === ".." ||
+              segment.includes("\\\\") ||
+              segment.includes("?")
+            ) {
+              return { ok: false, reason: `Refusing unsafe resource URI: ${uri}` };
+            }
+          }'''
+          if old not in text:
+              raise SystemExit('client validator block not found')
+          client.write_text(text.replace(old, new, 1))
+
+          tool = Path('plugin/openviking-import-tools.ts')
+          text = tool.read_text()
+          old_formatter = '''function formatResourceRemovalText(result: RemoveResourceResult, requestedUri: string): string {
+            const uri = result.uri ?? requestedUri;
+            const details: string[] = [];
+            if (typeof result.estimated_deleted_count === "number") {
+              details.push(`estimated deleted entries: ${result.estimated_deleted_count}`);
+            }
+            if (result.semantic_status) {
+              details.push(`semantic status: ${result.semantic_status}`);
+            }
+            return `Removed OpenViking resource: ${uri}.${details.length ? ` ${details.join("; ")}.` : ""}`;
+          }'''
+          new_formatter = '''function formatResourceRemovalText(result: RemoveResourceResult, requestedUri: string): string {
+            const uri = result.uri ?? requestedUri;
+            const details: string[] = [];
+            if (typeof result.estimated_deleted_count === "number") {
+              details.push(`estimated deleted entries: ${result.estimated_deleted_count}`);
+            }
+            if (result.semantic_status === "complete") {
+              details.push("semantic refresh complete");
+            } else if (result.semantic_status === "queued") {
+              details.push("semantic refresh queued; consistency work is still pending");
+            } else if (result.semantic_status === "failed") {
+              details.push("semantic refresh failed after resource removal");
+            } else if (result.semantic_status) {
+              details.push(`semantic status: ${result.semantic_status}`);
+            }
+            return `Removed OpenViking resource: ${uri}.${details.length ? ` ${details.join("; ")}.` : ""}`;
+          }'''
+          if old_formatter not in text:
+              raise SystemExit('remove formatter block not found')
+          text = text.replace(old_formatter, new_formatter, 1)
+
+          old_call = '''          const result = await client.removeResource({
+            uri: validation.uri,
+            recursive: typeof params.recursive === "boolean" ? params.recursive : undefined,
+            wait: typeof params.wait === "boolean" ? params.wait : undefined,
+            timeout: typeof params.timeout === "number" ? params.timeout : undefined,
+          }, session.actorPeerId);'''
+          new_call = '''          const result = await client.removeResource({
+            uri: validation.uri,
+            recursive: typeof params.recursive === "boolean" ? params.recursive : undefined,
+            wait: typeof params.wait === "boolean" ? params.wait : true,
+            timeout: typeof params.timeout === "number" ? params.timeout : undefined,
+          }, session.actorPeerId);'''
+          if old_call not in text:
+              raise SystemExit('removeResource call block not found')
+          text = text.replace(old_call, new_call, 1)
+          text = text.replace(
+              'description: "Wait for OpenViking semantic refresh associated with the removal to complete; default false.",',
+              'description: "Wait for OpenViking semantic refresh associated with the removal to complete. The agent tool defaults to true; set false only when asynchronous cleanup is explicitly desired.",',
+              1,
+          )
+          tool.write_text(text)
+
+          test = Path('tests/remove-resource.test.ts')
+          text = test.read_text().replace('semantic_status: "completed"', 'semantic_status: "complete"')
+          text = text.replace('      semantic_status: "completed",', '      semantic_status: "complete",')
+          text = text.replace('    ["viking://resources/%2e%2e/user/memories/a", "unsafe encoded"],\n', '')
+          test.write_text(text)
+
+          manifest = Path('install-manifest.json')
+          text = manifest.read_text()
+          old_compat = '"minOpenvikingVersion": "0.4.1",\n    "recommendedOpenvikingVersion": "0.4.1"'
+          new_compat = '"minOpenvikingVersion": "0.4.4",\n    "recommendedOpenvikingVersion": "0.4.12"'
+          if old_compat not in text:
+              raise SystemExit('OpenViking compatibility block not found')
+          manifest.write_text(text.replace(old_compat, new_compat, 1))
+          PY
+
+          cat > tests/remove-resource-hardening.test.ts <<'EOF'
+          import { describe, expect, it, vi } from "vitest";
+
+          import type { HttpTransport } from "../adapters/http-transport.js";
+          import {
+            OpenVikingClient,
+            validateRemovableResourceUri,
+          } from "../client.js";
+          import { memoryOpenVikingConfigSchema } from "../config.js";
+
+          function makeClient(transport: HttpTransport) {
+            return new OpenVikingClient(
+              "http://127.0.0.1:1933",
+              "ov-main-key",
+              "main",
+              5_000,
+              "",
+              "",
+              undefined,
+              { transport },
+            );
+          }
+
+          const refusedUris = [
+            "viking://user/memories/a",
+            "viking://user/sessions/a",
+            "viking://agent/skills/a",
+            "viking://resources",
+            "viking://resources/",
+            "viking://resources/../user/memories/a",
+            "viking://resources/./a",
+            "viking://resources/a//b",
+            "viking://resources/a\\b",
+            "viking://resources/a?ignored=suffix",
+          ] as const;
+
+          describe("remove_resource resource boundary", () => {
+            it.each(refusedUris)("rejects %s", (uri) => {
+              expect(validateRemovableResourceUri(uri).ok).toBe(false);
+            });
+
+            it("accepts a normal resource descendant and normalizes trailing slashes", () => {
+              expect(validateRemovableResourceUri("  viking://resources/workspace/docs///  ")).toEqual({
+                ok: true,
+                uri: "viking://resources/workspace/docs",
+              });
+            });
+
+            it.each([
+              "viking://resources/%2e%2e",
+              "viking://resources/a%2Fb",
+              "viking://resources/a%5Cb",
+              "viking://resources/100%",
+            ])("does not invent percent-decoding semantics for %s", (uri) => {
+              expect(validateRemovableResourceUri(uri)).toEqual({ ok: true, uri });
+            });
+
+            it.each(refusedUris)("enforces the same boundary in OpenVikingClient.removeResource for %s", async (uri) => {
+              const transport: HttpTransport = vi.fn(async () => {
+                throw new Error("transport must not be reached");
+              });
+              const client = makeClient(transport);
+
+              await expect(client.removeResource({ uri })).rejects.toThrow();
+              expect(transport).not.toHaveBeenCalled();
+            });
+
+            it("passes a literal percent-encoded segment through as data, not as a decoded path", async () => {
+              let requestUrl = "";
+              const transport: HttpTransport = vi.fn(async (url) => {
+                requestUrl = url;
+                return new Response(JSON.stringify({ status: "ok", result: { uri: "viking://resources/%2e%2e" } }), {
+                  status: 200,
+                  headers: { "Content-Type": "application/json" },
+                });
+              });
+
+              await makeClient(transport).removeResource({ uri: "viking://resources/%2e%2e" });
+              expect(new URL(requestUrl).searchParams.get("uri")).toBe("viking://resources/%2e%2e");
+            });
+          });
+
+          describe("remove_resource fail-closed configuration", () => {
+            it("does not enable remove_resource merely because it is explicitly selected", () => {
+              const cfg = memoryOpenVikingConfigSchema.parse({
+                enabledTools: ["remove_resource"],
+              });
+
+              expect(cfg.enableRemoveResourceTool).toBe(false);
+              expect(cfg.enabledTools).not.toContain("remove_resource");
+            });
+
+            it("lets disabledTools win even when the explicit safety flag is enabled", () => {
+              const cfg = memoryOpenVikingConfigSchema.parse({
+                enableRemoveResourceTool: true,
+                enabledTools: "all",
+                disabledTools: ["remove_resource"],
+              });
+
+              expect(cfg.enableRemoveResourceTool).toBe(true);
+              expect(cfg.enabledTools).not.toContain("remove_resource");
+              expect(cfg.disabledTools).toContain("remove_resource");
+            });
+          });
+          EOF
+
+          cat > tests/remove-resource-routing.test.ts <<'EOF'
+          import { describe, expect, it, vi } from "vitest";
+
+          import type { HttpTransport } from "../adapters/http-transport.js";
+          import { loadAgentKeys } from "../agent-keys.js";
+          import { createOpenVikingClientRuntime } from "../plugin/openviking-client-runtime.js";
+          import { registerOpenVikingImportTools } from "../plugin/openviking-import-tools.js";
+
+          type ToolFactory = (ctx?: { agentId?: string }) => {
+            execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
+          };
+
+          function setup() {
+            const calls: Array<{ key: string | null; wait: string | null; uri: string | null }> = [];
+            const transport: HttpTransport = vi.fn(async (url, init) => {
+              const parsed = new URL(url);
+              const headers = new Headers(init.headers ?? {});
+              const wait = parsed.searchParams.get("wait");
+              calls.push({
+                key: headers.get("X-API-Key"),
+                wait,
+                uri: parsed.searchParams.get("uri"),
+              });
+              return new Response(JSON.stringify({
+                status: "ok",
+                result: {
+                  uri: parsed.searchParams.get("uri"),
+                  estimated_deleted_count: 1,
+                  semantic_root_uri: "viking://resources",
+                  semantic_status: wait === "true" ? "complete" : "queued",
+                  queue_status: wait === "true" ? { Semantic: { error_count: 0 } } : undefined,
+                },
+              }), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+              });
+            });
+
+            const agentKeys = loadAgentKeys({
+              filePath: "/etc/openviking/secrets.conf",
+              systemApiKey: "ov-system-key",
+              logger: { info: vi.fn(), warn: vi.fn() },
+              readFile: () => "main = ov-main-key\nigor = ov-igor-key\n",
+              statMode: () => 0o600,
+            });
+            const runtime = createOpenVikingClientRuntime({
+              cfg: {
+                baseUrl: "http://127.0.0.1:1933",
+                apiKey: "ov-system-key",
+                peer_role: "none",
+                peer_prefix: "",
+                timeoutMs: 5_000,
+                logFindRequests: false,
+              },
+              rawPeerPrefix: undefined,
+              agentKeys,
+              logger: { info: vi.fn() },
+              transport,
+            });
+
+            const factories = new Map<string, ToolFactory>();
+            registerOpenVikingImportTools({
+              registerTool: (factory, meta) => factories.set(meta.name, factory as ToolFactory),
+              getClient: runtime.getClient,
+              resolvePluginSessionRouting: (ctx) => ({ agentId: ctx?.agentId ?? "__system__" }),
+              isBypassedSession: () => false,
+              makeBypassedToolResult: vi.fn(),
+              enableAddResourceTool: false,
+              enableRemoveResourceTool: true,
+            });
+
+            return { calls, tool: factories.get("remove_resource")! };
+          }
+
+          describe("remove_resource end-to-end plugin routing", () => {
+            it("uses the current agent account and waits for consistency by default", async () => {
+              const { calls, tool } = setup();
+              const result = await tool({ agentId: "main" }).execute("call-main", {
+                uri: "viking://resources/workspace",
+                recursive: true,
+              }) as { details?: Record<string, unknown>; content?: Array<{ text?: string }> };
+
+              expect(calls).toEqual([{
+                key: "ov-main-key",
+                wait: "true",
+                uri: "viking://resources/workspace",
+              }]);
+              expect(result.details).toMatchObject({
+                action: "resource_removed",
+                semantic_status: "complete",
+              });
+              expect(result.content?.[0]?.text).toContain("semantic refresh complete");
+            });
+
+            it("keeps agent accounts isolated and reports queued cleanup when async is explicit", async () => {
+              const { calls, tool } = setup();
+              const result = await tool({ agentId: "igor" }).execute("call-igor", {
+                uri: "viking://resources/workspace",
+                wait: false,
+              }) as { details?: Record<string, unknown>; content?: Array<{ text?: string }> };
+
+              expect(calls).toEqual([{
+                key: "ov-igor-key",
+                wait: "false",
+                uri: "viking://resources/workspace",
+              }]);
+              expect(result.details).toMatchObject({
+                action: "resource_removed",
+                semantic_status: "queued",
+              });
+              expect(result.content?.[0]?.text).toContain("still pending");
+            });
+          });
+          EOF
+
+          git diff --check
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and test
+        run: npm run verify
+
+      - name: Typecheck including tests
+        run: npm run typecheck
+
+      - name: Verify scope against baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --name-only 8094024a3688d7c1528769e7d06e5d776fee4e38 -- \
+            ':!dist/**' | sort
+
+      - name: Commit verified product changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'piqnyx CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add client.ts plugin/openviking-import-tools.ts tests/remove-resource.test.ts \
+            tests/remove-resource-hardening.test.ts tests/remove-resource-routing.test.ts \
+            install-manifest.json dist changes
+          git diff --cached --check
+          git commit -m 'fix: finalize guarded remove_resource behavior'
+          git push origin HEAD:audit/remove-resource-final
