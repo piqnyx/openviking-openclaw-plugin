@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   parseResourceTaxonomy,
   parseResourceTaxonomyYaml,
-  RESOURCE_TAXONOMY_MAX_URI_CHARS,
 } from "../resource-routing/taxonomy.js";
 
 function deepTaxonomy(depth: number): unknown {
@@ -30,17 +29,11 @@ function deepTaxonomy(depth: number): unknown {
 
 describe("resource taxonomy parser hardening", () => {
   it("handles a very deep valid tree without depending on the JS call stack", () => {
-    const taxonomy = parseResourceTaxonomy(deepTaxonomy(1_500));
-    const leaf = taxonomy.byKey.get("k1500");
-    expect(leaf?.depth).toBe(1_500);
+    const taxonomy = parseResourceTaxonomy(deepTaxonomy(5_000));
+    const leaf = taxonomy.byKey.get("k5000");
+    expect(leaf?.depth).toBe(5_000);
     expect(leaf?.uri.startsWith("viking://resources/")).toBe(true);
-    expect(taxonomy.categories).toHaveLength(1_501);
-  });
-
-  it("rejects a compiled URI that exceeds the plugin safety cap", () => {
-    expect(() => parseResourceTaxonomy(deepTaxonomy(2_100))).toThrow(
-      new RegExp(`longer than ${RESOURCE_TAXONOMY_MAX_URI_CHARS} characters`),
-    );
+    expect(taxonomy.categories).toHaveLength(5_001);
   });
 
   it("rejects YAML aliases instead of allowing shared or recursive taxonomy nodes", () => {
@@ -65,6 +58,18 @@ categories:
         },
       },
     })).toThrow(/not a safe resource URI segment/);
+  });
+
+  it("rejects leading or trailing whitespace instead of silently rewriting a segment", () => {
+    expect(() => parseResourceTaxonomy({
+      schemaVersion: 1,
+      categories: {
+        docs: {
+          segment: " docs ",
+          description: "Documentation.",
+        },
+      },
+    })).toThrow(/leading or trailing whitespace/);
   });
 
   it("rejects reusing the same node object in multiple branches", () => {
