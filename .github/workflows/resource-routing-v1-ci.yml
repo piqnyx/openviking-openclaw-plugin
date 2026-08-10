@@ -41,19 +41,25 @@ jobs:
             node .github/scripts/integrate-resource-routing-add-resource-v2.mjs
           fi
 
-      - name: Normalize narrow TypeScript test literal
+      - name: Normalize narrow TypeScript test fixtures
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+
           p = Path('tests/resource-routing-add-resource-plan.test.ts')
           s = p.read_text()
-          old = 'fallbackReason: "below-min-score",'
-          new = 'fallbackReason: "below-min-score" as const,'
-          if old in s:
-              s = s.replace(old, new, 1)
-              p.write_text(s)
+          s = s.replace('fallbackReason: "below-min-score",', 'fallbackReason: "below-min-score" as const,', 1)
+          if 'timingMs:' not in s:
+              s = s.replace('rerankerUsed: false,', 'rerankerUsed: false,\n        timingMs: { embedding: 1, total: 1 },')
+          p.write_text(s)
+
+          p = Path('tests/resource-routing-add-resource-tool.test.ts')
+          s = p.read_text()
+          if 'timingMs:' not in s:
+              s = s.replace('rerankerUsed: false,', 'rerankerUsed: false,\n        timingMs: { embedding: 1, total: 1 },')
+          p.write_text(s)
           PY
 
       - name: Refresh lockfile for declared dependencies
@@ -87,6 +93,7 @@ jobs:
             install-manifest.json \
             resource-routing/default-taxonomy.yaml \
             tests/resource-routing-add-resource-plan.test.ts \
+            tests/resource-routing-add-resource-tool.test.ts \
             package-lock.json
           if git diff --cached --quiet; then
             exit 0
