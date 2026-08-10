@@ -138,7 +138,7 @@ describe("add_resource routing planner", () => {
       mode: "automatic",
       categoryKey: "inbox",
       fallback: true,
-      fallbackReason: "below-min-score",
+      fallbackReason: "below-min-score" as const,
     });
   });
 
