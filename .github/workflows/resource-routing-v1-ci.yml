@@ -41,6 +41,21 @@ jobs:
             node .github/scripts/integrate-resource-routing-add-resource-v2.mjs
           fi
 
+      - name: Normalize narrow TypeScript test literal
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/resource-routing-add-resource-plan.test.ts')
+          s = p.read_text()
+          old = 'fallbackReason: "below-min-score",'
+          new = 'fallbackReason: "below-min-score" as const,'
+          if old in s:
+              s = s.replace(old, new, 1)
+              p.write_text(s)
+          PY
+
       - name: Refresh lockfile for declared dependencies
         run: npm install --package-lock-only --ignore-scripts
 
@@ -71,6 +86,7 @@ jobs:
             openclaw.plugin.json \
             install-manifest.json \
             resource-routing/default-taxonomy.yaml \
+            tests/resource-routing-add-resource-plan.test.ts \
             package-lock.json
           if git diff --cached --quiet; then
             exit 0
