@@ -120,28 +120,32 @@ export async function planAddResourceRouting(options: {
   params: AddResourceRoutingParams;
   manager?: AddResourceRoutingManager;
 }): Promise<AddResourceRoutingPlan> {
-  const source = nonEmpty(options.params.source);
-  if (!source) {
+  const source = options.params.source;
+  if (typeof source !== "string" || !source.trim()) {
     throw new Error("add_resource source is required");
   }
 
-  const to = nonEmpty(options.params.to);
-  if (to) {
-    return {
-      input: { ...baseInput({ ...options.params, source }), to },
-      details: { mode: "explicit-to" },
+  // Preserve the pre-resourceRouting contract for the two legacy explicit
+  // target fields. In particular, do not trim/rewrite them and do not silently
+  // resolve the legacy-invalid `to + parent` combination here. The existing
+  // OpenViking client/server validation remains authoritative for that case.
+  const hasTo = options.params.to !== undefined;
+  const hasParent = options.params.parent !== undefined;
+  if (hasTo || hasParent) {
+    const input: AddResourceInput = {
+      ...baseInput(options.params),
+      to: options.params.to,
+      parent: options.params.parent,
     };
-  }
-
-  const parent = nonEmpty(options.params.parent);
-  if (parent) {
+    if (hasParent) {
+      input.createParent = options.params.createParent;
+    }
     return {
-      input: {
-        ...baseInput({ ...options.params, source }),
-        parent,
-        createParent: options.params.createParent,
+      input,
+      details: {
+        mode: hasTo ? "explicit-to" : "explicit-parent",
+        parentUri: hasParent ? options.params.parent : undefined,
       },
-      details: { mode: "explicit-parent", parentUri: parent },
     };
   }
 
@@ -157,7 +161,7 @@ export async function planAddResourceRouting(options: {
       const resolved = await options.manager.resolveCategory(options.agentId, category);
       return {
         input: {
-          ...baseInput({ ...options.params, source }),
+          ...baseInput(options.params),
           parent: resolved.categoryUri,
           createParent: true,
         },
@@ -183,7 +187,7 @@ export async function planAddResourceRouting(options: {
 
   if (!options.manager?.isEnabled()) {
     return {
-      input: baseInput({ ...options.params, source }),
+      input: baseInput(options.params),
       details: { mode: "legacy-root" },
     };
   }
@@ -196,20 +200,21 @@ export async function planAddResourceRouting(options: {
     );
   }
 
-  const filename = sourceFilename(source);
+  const semanticSource = source.trim();
+  const filename = sourceFilename(semanticSource);
   try {
     const decision = await options.manager.routeResource(options.agentId, {
       summary,
       filename,
       extension: filename ? extname(filename).replace(/^\./, "") : "",
-      sourceKind: classifySourceKind(source),
+      sourceKind: classifySourceKind(semanticSource),
       source,
       reason: options.params.reason,
       instruction: options.params.instruction,
     });
     return {
       input: {
-        ...baseInput({ ...options.params, source }),
+        ...baseInput(options.params),
         parent: decision.categoryUri,
         createParent: true,
       },
