@@ -1,4 +1,4 @@
-# Trigger after workflow creation.
+# Temporary validation workflow; removed before merge.
 name: Resource routing security validation
 
 on:
@@ -26,13 +26,14 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Apply reviewed URI and endpoint hardening
+      - name: Apply reviewed routing hardening
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
+          # Taxonomy URI segment compatibility with OpenViking and unique destinations.
           p = Path('resource-routing/taxonomy.ts')
           s = p.read_text()
           old = r'''const SEGMENT_RE = /^[^/\\?\0]+$/u;'''
@@ -41,6 +42,7 @@ jobs:
               s = s.replace(old, new, 1)
           if new not in s:
               raise SystemExit('taxonomy segment regex hardening anchor missing')
+
           old_block = '''function validateSegment(segment: string, label: string): void {
   if (segment === "." || segment === ".." || !SEGMENT_RE.test(segment)) {
     throw new Error(`${label} is not a safe resource URI segment`);
@@ -61,8 +63,36 @@ jobs:
               s = s.replace(old_block, new_block, 1)
           if new_block not in s:
               raise SystemExit('taxonomy segment length hardening anchor missing')
+
+          old = '''  const categories: ResourceTaxonomyCategory[] = [];
+  const byKey = new Map<string, ResourceTaxonomyCategory>();'''
+          new = '''  const categories: ResourceTaxonomyCategory[] = [];
+  const byKey = new Map<string, ResourceTaxonomyCategory>();
+  const byUri = new Set<string>();'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          if new not in s:
+              raise SystemExit('taxonomy URI uniqueness state anchor missing')
+
+          old = '''    const routeable = parseRouteable(node.routeable, `resource taxonomy category ${key}.routeable`);
+    const uri = `${parentUri}/${segment}`;
+
+    const category: ResourceTaxonomyCategory = {'''
+          new = '''    const routeable = parseRouteable(node.routeable, `resource taxonomy category ${key}.routeable`);
+    const uri = `${parentUri}/${segment}`;
+    if (byUri.has(uri)) {
+      throw new Error(`resource taxonomy contains duplicate destination URI: ${uri}`);
+    }
+    byUri.add(uri);
+
+    const category: ResourceTaxonomyCategory = {'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          if new not in s:
+              raise SystemExit('taxonomy duplicate destination anchor missing')
           p.write_text(s)
 
+          # Strict endpoint URL composition.
           p = Path('resource-routing/config.ts')
           s = p.read_text()
           old_block = '''  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
@@ -108,6 +138,40 @@ function normalizeEndpointPath(value: string, label: string): string {
           if new_block not in s:
               raise SystemExit('endpoint URL hardening anchor missing')
           p.write_text(s)
+
+          # A configured fallback is part of taxonomy integrity, even for explicit category routing.
+          p = Path('resource-routing/manager.ts')
+          s = p.read_text()
+          old = '''import {
+  loadResourceTaxonomyFile,
+  resolveResourceCategoryUri,
+  type ResourceTaxonomy,
+} from "./taxonomy.js";'''
+          new = '''import {
+  assertResourceRoutingFallbackCategory,
+  loadResourceTaxonomyFile,
+  resolveResourceCategoryUri,
+  type ResourceTaxonomy,
+} from "./taxonomy.js";'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          if new not in s:
+              raise SystemExit('manager fallback import anchor missing')
+
+          old = '''    const path = resolveAgentResourceRoutingPaths(this.config, agentId).taxonomyFile;
+    const pending = this.loadTaxonomy(path);
+    this.taxonomyPromises.set(agentId, pending);'''
+          new = '''    const path = resolveAgentResourceRoutingPaths(this.config, agentId).taxonomyFile;
+    const pending = this.loadTaxonomy(path).then((taxonomy) => {
+      assertResourceRoutingFallbackCategory(taxonomy, this.config.fallbackCategory);
+      return taxonomy;
+    });
+    this.taxonomyPromises.set(agentId, pending);'''
+          if old in s:
+              s = s.replace(old, new, 1)
+          if new not in s:
+              raise SystemExit('manager fallback validation anchor missing')
+          p.write_text(s)
           PY
 
       - name: Install dependencies
@@ -148,9 +212,9 @@ function normalizeEndpointPath(value: string, label: string): string {
           set -euo pipefail
           git config user.name 'resource-routing-ci'
           git config user.email 'actions@users.noreply.github.com'
-          git add resource-routing/taxonomy.ts resource-routing/config.ts
+          git add resource-routing/taxonomy.ts resource-routing/config.ts resource-routing/manager.ts
           if git diff --cached --quiet; then
             exit 0
           fi
-          git commit -m 'Harden resource routing URI and endpoint validation [skip ci]'
+          git commit -m 'Harden resource routing taxonomy integrity [skip ci]'
           git push origin HEAD:agent/resource-routing-v1
