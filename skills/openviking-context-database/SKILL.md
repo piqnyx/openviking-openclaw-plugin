@@ -6,7 +6,7 @@ description: >
   and externalized tool-result recovery. Prefer this skill when the user wants to use, query,
   debug, or operate OpenViking context from an OpenClaw agent. For first-time plugin installation,
   follow the plugin README.
-version: 2026.6.5
+version: 2026.7.15-isolation.7
 metadata:
   openclaw:
     requires:
@@ -30,6 +30,8 @@ Use this skill after `@openviking/openclaw-plugin` is installed and configured. 
 - The plugin is **remote-only**. It talks to an existing OpenViking server through HTTP and does not start or manage `openviking-server`.
 - Do not invent OpenViking REST endpoints. Use the registered OpenClaw tools and commands described below.
 - The agent-visible `add_resource` tool is disabled by default (`enableAddResourceTool=false`). Do not use `add_resource` during search, retrieval, URI reading, or search-result optimization. Use `ov_search` and `ov_read` in those flows.
+- When automatic resource routing is enabled, provide a concise semantic `summary`; never invent taxonomy category keys or `viking://` destinations.
+- `remove_resource` is destructive. Use it only for an explicit user deletion request, never delete `viking://resources` itself, and use `recursive=true` only when deleting a non-empty resource subtree is intended.
 - Use manual `/add-resource`, or `add_resource` only when it is explicitly enabled and the user explicitly asks to import, add, upload, save, or index a resource.
 - Use `add_skill` only when the user explicitly asks to import, add, install, or register an Agent Skill into OpenViking.
 - For local files and directories, pass the local path to the plugin tool. The plugin uploads them through `/api/v1/resources/temp_upload`; do not send raw local filesystem paths to a remote server yourself.
@@ -85,6 +87,10 @@ Core config lives under `plugins.entries.openviking.config`:
 | `traceRecall` | `false` | Record recall traces in memory. |
 | `traceRecallPersist` | `false` | Persist recall traces as local JSONL files. |
 | `traceRecallDir` | `~/.openclaw/openviking/recall-traces` | Recall trace directory when persistence is enabled. |
+| `resourceRouting.enabled` | `false` | Enable per-agent YAML taxonomy routing for `add_resource`. |
+| `resourceRouting.fallbackCategory` | `inbox` | Existing routeable semantic key used for semantic uncertainty. |
+| `resourceRouting.retrieval.topK` | `2` | Cosine candidates retained for possible reranking. |
+| `resourceRouting.logDecisions` | `false` | Emit compact category/score/timing decisions without source or summary content. |
 
 Normal setup command:
 
@@ -102,6 +108,25 @@ openclaw openviking setup --base-url <URL> --api-key <KEY> --allow-offline --jso
 openclaw openviking setup --base-url <URL> --api-key <KEY> --force-slot --json
 ```
 
+## Automatic Resource Routing
+
+When `plugins.entries.openviking.config.resourceRouting.enabled=true`, each OpenClaw agent uses its own YAML taxonomy (default `~/.openclaw/{agentId}.yaml`). The packaged starter is `resource-routing/default-taxonomy.yaml`.
+
+The routing contract is:
+
+1. explicit `to`;
+2. explicit `parent`;
+3. explicit existing taxonomy `category`;
+4. automatic classification from a short semantic `summary`.
+
+Automatic routing embeds summary-only by default, compares it with cached embeddings of all routeable taxonomy categories, keeps configurable cosine `topK`, and conditionally reranks close candidates. Models never produce Viking URIs; the plugin converts only validated taxonomy keys to trusted `viking://resources/...` parents and uses OpenViking `create_parent=true`.
+
+Semantic uncertainty routes to the configured fallback key, normally `inbox -> viking://resources/__INBOX__`, and the resource is still imported. Infrastructure failures such as a dead embedder/reranker, malformed model output, dimension mismatch, invalid taxonomy, or unrebuildable cache are fail-closed: `add_resource` is not called.
+
+`summary` is routing input only. Do not copy it into OpenViking `reason`; a non-empty `reason` has separate memory-extraction semantics.
+
+Taxonomy YAML is strict: no aliases/anchors, unique semantic keys and destination URIs, safe segments, at most 50 Unicode characters per segment, and a 4096-character plugin cap for the compiled resource URI. A routeable category may also have children, so a resource directory may contain direct resources and more specific subdirectories. Taxonomy changes take effect after gateway restart.
+
 ## Tool Selection Guide
 
 | User intent | Use |
@@ -111,6 +136,7 @@ openclaw openviking setup --base-url <URL> --api-key <KEY> --force-slot --json
 | “Forget X” | `memory_forget` |
 | Summary lacks an exact command/path/snippet from old chat | `ov_archive_search`, then `ov_archive_expand` if needed |
 | Import docs, PDFs, local dirs, URLs, Git repos, media attachments | manual `/add-resource`; `add_resource` only if `enableAddResourceTool=true` |
+| Delete an imported OpenViking resource or subtree | `remove_resource` only for an explicit deletion request and only below `viking://resources/` |
 | Import/register an Agent Skill | `add_skill` |
 | Search imported resources or skills | `ov_search` |
 | Read an exact `viking://...` hit from `ov_search` or recall trace | `ov_read` |
@@ -178,21 +204,39 @@ Use after an archive search or when the `[Archive Index]` already identifies the
 
 ### `add_resource`
 
-Import resources into `viking://resources/...`.
+Import resources into `viking://resources/...`. The agent tool is disabled by default and must only be used for explicit import/index requests.
 
-This agent tool is disabled by default. Prefer manual `/add-resource` for resource ingestion. If `enableAddResourceTool=true` exposes the tool, use it only for explicit import/index requests and never as part of search/retrieval optimization.
+When resource routing is disabled, the historical import behavior remains active. When routing is enabled, destination priority is explicit `to`, explicit `parent`, explicit existing semantic `category`, then automatic routing from `summary`.
 
 | Parameter | Required | Description |
 |---|---|---|
 | `source` | Yes | Local path, OpenClaw media attachment path, directory path, public URL, or Git URL. |
-| `to` | No | Exact target URI, e.g. `viking://resources/project-docs`. Mutually exclusive with `parent`. |
-| `parent` | No | Parent URI under `viking://resources`. Mutually exclusive with `to`. |
-| `reason` | No | Reason/note for import. |
-| `instruction` | No | Processing instruction for semantic extraction. |
+| `to` | No | Exact target URI. Do not combine with `parent`. |
+| `parent` | No | Exact parent below `viking://resources`. |
+| `category` | No | Existing semantic category key from the current agent taxonomy. Never invent one. |
+| `summary` | Automatic only | One concise sentence describing semantic content and purpose. |
+| `create_parent` | No | Create an explicit parent when missing. Category/automatic routing sets this internally. |
+| `reason` | No | OpenViking reason/note. This is not the routing summary. |
+| `instruction` | No | OpenViking semantic-processing instruction. |
 | `wait` | No | Wait for processing completion. |
 | `timeout` | No | Timeout in seconds when `wait=true`. |
 
-The current OpenClaw tool exposes the parameters above. The underlying client also supports server-facing resource options such as `strict`, `ignore_dirs`, `include`, `exclude`, and `preserve_structure` for command/internal paths; do not pass them to the tool unless the registered schema exposes them.
+If automatic routing needs a summary and none is supplied, retry with a concise semantic summary. Semantic uncertainty may route to the configured `__INBOX__`; an infrastructure routing error must instead be reported to the user and the resource must not be imported.
+
+The `source` field remains the local-input permission selector. Routing does not bypass filesystem policy or make an otherwise protected local path readable.
+
+### `remove_resource`
+
+Delete a resource descendant below `viking://resources/`. This is destructive and must only be used for an explicit user deletion request.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `uri` | Yes | Exact descendant URI below `viking://resources/`. The root itself is forbidden. |
+| `recursive` | No | Required when intentionally deleting a non-empty directory tree. Default false. |
+| `wait` | No | Agent tool defaults to true so semantic cleanup can complete before subsequent work. |
+| `timeout` | No | Server-side wait timeout in seconds. |
+
+Do not use blind retries for `queued` or `failed` semantic cleanup results. Inspect state deliberately. The plugin never manipulates Qdrant directly.
 
 ### `add_skill`
 
