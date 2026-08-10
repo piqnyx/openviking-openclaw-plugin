@@ -1,4 +1,4 @@
-import { memoryOpenVikingConfigSchema } from "./config.js";
+import { openVikingPluginConfigSchema } from "./plugin-config.js";
 import { loadAgentKeys, type AgentKeyResolver } from "./agent-keys.js";
 import { registerSetupCli } from "./commands/setup.js";
 import { createOpenVikingBypassRuntime } from "./plugin/openviking-bypass-runtime.js";
@@ -56,6 +56,7 @@ import {
   openClawSessionRefToOvStorageId,
   openClawSessionToOvStorageId,
 } from "./routing/identity-routing.js";
+import { ResourceRoutingService } from "./routing/resource-routing-service.js";
 import {
   buildMemoryLinesWithBudget,
 } from "./auto-recall.js";
@@ -155,7 +156,7 @@ const contextEnginePlugin = {
   name: "Context Engine (OpenViking)",
   description: "OpenViking-backed context-engine memory with auto-recall/capture",
   kind: "context-engine" as const,
-  configSchema: memoryOpenVikingConfigSchema,
+  configSchema: openVikingPluginConfigSchema,
 
   register(api: OpenClawPluginApi) {
     registerOpenVikingFeatureGatesMethod(api);
@@ -177,9 +178,9 @@ const contextEnginePlugin = {
       delete rawCfg.autoStart;
     }
 
-    let cfg: ReturnType<typeof memoryOpenVikingConfigSchema.parse>;
+    let cfg: ReturnType<typeof openVikingPluginConfigSchema.parse>;
     try {
-      cfg = memoryOpenVikingConfigSchema.parse(rawCfg);
+      cfg = openVikingPluginConfigSchema.parse(rawCfg);
     } catch (parseErr) {
       api.logger.warn(
         `openviking: config parse failed (${parseErr instanceof Error ? parseErr.message : String(parseErr)}). ` +
@@ -289,6 +290,8 @@ const contextEnginePlugin = {
       listOpenVikingDirectory,
     } = queryRuntime;
 
+    const resourceRouting = new ResourceRoutingService(cfg.resourceRouting);
+
     registerOpenVikingImportTools({
       registerTool: registerOpenVikingTool,
       getClient,
@@ -297,6 +300,7 @@ const contextEnginePlugin = {
       makeBypassedToolResult,
       enableAddResourceTool: cfg.enableAddResourceTool,
       enableRemoveResourceTool: cfg.enableRemoveResourceTool,
+      resourceRouting,
     });
 
     registerOpenVikingQueryTools({
