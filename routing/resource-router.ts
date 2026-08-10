@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 
 import type { ParsedResourceRoutingConfig } from "./resource-routing-config.js";
 import {
+  computeResourceRoutingEmbeddingIdentity,
   loadResourceRoutingEmbeddingCache,
   writeResourceRoutingEmbeddingCacheAtomic,
   type ResourceRoutingEmbeddingCache,
@@ -76,6 +77,15 @@ function ensureConfiguredFallback(
   }
 }
 
+function embeddingIdentity(config: ParsedResourceRoutingConfig): string {
+  return computeResourceRoutingEmbeddingIdentity({
+    baseUrl: config.embedding.baseUrl,
+    model: config.embedding.model,
+    apiKey: config.embedding.apiKey,
+    headers: config.embedding.headers,
+  });
+}
+
 function cacheFromVectors(
   taxonomy: CompiledResourceTaxonomy,
   config: ParsedResourceRoutingConfig,
@@ -90,6 +100,7 @@ function cacheFromVectors(
     schemaVersion: 1,
     taxonomyHash: taxonomy.taxonomyHash,
     embeddingModel: config.embedding.model,
+    embeddingIdentity: embeddingIdentity(config),
     dimensions: config.embedding.dimensions,
     categories: taxonomy.routeableCategories.map((category, index) => ({
       key: category.key,
@@ -124,6 +135,7 @@ export async function buildResourceRoutingEmbeddingState(
   const expected = {
     taxonomyHash: input.taxonomy.taxonomyHash,
     embeddingModel: input.config.embedding.model,
+    embeddingIdentity: embeddingIdentity(input.config),
     dimensions: input.config.embedding.dimensions,
     categoryKeys: input.taxonomy.routeableCategories.map((category) => category.key),
   };
