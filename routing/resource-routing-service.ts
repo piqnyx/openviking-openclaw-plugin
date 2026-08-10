@@ -25,6 +25,17 @@ export type ResourceRoutingServiceOptions = {
   rerankerTransport?: HttpTransport;
 };
 
+export type ResourceRoutingPreloadLogger = {
+  info: (message: string) => void;
+  warn?: (message: string) => void;
+  error: (message: string) => void;
+};
+
+export type ResourceRoutingPreloadResult = {
+  ready: string[];
+  failed: Array<{ agentId: string; error: string }>;
+};
+
 export type AutomaticResourceRouteInput = ResourceRoutingSemanticContext & {
   agentId: string;
   source: string;
@@ -128,6 +139,41 @@ export class ResourceRoutingService {
       this.#routerPromises.delete(agentId);
       throw error;
     }
+  }
+
+  async initializeAgent(agentId: string): Promise<void> {
+    if (!this.#config.enabled) {
+      return;
+    }
+    await this.#getRouter(agentId);
+  }
+
+  async preloadAgents(
+    agentIds: readonly string[],
+    logger: ResourceRoutingPreloadLogger,
+  ): Promise<ResourceRoutingPreloadResult> {
+    const ready: string[] = [];
+    const failed: Array<{ agentId: string; error: string }> = [];
+    if (!this.#config.enabled) {
+      return { ready, failed };
+    }
+
+    const uniqueAgentIds = [...new Set(agentIds.map((agentId) => agentId.trim()).filter(Boolean))].sort();
+    for (const agentId of uniqueAgentIds) {
+      try {
+        await this.initializeAgent(agentId);
+        ready.push(agentId);
+        logger.info(`openviking: resource routing ready for agent ${agentId}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failed.push({ agentId, error: message });
+        logger.error(
+          `openviking: resource routing preload failed for agent ${agentId}: ${message}. ` +
+          "Automatic add_resource for this agent will fail closed until the configuration or local model service is fixed and the gateway is restarted.",
+        );
+      }
+    }
+    return { ready, failed };
   }
 
   async routeAutomatic(input: AutomaticResourceRouteInput): Promise<AutomaticResourceRouteResult> {
