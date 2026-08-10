@@ -217,7 +217,7 @@
       "label": "Commit Keep Recent Count",
       "placeholder": "10",
       "advanced": true,
-      "help": "WM v2: number of most-recent messages kept live after an afterTurn commit. Compact path always uses 0."
+      "help": "WM v2: number of most-recent messages kept live after an afterTurn commit. Compact always uses 0."
     },
     "emitStandardDiagnostics": {
       "label": "Standard diagnostics (diag JSON lines)",
@@ -270,6 +270,11 @@
       "placeholder": "memory",
       "help": "Agent-visible tool blocklist applied after enabledTools. Accepts the same tool names or groups.",
       "advanced": true
+    },
+    "resourceRouting": {
+      "label": "Resource Routing",
+      "advanced": true,
+      "help": "Optional per-agent semantic resource routing using a YAML taxonomy, embedding retrieval, conditional reranking, deterministic fallback, cache, and JSONL audit."
     }
   },
   "configSchema": {
@@ -530,6 +535,147 @@
       "runtimeQueryConfigPath": {
         "type": "string",
         "description": "Path to a JSON file with runtime query tuning (candidateLimit, rankingWeights, categoryWeights). Read on demand, no restart needed."
+      },
+      "resourceRouting": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "taxonomyFile": {
+            "type": "string",
+            "default": "~/.openclaw/{agentId}.yaml"
+          },
+          "cacheFile": {
+            "type": "string",
+            "default": "~/.openclaw/openviking/resource-routing-cache/{agentId}.json"
+          },
+          "semanticInputTemplate": {
+            "type": "string",
+            "default": "{{summary}}"
+          },
+          "embedding": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "baseUrl": {
+                "type": "string",
+                "default": "http://127.0.0.1:18081"
+              },
+              "model": {
+                "type": "string",
+                "default": "bge-m3"
+              },
+              "apiKey": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 300000,
+                "default": 3000
+              },
+              "dimensions": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65536,
+                "default": 1024
+              }
+            }
+          },
+          "reranker": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "baseUrl": {
+                "type": "string",
+                "default": "http://127.0.0.1:18080"
+              },
+              "model": {
+                "type": "string",
+                "default": "bge-reranker-v2-m3"
+              },
+              "apiKey": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 300000,
+                "default": 3000
+              }
+            }
+          },
+          "retrieval": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "topK": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "default": 2
+              },
+              "minScore": {
+                "type": "number",
+                "minimum": -1,
+                "maximum": 1,
+                "default": 0.64
+              },
+              "rerankBelowMargin": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 2,
+                "default": 0.06
+              }
+            }
+          },
+          "fallbackCategory": {
+            "type": "string",
+            "default": "inbox"
+          },
+          "failurePolicy": {
+            "type": "string",
+            "enum": [
+              "error"
+            ],
+            "default": "error"
+          },
+          "audit": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              },
+              "file": {
+                "type": "string",
+                "default": "~/.openclaw/openviking/resource-routing-audit/{agentId}.jsonl"
+              },
+              "summaryPreviewChars": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10000,
+                "default": 240
+              }
+            }
+          }
+        }
       }
     }
   }
