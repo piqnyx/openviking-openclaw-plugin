@@ -121,7 +121,7 @@ function embeddedCategoriesFromCache(
     }
     return {
       key: category.key,
-      description: category.description,
+      description: category.routingText,
       embedding,
     };
   });
@@ -153,7 +153,7 @@ export async function buildResourceRoutingEmbeddingState(
   // Nothing is persisted until every category has been embedded successfully.
   const vectors: number[][] = [];
   for (const category of input.taxonomy.routeableCategories) {
-    const [embedding] = await input.embedder.embed([category.description]);
+    const [embedding] = await input.embedder.embed([category.routingText]);
     if (!embedding) {
       throw new Error(
         `resource routing embedder returned no embedding for category ${JSON.stringify(category.key)}`,
