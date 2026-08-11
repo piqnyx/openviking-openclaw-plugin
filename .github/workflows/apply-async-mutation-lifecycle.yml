@@ -34,19 +34,31 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Repair one-shot script quoting
+      - name: Repair one-shot script quoting and test typing
         run: |
           python - <<'PY'
           from pathlib import Path
           p = Path("scripts/apply-async-mutation-lifecycle.mjs")
           s = p.read_text()
-          old1 = 'text: `OpenViking resource is already absent: ${validation.uri}.`,'
-          new1 = 'text: "OpenViking resource is already absent: " + validation.uri + ".",'
-          old2 = '`OpenViking removal outcome is unknown for ${validation.uri} because the transport failed without an HTTP response. Do not repeat the delete automatically. Inspect the URI first; retry only if it is still present.`,'
-          new2 = '"OpenViking removal outcome is unknown for " + validation.uri + " because the transport failed without an HTTP response. Do not repeat the delete automatically. Inspect the URI first; retry only if it is still present.",'
-          if s.count(old1) != 1 or s.count(old2) != 1:
-              raise SystemExit("unexpected bootstrap quoting shape")
-          p.write_text(s.replace(old1, new1).replace(old2, new2))
+          replacements = [
+              (
+                  'text: `OpenViking resource is already absent: ${validation.uri}.`,',
+                  'text: "OpenViking resource is already absent: " + validation.uri + ".",',
+              ),
+              (
+                  '`OpenViking removal outcome is unknown for ${validation.uri} because the transport failed without an HTTP response. Do not repeat the delete automatically. Inspect the URI first; retry only if it is still present.`,',
+                  '"OpenViking removal outcome is unknown for " + validation.uri + " because the transport failed without an HTTP response. Do not repeat the delete automatically. Inspect the URI first; retry only if it is still present.",',
+              ),
+              (
+                  '    expect(addResource.mock.calls[0]?.[0]).not.toHaveProperty("timeout");\n',
+                  '',
+              ),
+          ]
+          for old, new in replacements:
+              if s.count(old) != 1:
+                  raise SystemExit(f"unexpected bootstrap target count for: {old[:60]}")
+              s = s.replace(old, new)
+          p.write_text(s)
           PY
           node --check scripts/apply-async-mutation-lifecycle.mjs
 
