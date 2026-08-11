@@ -36,12 +36,14 @@
     "routing/",
     "services/",
     "skills/",
+    "tools/",
     "tsconfig.build.json",
     "tsconfig.json"
   ],
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
     "prepack": "npm run build",
+    "routing:probe": "node tools/routing-probe.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "test:watch": "vitest",
