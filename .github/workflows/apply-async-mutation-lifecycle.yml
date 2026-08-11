@@ -65,6 +65,54 @@ jobs:
       - name: Apply audited lifecycle patch
         run: node scripts/apply-async-mutation-lifecycle.mjs
 
+      - name: Align mutation integration regressions
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("plugin/openviking-import-tools.ts")
+          s = p.read_text()
+          old = 'return error instanceof Error && /OpenViking request faileds*[NOT_FOUND]/i.test(error.message);'
+          new = 'return error instanceof Error && error.message.includes("OpenViking request failed [NOT_FOUND]");'
+          if s.count(old) != 1:
+              raise SystemExit("unexpected generated NOT_FOUND matcher")
+          p.write_text(s.replace(old, new))
+
+          p = Path("tests/remove-resource-routing.test.ts")
+          s = p.read_text()
+          replacements = [
+              (
+                  'it("uses the current agent account and waits for consistency by default", async () => {',
+                  'it("uses the current agent account and returns after deletion without waiting for semantic refresh", async () => {',
+              ),
+              (
+                  'expect(calls).toEqual([{ key: "ov-main-key", wait: "true", uri: "viking://resources/workspace" }]);',
+                  'expect(calls).toEqual([{ key: "ov-main-key", wait: "false", uri: "viking://resources/workspace" }]);',
+              ),
+              (
+                  'expect(result.details).toMatchObject({ action: "resource_removed", semantic_status: "complete" });',
+                  'expect(result.details).toMatchObject({ action: "resource_removed", processing: "semantic_refresh_queued", semantic_status: "queued" });',
+              ),
+              (
+                  'expect(result.content?.[0]?.text).toContain("semantic refresh complete");',
+                  'expect(result.content?.[0]?.text).toContain("continues asynchronously");',
+              ),
+              (
+                  'it("keeps agent accounts isolated and reports queued cleanup when async is explicit", async () => {',
+                  'it("keeps agent accounts isolated while semantic cleanup remains asynchronous", async () => {',
+              ),
+              (
+                  'expect(result.content?.[0]?.text).toContain("still pending");',
+                  'expect(result.content?.[0]?.text).toContain("continues asynchronously");',
+              ),
+          ]
+          for old, new in replacements:
+              if s.count(old) != 1:
+                  raise SystemExit(f"unexpected routing regression target: {old[:70]}")
+              s = s.replace(old, new)
+          p.write_text(s)
+          PY
+
       - name: Typecheck
         run: npm run typecheck
 
