@@ -98,20 +98,22 @@ categories:
 
   it("routes automatically from summary-only semantic input and keeps the per-agent taxonomy", async () => {
     const { config } = setup();
+    const summary = "A setup guide explaining how to configure the application.";
+    const embeddingByInput = new Map<string, number[]>([
+      ["Resources that cannot be confidently classified elsewhere.", [0, 1]],
+      ["General documentation, guides and manuals.", [1, 0]],
+      ["Security reports and operational security material.", [0.2, 0.8]],
+      [summary, [1, 0]],
+    ]);
     const embeddingTransport: HttpTransport = vi.fn(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { input: string[] };
-      if (body.input.length === 3) {
-        return new Response(JSON.stringify({
-          data: [
-            { index: 0, embedding: [0, 1] },
-            { index: 1, embedding: [1, 0] },
-            { index: 2, embedding: [0.2, 0.8] },
-          ],
-        }), { status: 200 });
-      }
-      expect(body.input).toEqual(["A setup guide explaining how to configure the application."]);
+      expect(body.input).toHaveLength(1);
+      const text = body.input[0];
+      expect(text).toBeDefined();
+      const embedding = embeddingByInput.get(text!);
+      expect(embedding).toBeDefined();
       return new Response(JSON.stringify({
-        data: [{ index: 0, embedding: [1, 0] }],
+        data: [{ index: 0, embedding }],
       }), { status: 200 });
     });
     const rerankerTransport: HttpTransport = vi.fn(async () => {
@@ -123,13 +125,14 @@ categories:
       agentId: "main",
       source: "/workspace/guide.md",
       sourceKind: "local_file",
-      summary: "A setup guide explaining how to configure the application.",
+      summary,
       filename: "guide.md",
     });
-    expect(result.semanticInput).toBe("A setup guide explaining how to configure the application.");
+    expect(result.semanticInput).toBe(summary);
     expect(result.category.key).toBe("docs");
     expect(result.category.uri).toBe("viking://resources/documents");
     expect(result.decision.fallback).toBe(false);
+    expect(embeddingTransport).toHaveBeenCalledTimes(4);
     expect(rerankerTransport).not.toHaveBeenCalled();
   });
 
