@@ -31,8 +31,9 @@ Use this skill after `@openviking/openclaw-plugin` is installed and configured. 
 - Do not invent OpenViking REST endpoints. Use the registered OpenClaw tools and commands described below.
 - The agent-visible `add_resource` tool is disabled by default (`enableAddResourceTool=false`). Do not use `add_resource` during search, retrieval, URI reading, or search-result optimization. Use `ov_search` and `ov_read` in those flows.
 - Use manual `/add-resource`, or `add_resource` only when it is explicitly enabled and the user explicitly asks to import, add, upload, save, or index a resource.
-- When automatic resource routing is enabled, inspect or read enough of the resource to understand its actual content before calling `add_resource`, unless that content is already established in the conversation. Supply a short semantic `summary`; never infer it from filename/path alone.
+- When automatic resource routing is enabled, inspect or read enough of the resource to understand its actual content before calling `add_resource`, unless that content is already established in the conversation. Supply a short semantic `summary` describing content and purpose. When provenance is part of the semantic resource type, state it naturally, for example online article, email thread, meeting transcript, or terminal screenshot. Never infer the summary from filename/path alone or copy raw filename/path/MIME/storage metadata into it.
 - Use `add_skill` only when the user explicitly asks to import, add, install, or register an Agent Skill into OpenViking.
+- Use `remove_resource` only when `enableRemoveResourceTool=true` and the user explicitly asks to delete imported OpenViking resource content. It may remove only descendants of `viking://resources/`; never use it for memories, sessions, skills, or the resources root.
 - For local files and directories, pass the local path to the plugin tool. The plugin uploads them through `/api/v1/resources/temp_upload`; do not send raw local filesystem paths to a remote server yourself.
 - Never log or echo API keys. The plugin sends API keys as `X-API-Key` / setup probe headers and masks them in setup output.
 
@@ -114,6 +115,7 @@ openclaw openviking setup --base-url <URL> --api-key <KEY> --force-slot --json
 | Summary lacks an exact command/path/snippet from old chat | `ov_archive_search`, then `ov_archive_expand` if needed |
 | Import docs, PDFs, local dirs, URLs, Git repos, media attachments | manual `/add-resource`; `add_resource` only if `enableAddResourceTool=true` |
 | Import/register an Agent Skill | `add_skill` |
+| Delete imported resource content | `remove_resource` only if `enableRemoveResourceTool=true` |
 | Search imported resources or skills | `ov_search` |
 | Read an exact `viking://...` hit from `ov_search` or recall trace | `ov_read` |
 | Explain why recall/search returned something | `ov_recall_trace` |
@@ -155,7 +157,7 @@ Delete a memory.
 | `query` | No | Search query when `uri` is unknown. |
 | `targetUri` | No | Search scope URI, default `targetUri`. |
 | `limit` | No | Search limit, default `5`. |
-| `scoreThreshold` | No | Search threshold, default `recallScoreThreshold`. |
+| `scoreThreshold` | No | Search threshold `0..1`. Defaults to `recallScoreThreshold`. |
 
 If query mode finds multiple candidates, report candidates and ask the user to choose the exact URI; do not delete ambiguous memories.
 
@@ -186,24 +188,22 @@ This agent tool is disabled by default. Prefer manual `/add-resource` for resour
 
 When `resourceRouting.enabled=true`, destination priority is: explicit `to`, explicit `parent`, explicit semantic `category`, then automatic routing. Explicit routing must never be overwritten by automatic classification.
 
-For automatic routing, first inspect/read enough of the resource to understand its actual content unless the content is already known from the conversation. Then provide `summary` as one short sentence describing semantic content and purpose. Do not use filename/path/MIME/storage location as a substitute for content. The plugin performs deterministic category selection and builds the trusted `viking://resources/...` parent URI; do not invent a URI or category key.
+For automatic routing, first inspect/read enough of the resource to understand its actual content unless the content is already known from the conversation. Then provide `summary` as one short sentence describing semantic content and purpose. When provenance is part of the semantic resource type, state it naturally, for example online article, email thread, meeting transcript, or terminal screenshot. Do not use filename/path/MIME/storage location as a substitute for content or copy those raw values into the summary. The plugin performs deterministic category selection and builds the trusted `viking://resources/...` parent URI; do not invent a URI or category key.
 
 | Parameter | Required | Description |
 |---|---|---|
 | `source` | Yes | Local path, OpenClaw media attachment path, directory path, public URL, or Git URL. |
-| `summary` | Automatic routing only | One short sentence based on known/inspected content describing what the resource is about and what it is useful for. |
+| `summary` | Automatic routing only | One short sentence based on known/inspected content describing what the resource is about and what it is useful for; include semantically relevant provenance such as online article/email/transcript/screenshot when it defines the resource type. |
 | `to` | No | Explicit exact target URI. Bypasses automatic routing. Mutually exclusive with `parent` and `category`. |
 | `parent` | No | Explicit parent URI under `viking://resources`. Bypasses automatic routing. Mutually exclusive with `to` and `category`. |
 | `category` | No | Existing semantic category key from this agent's taxonomy. The plugin resolves it to a trusted URI; never invent keys. |
 | `create_parent` | No | Used only with explicit `parent`. Automatic/category routing manages this and forces parent creation as needed. |
 | `reason` | No | Reason/note for import. |
 | `instruction` | No | Processing instruction for OpenViking semantic extraction. |
-| `wait` | No | Wait for processing completion. |
-| `timeout` | No | Timeout in seconds when `wait=true`. |
 
 If automatic routing cannot classify the summary confidently, the plugin uses the configured taxonomy fallback category (normally the visible inbox). If the embedding/reranker/taxonomy infrastructure fails, the resource is **not imported**; report the routing failure instead of pretending the operation succeeded.
 
-The current OpenClaw tool exposes the parameters above. The underlying client also supports server-facing resource options such as `strict`, `ignore_dirs`, `include`, `exclude`, and `preserve_structure` for command/internal paths; do not pass them to the tool unless the registered schema exposes them.
+The current OpenClaw tool exposes the parameters above and always submits the import with `wait=false`. OpenViking continues parsing, VLM, embedding, and indexing work asynchronously after accepting the job. If a mutating request loses its HTTP response, the tool reports an outcome-unknown state; inspect OpenViking before retrying and never repeat the same import automatically. The underlying client also supports explicit `wait`/`timeout` and server-facing resource options such as `strict`, `ignore_dirs`, `include`, `exclude`, and `preserve_structure` for manual/command/internal paths; do not pass them to the agent tool unless its registered schema exposes them.
 
 ### `add_skill`
 
@@ -213,10 +213,21 @@ Import Agent Skills into `viking://user/skills/...`.
 |---|---|---|
 | `source` | No | Local `SKILL.md` path or skill directory. Exactly one of `source` or `data` is required. |
 | `data` | No | Raw `SKILL.md` content or an MCP tool dict. Exactly one of `source` or `data` is required. |
-| `wait` | No | Wait for processing completion. |
-| `timeout` | No | Timeout in seconds when `wait=true`. |
+
+The agent-facing tool always submits skill imports with `wait=false`. OpenViking processing continues asynchronously. On an outcome-unknown transport failure, inspect OpenViking skills before any deliberate retry; do not automatically submit the same mutation again. Manual slash-command and low-level client paths keep explicit `wait`/`timeout` controls.
 
 Agent Skill best practice: a skill should have precise frontmatter (`name`, trigger-oriented `description`, useful `tags`), clear scope boundaries, explicit “when not to use” guidance if needed, and executable steps with concrete parameters. Keep secrets out of skill content.
+
+### `remove_resource`
+
+Delete imported OpenViking resource content below `viking://resources/`. This destructive agent tool is disabled unless `enableRemoveResourceTool=true`. Use it only for an explicit user deletion request.
+
+| Parameter | Required | Description |
+|---|---|---|
+| `uri` | Yes | Exact descendant of `viking://resources/`. The resources root and non-resource namespaces are refused. |
+| `recursive` | No | Remove an entire non-empty resource subtree; defaults to `false`. |
+
+The agent tool always calls OpenViking with `wait=false`. The filesystem deletion completes before OpenViking returns, while semantic/index refresh may continue with `semantic_status=queued`. `NOT_FOUND` is reported as already absent. If the transport fails without an HTTP response, the mutation outcome is unknown; inspect the URI before any deliberate retry and never repeat the delete automatically.
 
 ### `ov_search`
 
