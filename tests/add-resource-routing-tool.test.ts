@@ -29,6 +29,7 @@ function setup(options: {
   const addResource = vi.fn(async () => ({
     status: "success",
     root_uri: "viking://resources/result",
+    task_id: "task-resource-1",
   }));
   const getClient = vi.fn(async () => ({
     addResource,
@@ -96,8 +97,6 @@ describe("add_resource routing tool", () => {
       "create_parent",
       "reason",
       "instruction",
-      "wait",
-      "timeout",
     ]);
   });
 
@@ -146,6 +145,7 @@ describe("add_resource routing tool", () => {
       source: "/workspace/draft/guide.md",
       summary: "A setup guide for configuring OpenClaw.",
       wait: true,
+      timeout: 1,
     }) as { details?: Record<string, unknown> };
     expect(routeAutomatic).toHaveBeenCalledWith(expect.objectContaining({
       agentId: "main",
@@ -160,14 +160,34 @@ describe("add_resource routing tool", () => {
       to: undefined,
       parent: "viking://resources/documents/guides",
       createParent: true,
-      wait: true,
+      wait: false,
     }), "main_peer");
+    expect(result.details).toMatchObject({
+      action: "resource_import_accepted",
+      processing: "asynchronous",
+      task_id: "task-resource-1",
+    });
     expect(result.details?.routing).toMatchObject({
       mode: "automatic",
       category: "documents_guides",
       fallback: false,
       rerankerUsed: true,
     });
+  });
+
+  it("returns outcome unknown instead of encouraging an automatic retry after transport failure", async () => {
+    const { factories, addResource } = setup();
+    addResource.mockRejectedValueOnce(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+    const result = await factories.get("add_resource")!({}).execute("call", {
+      source: "/workspace/guide.md",
+      summary: "A setup guide.",
+    }) as { details?: Record<string, unknown>; content?: Array<{ text?: string }> };
+    expect(result.details).toMatchObject({
+      action: "resource_import_outcome_unknown",
+      outcome: "unknown",
+      retry_safe: false,
+    });
+    expect(result.content?.[0]?.text).toContain("Do not submit the same import again automatically");
   });
 
   it("does not import when automatic-routing infrastructure fails", async () => {
