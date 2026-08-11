@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -88,16 +88,23 @@ function rerankerClient(transport: HttpTransport) {
 }
 
 describe("buildResourceRoutingEmbeddingState", () => {
-  it("embeds category descriptions once, writes cache, and reuses it on the next startup", async () => {
+  it("embeds category descriptions sequentially, writes cache, and reuses it on the next startup", async () => {
     const config = makeTempConfig();
+    const seenInputs: string[] = [];
+    const expectedDescriptions = taxonomy.routeableCategories.map((category) => category.description);
     const firstTransport: HttpTransport = vi.fn(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { input: string[] };
-      expect(body.input).toEqual(taxonomy.routeableCategories.map((category) => category.description));
+      expect(body.input).toHaveLength(1);
+      const text = body.input[0];
+      expect(text).toBeDefined();
+      seenInputs.push(text!);
+      const categoryIndex = expectedDescriptions.indexOf(text!);
+      expect(categoryIndex).toBeGreaterThanOrEqual(0);
       return new Response(JSON.stringify({
-        data: body.input.map((_text, index) => ({
-          index,
-          embedding: index % 2 === 0 ? [1, 0] : [0, 1],
-        })),
+        data: [{
+          index: 0,
+          embedding: categoryIndex % 2 === 0 ? [1, 0] : [0, 1],
+        }],
       }), { status: 200 });
     });
     const first = await buildResourceRoutingEmbeddingState({
@@ -109,6 +116,8 @@ describe("buildResourceRoutingEmbeddingState", () => {
     expect(first.source).toBe("recomputed");
     expect(first.cacheMissReason).toBe("missing");
     expect(first.categories).toHaveLength(taxonomy.routeableCategories.length);
+    expect(firstTransport).toHaveBeenCalledTimes(taxonomy.routeableCategories.length);
+    expect(seenInputs).toEqual(expectedDescriptions);
 
     const forbiddenTransport: HttpTransport = vi.fn(async () => {
       throw new Error("embedder must not be called on cache hit");
@@ -121,6 +130,31 @@ describe("buildResourceRoutingEmbeddingState", () => {
     });
     expect(second.source).toBe("cache");
     expect(forbiddenTransport).not.toHaveBeenCalled();
+  });
+
+  it("does not persist a partial cache when sequential embedding fails", async () => {
+    const config = makeTempConfig();
+    const cacheFile = config.cacheFile.replace("{agentId}", "main");
+    let calls = 0;
+    const transport: HttpTransport = vi.fn(async () => {
+      calls += 1;
+      if (calls === 2) {
+        throw new Error("embedder offline");
+      }
+      return new Response(JSON.stringify({
+        data: [{ index: 0, embedding: [1, 0] }],
+      }), { status: 200 });
+    });
+
+    await expect(buildResourceRoutingEmbeddingState({
+      taxonomy,
+      agentId: "main",
+      config,
+      embedder: embeddingClientFor([1, 0], transport),
+    })).rejects.toThrow(/embedder offline/);
+
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(existsSync(cacheFile)).toBe(false);
   });
 
   it("fails closed when config fallback and taxonomy fallback disagree", async () => {
