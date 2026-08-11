@@ -33,6 +33,8 @@ export type CompiledResourceCategory = {
   description: string;
   routeable: boolean;
   uri: string;
+  path: string;
+  routingText: string;
   parentKey: string | null;
   depth: number;
 };
@@ -45,6 +47,7 @@ export type CompiledResourceTaxonomy = {
   categories: readonly CompiledResourceCategory[];
   routeableCategories: readonly CompiledResourceCategory[];
   byKey: ReadonlyMap<string, CompiledResourceCategory>;
+  byPath: ReadonlyMap<string, CompiledResourceCategory>;
 };
 
 type PendingCategory = {
@@ -101,18 +104,32 @@ function parseSegment(value: unknown, label: string): string {
   return segment;
 }
 
+function categoryPathFromUri(uri: string): string {
+  const prefix = `${RESOURCE_TAXONOMY_ROOT_URI}/`;
+  if (!uri.startsWith(prefix) || uri.length <= prefix.length) {
+    throw new Error(`resource taxonomy category URI is outside ${RESOURCE_TAXONOMY_ROOT_URI}: ${uri}`);
+  }
+  return uri.slice(prefix.length);
+}
+
+function renderCategoryRoutingText(path: string, description: string): string {
+  return `path: ${path}\ndescription: ${description}`;
+}
+
 function canonicalRoutingData(
   fallbackKey: string,
   categories: readonly CompiledResourceCategory[],
 ): string {
   const canonicalCategories = [...categories]
     .sort((left, right) => left.key.localeCompare(right.key))
-    .map(({ key, segment, description, routeable, uri, parentKey, depth }) => ({
+    .map(({ key, segment, description, routeable, uri, path, routingText, parentKey, depth }) => ({
       key,
       segment,
       description,
       routeable,
       uri,
+      path,
+      routingText,
       parentKey,
       depth,
     }));
@@ -158,6 +175,7 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
 
   const categories: CompiledResourceCategory[] = [];
   const byKey = new Map<string, CompiledResourceCategory>();
+  const byPath = new Map<string, CompiledResourceCategory>();
   const seenUris = new Map<string, string>();
 
   while (pending.length > 0) {
@@ -194,6 +212,8 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
         `resource taxonomy categories ${JSON.stringify(collidingKey)} and ${JSON.stringify(key)} resolve to the same URI ${uri}`,
       );
     }
+    const path = categoryPathFromUri(uri);
+    const routingText = renderCategoryRoutingText(path, description);
 
     const compiled: CompiledResourceCategory = {
       key,
@@ -201,11 +221,14 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
       description,
       routeable,
       uri,
+      path,
+      routingText,
       parentKey: current.parentKey,
       depth: current.depth,
     };
     categories.push(compiled);
     byKey.set(key, compiled);
+    byPath.set(path, compiled);
     seenUris.set(uri, key);
 
     if (current.raw.children !== undefined) {
@@ -256,6 +279,7 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
     categories,
     routeableCategories,
     byKey,
+    byPath,
   };
 }
 
