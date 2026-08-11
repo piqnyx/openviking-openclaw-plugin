@@ -147,8 +147,21 @@ export async function buildResourceRoutingEmbeddingState(
     };
   }
 
-  const semanticDescriptions = input.taxonomy.routeableCategories.map((category) => category.description);
-  const vectors = await input.embedder.embed(semanticDescriptions);
+  // Cold-cache construction is intentionally sequential. Local CPU embedders can
+  // process a large taxonomy reliably one category at a time while keeping the
+  // normal per-request timeout useful for ordinary single-summary routing calls.
+  // Nothing is persisted until every category has been embedded successfully.
+  const vectors: number[][] = [];
+  for (const category of input.taxonomy.routeableCategories) {
+    const [embedding] = await input.embedder.embed([category.description]);
+    if (!embedding) {
+      throw new Error(
+        `resource routing embedder returned no embedding for category ${JSON.stringify(category.key)}`,
+      );
+    }
+    vectors.push(embedding);
+  }
+
   const cache = cacheFromVectors(input.taxonomy, input.config, vectors);
   writeResourceRoutingEmbeddingCacheAtomic(cacheFile, cache);
   return {
