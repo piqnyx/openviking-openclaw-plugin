@@ -44,11 +44,9 @@ categories:
 
     const embeddingTransport: HttpTransport = vi.fn(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { input: string[] };
+      expect(body.input).toHaveLength(1);
       return new Response(JSON.stringify({
-        data: body.input.map((_entry, index) => ({
-          index,
-          embedding: index === 0 ? [1, 0] : [0, 1],
-        })),
+        data: [{ index: 0, embedding: [1, 0] }],
       }), { status: 200 });
     });
     const logger = {
@@ -66,7 +64,7 @@ categories:
     expect(result.failed[0]?.error).toMatch(/igor\.yaml.*could not be read/);
     expect(logger.info).toHaveBeenCalledWith("openviking: resource routing ready for agent main");
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("resource routing preload failed for agent igor"));
-    expect(embeddingTransport).toHaveBeenCalledTimes(1);
+    expect(embeddingTransport).toHaveBeenCalledTimes(2);
   });
 
   it("waits for an active preload before starting automatic routing model requests", async () => {
