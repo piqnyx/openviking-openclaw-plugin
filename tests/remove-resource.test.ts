@@ -93,7 +93,7 @@ function setupTools(options: { enableRemoveResourceTool: boolean }) {
   const removeResource = vi.fn(async () => ({
     uri: "viking://resources/workspace",
     estimated_deleted_count: 6,
-    semantic_status: "complete",
+    semantic_status: "queued",
   }));
   const getClient = vi.fn(async () => ({
     addResource: vi.fn(),
@@ -123,15 +123,10 @@ describe("remove_resource agent tool", () => {
     expect(setupTools({ enableRemoveResourceTool: true }).factories.has("remove_resource")).toBe(true);
   });
 
-  it("publishes uri, recursive, wait, and timeout parameters", () => {
+  it("publishes only deletion intent and keeps wait/timeout away from the agent", () => {
     const { factories } = setupTools({ enableRemoveResourceTool: true });
     const tool = factories.get("remove_resource")!({});
-    expect(Object.keys(tool.parameters.properties ?? {})).toEqual([
-      "uri",
-      "recursive",
-      "wait",
-      "timeout",
-    ]);
+    expect(Object.keys(tool.parameters.properties ?? {})).toEqual(["uri", "recursive"]);
   });
 
   it.each([
@@ -150,7 +145,7 @@ describe("remove_resource agent tool", () => {
     expect(removeResource).not.toHaveBeenCalled();
   });
 
-  it("routes a valid removal through the current agent account and preserves all parameters", async () => {
+  it("routes a valid removal through the current agent account and always uses wait=false", async () => {
     const { factories, getClient, removeResource } = setupTools({ enableRemoveResourceTool: true });
     const tool = factories.get("remove_resource")!({ agentId: "main" });
     const result = await tool.execute("call-1", {
@@ -167,16 +162,45 @@ describe("remove_resource agent tool", () => {
     expect(removeResource).toHaveBeenCalledWith({
       uri: "viking://resources/workspace",
       recursive: true,
-      wait: true,
-      timeout: 900,
+      wait: false,
     }, "main_peer");
     expect(result.details).toMatchObject({
       action: "resource_removed",
+      processing: "semantic_refresh_queued",
       uri: "viking://resources/workspace",
       estimated_deleted_count: 6,
-      semantic_status: "complete",
+      semantic_status: "queued",
     });
     expect(result.content?.[0]?.text).toContain("Removed OpenViking resource");
+  });
+
+  it("treats NOT_FOUND as the desired already-absent state", async () => {
+    const { factories, removeResource } = setupTools({ enableRemoveResourceTool: true });
+    removeResource.mockRejectedValueOnce(new Error("OpenViking request failed [NOT_FOUND]: missing"));
+    const result = await factories.get("remove_resource")!({}).execute("call-1", {
+      uri: "viking://resources/workspace",
+    }) as { details?: Record<string, unknown>; content?: Array<{ text?: string }> };
+    expect(result.details).toMatchObject({
+      action: "resource_absent",
+      already_absent: true,
+      uri: "viking://resources/workspace",
+    });
+    expect(result.content?.[0]?.text).toContain("already absent");
+  });
+
+  it("returns outcome unknown after an ambiguous transport failure and does not retry", async () => {
+    const { factories, removeResource } = setupTools({ enableRemoveResourceTool: true });
+    removeResource.mockRejectedValueOnce(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+    const result = await factories.get("remove_resource")!({}).execute("call-1", {
+      uri: "viking://resources/workspace",
+    }) as { details?: Record<string, unknown>; content?: Array<{ text?: string }> };
+    expect(removeResource).toHaveBeenCalledTimes(1);
+    expect(result.details).toMatchObject({
+      action: "resource_remove_outcome_unknown",
+      outcome: "unknown",
+      retry_safe: false,
+    });
+    expect(result.content?.[0]?.text).toContain("Do not repeat the delete automatically");
   });
 });
 

@@ -67,18 +67,18 @@ function setup() {
 }
 
 describe("remove_resource end-to-end plugin routing", () => {
-  it("uses the current agent account and waits for consistency by default", async () => {
+  it("uses the current agent account and returns after deletion without waiting for semantic refresh", async () => {
     const { calls, tool } = setup();
     const result = await tool({ agentId: "main" }).execute("call-main", {
       uri: "viking://resources/workspace",
       recursive: true,
     }) as { details?: Record<string, unknown>; content?: Array<{ text?: string }> };
-    expect(calls).toEqual([{ key: "ov-main-key", wait: "true", uri: "viking://resources/workspace" }]);
-    expect(result.details).toMatchObject({ action: "resource_removed", semantic_status: "complete" });
-    expect(result.content?.[0]?.text).toContain("semantic refresh complete");
+    expect(calls).toEqual([{ key: "ov-main-key", wait: "false", uri: "viking://resources/workspace" }]);
+    expect(result.details).toMatchObject({ action: "resource_removed", processing: "semantic_refresh_queued", semantic_status: "queued" });
+    expect(result.content?.[0]?.text).toContain("continues asynchronously");
   });
 
-  it("keeps agent accounts isolated and reports queued cleanup when async is explicit", async () => {
+  it("keeps agent accounts isolated while semantic cleanup remains asynchronous", async () => {
     const { calls, tool } = setup();
     const result = await tool({ agentId: "igor" }).execute("call-igor", {
       uri: "viking://resources/workspace",
@@ -86,6 +86,6 @@ describe("remove_resource end-to-end plugin routing", () => {
     }) as { details?: Record<string, unknown>; content?: Array<{ text?: string }> };
     expect(calls).toEqual([{ key: "ov-igor-key", wait: "false", uri: "viking://resources/workspace" }]);
     expect(result.details).toMatchObject({ action: "resource_removed", semantic_status: "queued" });
-    expect(result.content?.[0]?.text).toContain("still pending");
+    expect(result.content?.[0]?.text).toContain("continues asynchronously");
   });
 });

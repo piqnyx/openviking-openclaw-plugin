@@ -2,7 +2,7 @@
 
 This repository is a focused fork of the OpenViking OpenClaw context-engine plugin, based on upstream plugin version **2026.7.15**.
 
-The fork keeps the upstream context-engine behavior while routing each OpenClaw agent to a separate OpenViking account/API key. Release **2026.7.15-isolation.7** adds configurable per-agent resource routing on top of the guarded `remove_resource` support introduced in `isolation.6`.
+The fork keeps the upstream context-engine behavior while routing each OpenClaw agent to a separate OpenViking account/API key. Release **2026.7.15-isolation.8** keeps the configurable per-agent resource routing introduced in `isolation.7` and hardens the agent-facing mutation lifecycle on top of the guarded `remove_resource` support introduced in `isolation.6`.
 
 ## Design goals
 
@@ -20,7 +20,7 @@ The fork keeps the upstream context-engine behavior while routing each OpenClaw 
 | Component | Version |
 | --- | --- |
 | Forked OpenViking OpenClaw plugin | 2026.7.15 |
-| This release | 2026.7.15-isolation.7 |
+| This release | 2026.7.15-isolation.8 |
 | Minimum OpenClaw | 2026.5.27 |
 | Minimum OpenViking for this release | 0.4.4 |
 | Recommended/tested OpenViking | 0.4.12 |
@@ -49,7 +49,7 @@ Release `isolation.6` added the guarded resource-removal path:
 | Plugin manifest/schema | Expose `enableRemoveResourceTool` and `remove_resource`. |
 | Tests | Cover API contract, destructive boundary, per-agent routing, wait behavior, and configuration gating. |
 
-Release `isolation.7` adds configurable resource routing:
+Release `isolation.7` added configurable resource routing. Release `isolation.8` hardens the agent-facing mutation lifecycle:
 
 | Area | Change |
 | --- | --- |
@@ -61,6 +61,16 @@ Release `isolation.7` adds configurable resource routing:
 | `plugin-config.ts`, `openclaw.plugin.json` | Add the `resourceRouting` configuration section while preserving the existing OpenViking config schema. |
 | `docs/resource-routing.md` | Documents the taxonomy schema, configuration, routing policy, cache/audit behavior, failure semantics, security boundary, and rollout. |
 | Tests / CI | Cover routing config, taxonomy validation, model responses, cache invalidation, decisions, audit, tool behavior, startup preload, and create-parent parity. |
+
+Release `isolation.8` changes only the agent-facing mutation contract, not the low-level OpenViking client:
+
+| Area | Change |
+| --- | --- |
+| `plugin/openviking-import-tools.ts` | Removes `wait`/`timeout` from agent-visible `add_resource`, `remove_resource`, and `add_skill`; all three submit with `wait=false`. |
+| Mutation error handling | A transport failure without an HTTP response is reported as outcome-unknown and must not be retried automatically. |
+| `remove_resource` | Treats OpenViking `NOT_FOUND` as already absent and returns queued semantic-refresh state without making the agent wait. |
+| Result reporting | Async imports report accepted/queued semantics and preserve OpenViking `task_id` when present. |
+| Manual/internal API | Low-level client and slash-command wait/timeout controls remain available for deliberate operator workflows. |
 
 The memory/session/account-isolation path is not replaced by resource routing. Automatic resource classification is confined to `add_resource` when no explicit destination was supplied.
 
@@ -157,7 +167,7 @@ Enabling `remove_resource` through `enabledTools`, `enabledTools: "all"`, or a t
 
 ## Configurable resource routing
 
-Release `2026.7.15-isolation.7` can automatically place new `add_resource` imports into an agent-specific YAML taxonomy.
+Release `2026.7.15-isolation.8` can automatically place new `add_resource` imports into an agent-specific YAML taxonomy.
 
 The agent supplies one short semantic `summary`. The tested default pipeline uses BGE-M3 for embedding retrieval and BGE-reranker-v2-m3 only when the leading embedding candidates are sufficiently close. The models never generate a URI. The plugin validates the taxonomy, accepts only a known semantic category key/candidate, resolves that key to a trusted `viking://resources/...` parent, and calls OpenViking with `create_parent=true` when automatic/category routing selects a parent.
 
@@ -313,6 +323,20 @@ OPENVIKING_LOG_ROUTING=1
 
 API keys are not written to routing logs.
 
+## Agent mutation lifecycle
+
+The agent-facing mutation tools intentionally do not expose OpenViking's `wait` or `timeout` controls. Long-running parsing, VLM work, embeddings, semantic refresh, and index consistency are server-side jobs; keeping an LLM tool call open for them creates false timeout failures and encourages duplicate mutations.
+
+The agent contract is therefore:
+
+- `add_resource`: route/validate, submit with `wait=false`, return accepted state plus `root_uri`/`task_id` when OpenViking provides them;
+- `add_skill`: submit with `wait=false` and return accepted state/task metadata;
+- `remove_resource`: delete with `wait=false`; filesystem deletion is completed by OpenViking before the response while semantic refresh may continue with `semantic_status=queued`.
+
+This restriction applies only to agent-visible tools. The low-level client and manual slash-command paths keep their explicit `wait`/`timeout` capabilities for operator workflows that deliberately need synchronous completion.
+
+A network/transport timeout on a mutating request does not prove the server rejected the operation. If the client receives no HTTP response, the tool reports `outcome=unknown` and `retry_safe=false`; the agent is instructed to inspect OpenViking state before any retry. This avoids the classic failure mode where the first import was accepted, its response was lost, and a second automatic call creates a duplicate job.
+
 ## `remove_resource`
 
 `remove_resource` deletes a file or directory below `viking://resources/` through the OpenViking filesystem API.
@@ -322,9 +346,7 @@ Example agent-level parameters:
 ```json
 {
   "uri": "viking://resources/workspace",
-  "recursive": true,
-  "wait": true,
-  "timeout": 900
+  "recursive": true
 }
 ```
 
@@ -361,30 +383,15 @@ To remove all resources, list `viking://resources` first and remove its top-leve
 
 The plugin does not silently promote a failed non-recursive request into a recursive delete.
 
-### Waiting and consistency
+### Asynchronous consistency
 
-The agent-facing tool defaults `wait` to `true`.
+The agent-facing tool always calls OpenViking with `wait=false`. OpenViking performs the filesystem deletion before returning, while semantic/index consistency work may remain queued. The plugin does not perform its own vector deletion, reindex, relation repair, or semantic refresh.
 
-With `wait=true`, the plugin sends the DELETE request with OpenViking wait semantics and waits for that request to finish. OpenViking remains responsible for filesystem deletion, vector-index cleanup, resource-memory reference cleanup, and semantic refresh.
+The structured OpenViking result is propagated in tool `details`, including fields such as `uri`, `estimated_deleted_count`, `memory_cleanup`, `semantic_root_uri`, `semantic_status`, and `queue_status` when the server returns them.
 
-The plugin does not perform its own Qdrant deletion, reindex, relation repair, or semantic refresh.
+A successful asynchronous removal commonly returns `semantic_status=queued`. That means the requested resource was removed and semantic refresh continues on the server; it is not a deletion timeout.
 
-The structured OpenViking result is propagated in tool `details`, including fields such as:
-
-- `uri`;
-- `estimated_deleted_count`;
-- `memory_cleanup`;
-- `semantic_root_uri`;
-- `semantic_status`;
-- `queue_status`.
-
-Known semantic states on the tested OpenViking server are:
-
-- `complete`: the waited semantic refresh completed;
-- `queued`: consistency work was queued and is still pending, normally when `wait=false` was explicitly requested;
-- `failed`: the resource was removed but semantic refresh reported a failure.
-
-If the DELETE request itself fails or times out, the tool throws instead of returning a false success. Because OpenViking deletion is idempotent for valid URIs, callers can inspect the resource state and retry deliberately when necessary.
+OpenViking `NOT_FOUND` is treated as `resource_absent`, because the requested end state is already true. Transport failures without an HTTP response are different: the tool returns outcome-unknown and refuses to imply that an automatic retry is safe.
 
 ### Tool groups
 
