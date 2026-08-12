@@ -1,29 +1,41 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { registerOpenVikingImportTools } from "../plugin/openviking-import-tools.js";
+import {
+  isRussianSemanticSummary,
+  registerOpenVikingImportTools,
+} from "../plugin/openviking-import-tools.js";
 
 type ToolFactory = (ctx: Record<string, unknown>) => {
   name: string;
+  description: string;
   parameters: { properties?: Record<string, unknown> };
   execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
 };
 
-function makeCategory(key: string, uri: string) {
-  const segments = uri.split("/");
+function makeCategory(key: string, path: string) {
+  const uri = `viking://resources/${path}`;
+  const segments = path.split("/");
+  const description = `${key} category`;
   return {
     key,
     segment: segments.at(-1) ?? key,
-    description: `${key} category`,
+    description,
+    distinguishFrom: [],
     routeable: true,
     uri,
+    path,
+    embeddingText: `description: ${description}\npath: ${path}`,
+    rerankText: `description: ${description}\npath: ${path}`,
     parentKey: null,
-    depth: 1,
+    depth: segments.length,
   };
 }
 
 function setup(options: {
   routingEnabled?: boolean;
   routeFailure?: Error;
+  explicitFallback?: boolean;
+  summaryLanguage?: "any" | "ru";
 } = {}) {
   const factories = new Map<string, ToolFactory>();
   const addResource = vi.fn(async () => ({
@@ -36,25 +48,40 @@ function setup(options: {
     removeResource: vi.fn(),
     addSkill: vi.fn(),
   }));
-  const resolveCategory = vi.fn((_agentId: string, key: string) =>
-    makeCategory(key, `viking://resources/${key}`));
+  const resolveCategoryOrFallback = vi.fn((_agentId: string, selector: string) => {
+    if (options.explicitFallback) {
+      return {
+        requested: selector,
+        category: makeCategory("inbox", "_INBOX"),
+        matchedBy: "fallback" as const,
+        fallback: true,
+        fallbackReason: "unknown_category" as const,
+      };
+    }
+    return {
+      requested: selector,
+      category: makeCategory("code-source-javascript", "code/source/javascript"),
+      matchedBy: selector.includes("/") ? "path" as const : "key" as const,
+      fallback: false,
+    };
+  });
   const routeAutomatic = options.routeFailure
     ? vi.fn(async () => { throw options.routeFailure; })
     : vi.fn(async () => ({
-      category: makeCategory("documents_guides", "viking://resources/documents/guides"),
-      semanticInput: "A setup guide for configuring OpenClaw.",
+      category: makeCategory("docs-guides-howtos", "docs/guides/howtos"),
+      semanticInput: "Практическое руководство по настройке OpenClaw.",
       decision: {
-        categoryKey: "documents_guides",
-        uri: "viking://resources/documents/guides",
+        categoryKey: "docs-guides-howtos",
+        uri: "viking://resources/docs/guides/howtos",
         fallback: false,
         embeddingCandidates: [
-          { key: "documents_guides", description: "Guides", score: 0.82 },
-          { key: "documents", description: "Documents", score: 0.79 },
+          { key: "docs-guides-howtos", path: "docs/guides/howtos", embeddingText: "Практические инструкции", rerankText: "Практические инструкции", score: 0.82 },
+          { key: "docs-guides-tutorials", path: "docs/guides/tutorials", embeddingText: "Учебные руководства", rerankText: "Учебные руководства", score: 0.79 },
         ],
         rerankerUsed: true,
         rerankerScores: [
-          { key: "documents_guides", score: 0.91 },
-          { key: "documents", score: 0.72 },
+          { key: "docs-guides-howtos", path: "docs/guides/howtos", score: 0.91 },
+          { key: "docs-guides-tutorials", path: "docs/guides/tutorials", score: 0.72 },
         ],
         timing: {
           embeddingMs: 82,
@@ -77,26 +104,41 @@ function setup(options: {
     enableRemoveResourceTool: false,
     resourceRouting: {
       enabled: options.routingEnabled ?? true,
-      resolveCategory,
+      summaryLanguage: options.summaryLanguage ?? "ru",
+      resolveCategoryOrFallback,
       routeAutomatic,
     },
   });
 
-  return { factories, addResource, getClient, resolveCategory, routeAutomatic };
+  return {
+    factories,
+    addResource,
+    getClient,
+    resolveCategoryOrFallback,
+    routeAutomatic,
+  };
 }
 
+describe("Russian automatic-routing summary validation", () => {
+  it("accepts Russian semantic text containing technical Latin identifiers", () => {
+    expect(isRussianSemanticSummary(
+      "Практическое руководство по настройке OpenClaw API и JavaScript-клиента.",
+    )).toBe(true);
+  });
+
+  it("rejects English-only and token-Cyrillic summaries", () => {
+    expect(isRussianSemanticSummary("A practical setup guide for OpenClaw API.")).toBe(false);
+    expect(isRussianSemanticSummary("JavaScript deployment guide а")).toBe(false);
+  });
+});
+
 describe("add_resource routing tool", () => {
-  it("publishes summary, semantic category, and create_parent instructions to the agent", () => {
+  it("publishes only the minimal deterministic agent contract", () => {
     const tool = setup().factories.get("add_resource")!({});
     expect(Object.keys(tool.parameters.properties ?? {})).toEqual([
       "source",
       "summary",
-      "to",
-      "parent",
       "category",
-      "create_parent",
-      "reason",
-      "instruction",
     ]);
   });
 
@@ -104,83 +146,141 @@ describe("add_resource routing tool", () => {
     const { factories, routeAutomatic, getClient } = setup();
     const result = await factories.get("add_resource")!({}).execute("call", {
       source: "/workspace/guide.md",
-    }) as { details?: { action?: string }; content?: Array<{ text?: string }> };
+    }) as { details?: { action?: string } };
     expect(result.details?.action).toBe("rejected");
-    expect(result.content?.[0]?.text).toMatch(/requires `summary`/);
     expect(routeAutomatic).not.toHaveBeenCalled();
     expect(getClient).not.toHaveBeenCalled();
   });
 
-  it("keeps explicit to above automatic routing", async () => {
-    const { factories, routeAutomatic, addResource } = setup();
-    await factories.get("add_resource")!({}).execute("call", {
-      source: "/workspace/guide.md",
-      to: "viking://resources/manual-target",
-    });
+  it("rejects English-only and token-Cyrillic automatic summaries before models", async () => {
+    const { factories, routeAutomatic, getClient } = setup();
+    for (const summary of [
+      "A practical setup guide for configuring OpenClaw.",
+      "JavaScript deployment guide а",
+    ]) {
+      const result = await factories.get("add_resource")!({}).execute("call", {
+        source: "/workspace/guide.md",
+        summary,
+      }) as { details?: Record<string, unknown> };
+      expect(result.details).toMatchObject({ action: "rejected", summaryLanguage: "ru" });
+    }
     expect(routeAutomatic).not.toHaveBeenCalled();
-    expect(addResource).toHaveBeenCalledWith(expect.objectContaining({
-      pathOrUrl: "/workspace/guide.md",
-      to: "viking://resources/manual-target",
-      parent: undefined,
-    }), "main_peer");
+    expect(getClient).not.toHaveBeenCalled();
   });
 
-  it("resolves explicit semantic category without invoking automatic models", async () => {
-    const { factories, resolveCategory, routeAutomatic, addResource } = setup();
+  it("allows an unrestricted-language taxonomy to route a non-Russian summary", async () => {
+    const { factories, routeAutomatic } = setup({ summaryLanguage: "any" });
+    const summary = "A practical guide to configuring OpenClaw services.";
     await factories.get("add_resource")!({}).execute("call", {
       source: "/workspace/guide.md",
-      category: "documents_guides",
+      summary,
     });
-    expect(resolveCategory).toHaveBeenCalledWith("main", "documents_guides");
-    expect(routeAutomatic).not.toHaveBeenCalled();
-    expect(addResource).toHaveBeenCalledWith(expect.objectContaining({
-      parent: "viking://resources/documents_guides",
-      createParent: true,
-    }), "main_peer");
+    expect(routeAutomatic).toHaveBeenCalledWith(expect.objectContaining({ summary }));
   });
 
-  it("routes summary automatically and forwards only the trusted parent URI", async () => {
+  it("publishes provenance guidance for categories where source form is semantic", () => {
+    const tool = setup().factories.get("add_resource")!({});
+    expect(tool.description).toContain("batch scraping or crawling result");
+    expect(tool.description).toContain("exported chat or forum history");
+    expect(tool.description).toContain("database dump");
+  });
+
+  it("routes a Russian summary automatically and forwards only a trusted parent", async () => {
     const { factories, routeAutomatic, addResource } = setup();
+    const summary = "Практическое руководство по настройке OpenClaw и его основных параметров.";
     const result = await factories.get("add_resource")!({}).execute("call", {
       source: "/workspace/draft/guide.md",
-      summary: "A setup guide for configuring OpenClaw.",
-      wait: true,
-      timeout: 1,
+      summary,
     }) as { details?: Record<string, unknown> };
+
     expect(routeAutomatic).toHaveBeenCalledWith(expect.objectContaining({
       agentId: "main",
       source: "/workspace/draft/guide.md",
       sourceKind: "local_path",
       filename: "guide.md",
       extension: "md",
-      summary: "A setup guide for configuring OpenClaw.",
+      summary,
     }));
-    expect(addResource).toHaveBeenCalledWith(expect.objectContaining({
+    expect(addResource).toHaveBeenCalledWith({
       pathOrUrl: "/workspace/draft/guide.md",
-      to: undefined,
-      parent: "viking://resources/documents/guides",
+      parent: "viking://resources/docs/guides/howtos",
       createParent: true,
       wait: false,
-    }), "main_peer");
+    }, "main_peer");
     expect(result.details).toMatchObject({
       action: "resource_import_accepted",
       processing: "asynchronous",
       task_id: "task-resource-1",
+      routing: {
+        mode: "automatic",
+        category: "docs-guides-howtos",
+        categoryPath: "docs/guides/howtos",
+        fallback: false,
+        rerankerUsed: true,
+      },
     });
+  });
+
+  it("resolves an explicit full taxonomy path without invoking automatic models", async () => {
+    const { factories, resolveCategoryOrFallback, routeAutomatic, addResource } = setup();
+    const result = await factories.get("add_resource")!({}).execute("call", {
+      source: "/workspace/main.js",
+      category: "code/source/javascript",
+    }) as { details?: Record<string, unknown> };
+
+    expect(resolveCategoryOrFallback).toHaveBeenCalledWith("main", "code/source/javascript");
+    expect(routeAutomatic).not.toHaveBeenCalled();
+    expect(addResource).toHaveBeenCalledWith({
+      pathOrUrl: "/workspace/main.js",
+      parent: "viking://resources/code/source/javascript",
+      createParent: true,
+      wait: false,
+    }, "main_peer");
     expect(result.details?.routing).toMatchObject({
-      mode: "automatic",
-      category: "documents_guides",
+      mode: "explicit_category",
+      requestedCategory: "code/source/javascript",
+      matchedBy: "path",
+      categoryPath: "code/source/javascript",
       fallback: false,
-      rerankerUsed: true,
+    });
+  });
+
+  it("imports an unknown explicit category into fallback inbox instead of losing the resource", async () => {
+    const { factories, resolveCategoryOrFallback, routeAutomatic, addResource } = setup({
+      explicitFallback: true,
+    });
+    const result = await factories.get("add_resource")!({}).execute("call", {
+      source: "/workspace/unknown.md",
+      category: "code/source/javascrpit",
+    }) as { details?: Record<string, unknown> };
+
+    expect(resolveCategoryOrFallback).toHaveBeenCalledWith("main", "code/source/javascrpit");
+    expect(routeAutomatic).not.toHaveBeenCalled();
+    expect(addResource).toHaveBeenCalledWith({
+      pathOrUrl: "/workspace/unknown.md",
+      parent: "viking://resources/_INBOX",
+      createParent: true,
+      wait: false,
+    }, "main_peer");
+    expect(result.details?.routing).toMatchObject({
+      mode: "explicit_category",
+      requestedCategory: "code/source/javascrpit",
+      matchedBy: "fallback",
+      category: "inbox",
+      categoryPath: "_INBOX",
+      fallback: true,
+      fallbackReason: "unknown_category",
     });
   });
 
   it("returns outcome unknown instead of encouraging an automatic retry after transport failure", async () => {
     const { factories, addResource } = setup();
-    addResource.mockRejectedValueOnce(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+    addResource.mockRejectedValueOnce(
+      Object.assign(new Error("The operation was aborted"), { name: "AbortError" }),
+    );
     const result = await factories.get("add_resource")!({}).execute("call", {
       source: "/workspace/guide.md",
-      summary: "A setup guide.",
+      summary: "Практическое руководство по настройке программного сервиса.",
     }) as { details?: Record<string, unknown>; content?: Array<{ text?: string }> };
     expect(result.details).toMatchObject({
       action: "resource_import_outcome_unknown",
@@ -194,7 +294,7 @@ describe("add_resource routing tool", () => {
     const { factories, getClient } = setup({ routeFailure: new Error("embedder HTTP 503") });
     const result = await factories.get("add_resource")!({}).execute("call", {
       source: "/workspace/guide.md",
-      summary: "A setup guide.",
+      summary: "Практическое руководство по настройке программного сервиса.",
     }) as { details?: { action?: string }; content?: Array<{ text?: string }> };
     expect(result.details?.action).toBe("routing_failed");
     expect(result.content?.[0]?.text).toContain("resource was NOT imported");
@@ -202,26 +302,25 @@ describe("add_resource routing tool", () => {
     expect(getClient).not.toHaveBeenCalled();
   });
 
-  it("preserves legacy add_resource behavior when routing is disabled", async () => {
+  it("keeps legacy source-only import when resource routing is disabled", async () => {
     const { factories, routeAutomatic, addResource } = setup({ routingEnabled: false });
     await factories.get("add_resource")!({}).execute("call", {
       source: "/workspace/legacy.md",
     });
     expect(routeAutomatic).not.toHaveBeenCalled();
-    expect(addResource).toHaveBeenCalledWith(expect.objectContaining({
+    expect(addResource).toHaveBeenCalledWith({
       pathOrUrl: "/workspace/legacy.md",
-      to: undefined,
       parent: undefined,
       createParent: undefined,
-    }), "main_peer");
+      wait: false,
+    }, "main_peer");
   });
 
-  it("rejects conflicting explicit destinations instead of silently choosing one", async () => {
-    const { factories, getClient } = setup();
+  it("rejects an explicit category while semantic routing is disabled", async () => {
+    const { factories, getClient } = setup({ routingEnabled: false });
     const result = await factories.get("add_resource")!({}).execute("call", {
       source: "/workspace/a.md",
-      parent: "viking://resources/docs",
-      category: "docs",
+      category: "docs/guides/howtos",
     }) as { details?: { action?: string } };
     expect(result.details?.action).toBe("rejected");
     expect(getClient).not.toHaveBeenCalled();

@@ -1,12 +1,16 @@
 export type ResourceRoutingEmbeddedCategory = {
   key: string;
-  description: string;
+  path: string;
+  embeddingText: string;
+  rerankText?: string;
   embedding: readonly number[];
 };
 
 export type ResourceRoutingCandidate = {
   key: string;
-  description: string;
+  path: string;
+  embeddingText: string;
+  rerankText: string;
   score: number;
 };
 
@@ -73,12 +77,20 @@ export function selectTopCosineCandidates(
       throw new Error(`resource routing embedded category key ${JSON.stringify(category.key)} is duplicated`);
     }
     seen.add(category.key);
-    if (typeof category.description !== "string" || !category.description.trim()) {
-      throw new Error(`resource routing category ${JSON.stringify(category.key)} description must be non-empty`);
+    if (typeof category.path !== "string" || !category.path.trim()) {
+      throw new Error(`resource routing category ${JSON.stringify(category.key)} path must be non-empty`);
+    }
+    if (typeof category.embeddingText !== "string" || !category.embeddingText.trim()) {
+      throw new Error(`resource routing category ${JSON.stringify(category.key)} embeddingText must be non-empty`);
+    }
+    if (category.rerankText !== undefined && (typeof category.rerankText !== "string" || !category.rerankText.trim())) {
+      throw new Error(`resource routing category ${JSON.stringify(category.key)} rerankText must be non-empty when provided`);
     }
     return {
       key: category.key,
-      description: category.description,
+      path: category.path,
+      embeddingText: category.embeddingText,
+      rerankText: category.rerankText ?? category.embeddingText,
       score: cosineSimilarity(queryEmbedding, category.embedding),
     };
   });

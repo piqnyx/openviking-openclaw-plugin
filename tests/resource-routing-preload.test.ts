@@ -16,11 +16,7 @@ afterEach(() => {
   }
 });
 
-describe("ResourceRoutingService.preloadAgents", () => {
-  it("preloads configured agent taxonomies sequentially and isolates failures", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ov-routing-preload-"));
-    tempDirs.push(dir);
-    const taxonomy = `
+const validTaxonomy = `
 schemaVersion: 1
 fallback: inbox
 categories:
@@ -31,7 +27,12 @@ categories:
     segment: documents
     description: Documentation and guides.
 `;
-    writeFileSync(join(dir, "main.yaml"), taxonomy, "utf8");
+
+describe("ResourceRoutingService.preloadAgents", () => {
+  it("preloads configured agent taxonomies sequentially and isolates failures", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ov-routing-preload-"));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, "main.yaml"), validTaxonomy, "utf8");
     // Intentionally do not create igor.yaml: one broken agent must not disable the other.
 
     const config = parseResourceRoutingConfig({
@@ -45,6 +46,7 @@ categories:
     const embeddingTransport: HttpTransport = vi.fn(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { input: string[] };
       expect(body.input).toHaveLength(1);
+      expect(body.input[0]).not.toContain("Fallback resources");
       return new Response(JSON.stringify({
         data: [{ index: 0, embedding: [1, 0] }],
       }), { status: 200 });
@@ -64,22 +66,14 @@ categories:
     expect(result.failed[0]?.error).toMatch(/igor\.yaml.*could not be read/);
     expect(logger.info).toHaveBeenCalledWith("openviking: resource routing ready for agent main");
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("resource routing preload failed for agent igor"));
-    expect(embeddingTransport).toHaveBeenCalledTimes(2);
+    expect(embeddingTransport).toHaveBeenCalledTimes(1);
   });
 
-  it("waits for an active preload before starting automatic routing model requests", async () => {
+  it("does not make main wait for an unrelated igor cold preload", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ov-routing-preload-race-"));
     tempDirs.push(dir);
-    const taxonomy = `
-schemaVersion: 1
-fallback: inbox
-categories:
-  inbox:
-    segment: __INBOX__
-    description: Fallback resources.
-`;
-    writeFileSync(join(dir, "igor.yaml"), taxonomy, "utf8");
-    writeFileSync(join(dir, "main.yaml"), taxonomy, "utf8");
+    writeFileSync(join(dir, "igor.yaml"), validTaxonomy, "utf8");
+    writeFileSync(join(dir, "main.yaml"), validTaxonomy, "utf8");
 
     const config = parseResourceRoutingConfig({
       enabled: true,
@@ -89,20 +83,27 @@ categories:
       embedding: { dimensions: 2 },
     });
 
-    let releaseFirstRequest!: () => void;
-    const firstRequestGate = new Promise<void>((resolve) => {
-      releaseFirstRequest = resolve;
+    let releaseIgor!: () => void;
+    const igorGate = new Promise<void>((resolve) => {
+      releaseIgor = resolve;
     });
-    let markFirstRequestStarted!: () => void;
-    const firstRequestStarted = new Promise<void>((resolve) => {
-      markFirstRequestStarted = resolve;
+    let markIgorStarted!: () => void;
+    const igorStarted = new Promise<void>((resolve) => {
+      markIgorStarted = resolve;
     });
+    let markMainStarted!: () => void;
+    const mainStarted = new Promise<void>((resolve) => {
+      markMainStarted = resolve;
+    });
+
     let requestCount = 0;
     const embeddingTransport: HttpTransport = vi.fn(async (_url, init) => {
       requestCount += 1;
       if (requestCount === 1) {
-        markFirstRequestStarted();
-        await firstRequestGate;
+        markIgorStarted();
+        await igorGate;
+      } else if (requestCount === 2) {
+        markMainStarted();
       }
       const body = JSON.parse(String(init.body)) as { input: string[] };
       return new Response(JSON.stringify({
@@ -120,23 +121,22 @@ categories:
     const service = new ResourceRoutingService(config, { embeddingTransport });
 
     const preloadPromise = service.preloadAgents(["igor"], logger);
-    await firstRequestStarted;
+    await igorStarted;
 
     const routePromise = service.routeAutomatic({
       agentId: "main",
-      source: "/workspace/verse.md",
+      source: "/workspace/guide.md",
       sourceKind: "local_path",
-      summary: "A short synthetic text resource used to validate routing.",
+      summary: "Documentation and guides for configuring an application.",
     });
 
-    await Promise.resolve();
-    expect(embeddingTransport).toHaveBeenCalledTimes(1);
-
-    releaseFirstRequest();
-    await preloadPromise;
+    await mainStarted;
     const routed = await routePromise;
+    expect(routed.category.key).toBe("docs");
+    expect(requestCount).toBe(3);
 
-    expect(routed.category.key).toBe("inbox");
-    expect(embeddingTransport).toHaveBeenCalledTimes(3);
+    releaseIgor();
+    await preloadPromise;
+    expect(requestCount).toBe(3);
   });
 });

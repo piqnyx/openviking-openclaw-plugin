@@ -7,13 +7,14 @@ import {
 
 
 describe("resource routing config", () => {
-  it("uses the tested local BGE defaults while remaining disabled by default", () => {
+  it("uses the tested local BGE defaults while remaining disabled and language-neutral by default", () => {
     const cfg = parseResourceRoutingConfig(undefined);
 
     expect(cfg.enabled).toBe(false);
     expect(cfg.taxonomyFile).toBe("~/.openclaw/{agentId}.yaml");
     expect(cfg.cacheFile).toContain("{agentId}");
     expect(cfg.semanticInputTemplate).toBe("{{summary}}");
+    expect(cfg.summaryLanguage).toBe("any");
     expect(cfg.embedding).toMatchObject({
       baseUrl: "http://127.0.0.1:18081",
       model: "bge-m3",
@@ -37,7 +38,7 @@ describe("resource routing config", () => {
     expect(cfg.audit.enabled).toBe(true);
   });
 
-  it("accepts custom model endpoints, credentials, headers and thresholds", () => {
+  it("accepts custom model endpoints, credentials, headers, summary language and thresholds", () => {
     vi.stubEnv("ROUTER_EMBED_KEY", "embed-secret");
     vi.stubEnv("ROUTER_RERANK_KEY", "rerank-secret");
     vi.stubEnv("ROUTER_TENANT", "tenant-a");
@@ -48,6 +49,7 @@ describe("resource routing config", () => {
         taxonomyFile: "/srv/openclaw/taxonomy/{agentId}.yaml",
         cacheFile: "/srv/openclaw/cache/{agentId}.json",
         semanticInputTemplate: "{{summary}}\nSource type: {{sourceKind}}",
+        summaryLanguage: "ru",
         embedding: {
           baseUrl: "https://embedding.example.test/v1/",
           model: "custom-embed",
@@ -77,6 +79,7 @@ describe("resource routing config", () => {
         },
       });
 
+      expect(cfg.summaryLanguage).toBe("ru");
       expect(cfg.embedding).toEqual({
         baseUrl: "https://embedding.example.test/v1",
         model: "custom-embed",
@@ -106,6 +109,13 @@ describe("resource routing config", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("validates the optional summary language policy", () => {
+    expect(parseResourceRoutingConfig({ summaryLanguage: "any" }).summaryLanguage).toBe("any");
+    expect(parseResourceRoutingConfig({ summaryLanguage: "ru" }).summaryLanguage).toBe("ru");
+    expect(() => parseResourceRoutingConfig({ summaryLanguage: "en" }))
+      .toThrow(/summaryLanguage must be "any" or "ru"/);
   });
 
   it("requires every per-agent file template to contain {agentId}", () => {
@@ -177,6 +187,7 @@ describe("resource routing config", () => {
       minScore: 0.64,
       rerankBelowMargin: 0.06,
       fallbackCategory: "inbox",
+      summaryLanguage: "any",
     });
   });
 });

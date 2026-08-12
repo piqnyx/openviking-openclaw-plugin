@@ -39,6 +39,7 @@ export function writeResourceRoutingAudit(input) {
         rerankerModel: input.rerankerModel,
         embeddingCandidates: decision?.embeddingCandidates.map((candidate) => ({
             key: candidate.key,
+            path: candidate.path,
             score: candidate.score,
         })),
         rerankerUsed: decision?.rerankerUsed ?? false,

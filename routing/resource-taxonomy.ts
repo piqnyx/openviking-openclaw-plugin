@@ -8,7 +8,7 @@ import { parseDocument } from "yaml";
 export const RESOURCE_TAXONOMY_SCHEMA_VERSION = 1 as const;
 export const RESOURCE_TAXONOMY_ROOT_URI = "viking://resources" as const;
 
-const CATEGORY_KEYS = ["segment", "description", "routeable", "children"] as const;
+const CATEGORY_KEYS = ["segment", "description", "distinguishFrom", "routeable", "children"] as const;
 const TAXONOMY_KEYS = ["schemaVersion", "fallback", "categories"] as const;
 const SEMANTIC_KEY_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 const SEGMENT_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
@@ -17,6 +17,7 @@ const MAX_DESCRIPTION_CHARS = 4_000;
 export type ResourceTaxonomyCategoryNode = {
   segment: string;
   description: string;
+  distinguishFrom?: string[];
   routeable?: boolean;
   children?: Record<string, ResourceTaxonomyCategoryNode>;
 };
@@ -31,8 +32,12 @@ export type CompiledResourceCategory = {
   key: string;
   segment: string;
   description: string;
+  distinguishFrom: readonly string[];
   routeable: boolean;
   uri: string;
+  path: string;
+  embeddingText: string;
+  rerankText: string;
   parentKey: string | null;
   depth: number;
 };
@@ -44,7 +49,15 @@ export type CompiledResourceTaxonomy = {
   taxonomyHash: string;
   categories: readonly CompiledResourceCategory[];
   routeableCategories: readonly CompiledResourceCategory[];
+  semanticCategories: readonly CompiledResourceCategory[];
   byKey: ReadonlyMap<string, CompiledResourceCategory>;
+  byPath: ReadonlyMap<string, CompiledResourceCategory>;
+};
+
+type RoutingAncestor = {
+  path: string;
+  description: string;
+  distinguishFrom: readonly string[];
 };
 
 type PendingCategory = {
@@ -53,6 +66,7 @@ type PendingCategory = {
   parentKey: string | null;
   parentUri: string;
   depth: number;
+  ancestors: readonly RoutingAncestor[];
 };
 
 function assertRecord(value: unknown, label: string): asserts value is Record<string, unknown> {
@@ -82,6 +96,19 @@ function parseNonEmptyString(value: unknown, label: string, maxChars = Number.PO
   return normalized;
 }
 
+function parseOptionalStringList(value: unknown, label: string): string[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array of strings`);
+  }
+  if (value.length > 32) {
+    throw new Error(`${label} must contain at most 32 entries`);
+  }
+  return value.map((entry, index) => parseNonEmptyString(entry, `${label}[${index}]`, 1_000));
+}
+
 function parseSemanticKey(value: string, label: string): string {
   if (!SEMANTIC_KEY_RE.test(value)) {
     throw new Error(
@@ -101,18 +128,60 @@ function parseSegment(value: unknown, label: string): string {
   return segment;
 }
 
+function categoryPathFromUri(uri: string): string {
+  const prefix = `${RESOURCE_TAXONOMY_ROOT_URI}/`;
+  if (!uri.startsWith(prefix) || uri.length <= prefix.length) {
+    throw new Error(`resource taxonomy category URI is outside ${RESOURCE_TAXONOMY_ROOT_URI}: ${uri}`);
+  }
+  return uri.slice(prefix.length);
+}
+
+function renderCategoryEmbeddingText(
+  path: string,
+  description: string,
+  ancestors: readonly RoutingAncestor[],
+): string {
+  const lines = [`description: ${description}`];
+  if (ancestors.length > 0) {
+    lines.push(
+      `ancestors: ${ancestors.map((ancestor) => `${ancestor.path}: ${ancestor.description}`).join(" > ")}`,
+    );
+  }
+  lines.push(`path: ${path}`);
+  return lines.join("\n");
+}
+
+function renderCategoryRerankText(
+  embeddingText: string,
+  distinguishFrom: readonly string[],
+  ancestors: readonly RoutingAncestor[],
+): string {
+  const inherited = ancestors.flatMap((ancestor) =>
+    ancestor.distinguishFrom.map((hint) => `${ancestor.path}: ${hint}`),
+  );
+  const hints = [...inherited, ...distinguishFrom];
+  if (hints.length === 0) {
+    return embeddingText;
+  }
+  return `${embeddingText}\ndistinguishFrom: ${hints.join(" | ")}`;
+}
+
 function canonicalRoutingData(
   fallbackKey: string,
   categories: readonly CompiledResourceCategory[],
 ): string {
   const canonicalCategories = [...categories]
     .sort((left, right) => left.key.localeCompare(right.key))
-    .map(({ key, segment, description, routeable, uri, parentKey, depth }) => ({
+    .map(({ key, segment, description, distinguishFrom, routeable, uri, path, embeddingText, rerankText, parentKey, depth }) => ({
       key,
       segment,
       description,
+      distinguishFrom,
       routeable,
       uri,
+      path,
+      embeddingText,
+      rerankText,
       parentKey,
       depth,
     }));
@@ -154,10 +223,12 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
       parentKey: null,
       parentUri: RESOURCE_TAXONOMY_ROOT_URI,
       depth: 1,
+      ancestors: [],
     }));
 
   const categories: CompiledResourceCategory[] = [];
   const byKey = new Map<string, CompiledResourceCategory>();
+  const byPath = new Map<string, CompiledResourceCategory>();
   const seenUris = new Map<string, string>();
 
   while (pending.length > 0) {
@@ -183,6 +254,10 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
       `resource taxonomy category ${JSON.stringify(key)} description`,
       MAX_DESCRIPTION_CHARS,
     );
+    const distinguishFrom = parseOptionalStringList(
+      current.raw.distinguishFrom,
+      `resource taxonomy category ${JSON.stringify(key)} distinguishFrom`,
+    );
     if (current.raw.routeable !== undefined && typeof current.raw.routeable !== "boolean") {
       throw new Error(`resource taxonomy category ${JSON.stringify(key)} routeable must be a boolean`);
     }
@@ -194,18 +269,26 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
         `resource taxonomy categories ${JSON.stringify(collidingKey)} and ${JSON.stringify(key)} resolve to the same URI ${uri}`,
       );
     }
+    const path = categoryPathFromUri(uri);
+    const embeddingText = renderCategoryEmbeddingText(path, description, current.ancestors);
+    const rerankText = renderCategoryRerankText(embeddingText, distinguishFrom, current.ancestors);
 
     const compiled: CompiledResourceCategory = {
       key,
       segment,
       description,
+      distinguishFrom,
       routeable,
       uri,
+      path,
+      embeddingText,
+      rerankText,
       parentKey: current.parentKey,
       depth: current.depth,
     };
     categories.push(compiled);
     byKey.set(key, compiled);
+    byPath.set(path, compiled);
     seenUris.set(uri, key);
 
     if (current.raw.children !== undefined) {
@@ -214,6 +297,10 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
         `resource taxonomy category ${JSON.stringify(key)} children`,
       );
       const children = Object.entries(current.raw.children);
+      const childAncestors = [
+        ...current.ancestors,
+        { path, description, distinguishFrom },
+      ];
       for (let index = children.length - 1; index >= 0; index -= 1) {
         const [childKey, childRaw] = children[index];
         pending.push({
@@ -222,6 +309,7 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
           parentKey: key,
           parentUri: uri,
           depth: current.depth + 1,
+          ancestors: childAncestors,
         });
       }
     }
@@ -243,6 +331,12 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
   if (routeableCategories.length === 0) {
     throw new Error("resource taxonomy must contain at least one routeable category");
   }
+  const semanticCategories = routeableCategories.filter((category) => category.key !== fallbackKey);
+  if (semanticCategories.length === 0) {
+    throw new Error(
+      "resource taxonomy must contain at least one routeable semantic category besides the fallback",
+    );
+  }
 
   const taxonomyHash = createHash("sha256")
     .update(canonicalRoutingData(fallbackKey, categories), "utf8")
@@ -255,7 +349,9 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
     taxonomyHash,
     categories,
     routeableCategories,
+    semanticCategories,
     byKey,
+    byPath,
   };
 }
 

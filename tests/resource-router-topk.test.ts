@@ -67,10 +67,9 @@ describe("ResourceRouter configurable topK", () => {
       embeddings: {
         source: "cache",
         categories: [
-          { key: "inbox", description: "Inbox", embedding: [0, 1] },
-          { key: "security", description: "Security", embedding: [1, 0] },
-          { key: "audits", description: "Audits", embedding: [0.999, 0.04] },
-          { key: "reports", description: "Reports", embedding: [0.997, 0.07] },
+          { key: "security", path: "security", embeddingText: "Security", embedding: [1, 0] },
+          { key: "audits", path: "audits", embeddingText: "Audits", embedding: [0.999, 0.04] },
+          { key: "reports", path: "reports", embeddingText: "Reports", embedding: [0.997, 0.07] },
         ],
       },
       embedder: new ResourceRoutingEmbeddingClient(config.embedding, { transport: embeddingTransport }),
@@ -79,6 +78,7 @@ describe("ResourceRouter configurable topK", () => {
 
     const result = await router.route("A security audit report.");
     expect(result.embeddingCandidates).toHaveLength(3);
+    expect(result.embeddingCandidates.every((candidate) => candidate.key !== "inbox")).toBe(true);
     expect(result.rerankerScores).toHaveLength(3);
     expect(result.categoryKey).toBe("reports");
     expect(rerankerTransport).toHaveBeenCalledTimes(1);

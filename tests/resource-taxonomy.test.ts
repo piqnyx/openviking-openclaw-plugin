@@ -17,7 +17,7 @@ function category(segment: string, description = `${segment} resources`, childre
 }
 
 describe("resource taxonomy", () => {
-  it("compiles arbitrary nested categories into trusted viking URIs", () => {
+  it("compiles arbitrary nested categories into trusted viking URIs and full paths", () => {
     const compiled = compileResourceTaxonomy({
       schemaVersion: 1,
       fallback: "inbox",
@@ -37,6 +37,66 @@ describe("resource taxonomy", () => {
     expect(compiled.byKey.get("openviking")?.uri).toBe(
       "viking://resources/projects/openclaw/openviking",
     );
+    expect(compiled.byPath.get("projects/openclaw/openviking")?.key).toBe("openviking");
+  });
+
+  it("builds routing text from leaf meaning, semantic ancestors, and exact path", () => {
+    const compiled = compileResourceTaxonomy({
+      schemaVersion: 1,
+      fallback: "inbox",
+      categories: {
+        inbox: category("_INBOX", "Неклассифицированные материалы."),
+        docs: {
+          segment: "docs",
+          description: "Документация и справочные материалы.",
+          routeable: false,
+          children: {
+            "docs-code": {
+              segment: "code",
+              description: "Документация о программном коде и API.",
+            },
+          },
+        },
+        projects: {
+          segment: "projects",
+          description: "Материалы по программным проектам.",
+          routeable: false,
+          children: {
+            "projects-code": {
+              segment: "code",
+              description: "Исходный код, относящийся к конкретным проектам.",
+            },
+          },
+        },
+      },
+    });
+
+    const docsCode = compiled.byPath.get("docs/code")!;
+    const projectCode = compiled.byPath.get("projects/code")!;
+    expect(docsCode.key).toBe("docs-code");
+    expect(projectCode.key).toBe("projects-code");
+    expect(docsCode.segment).toBe("code");
+    expect(projectCode.segment).toBe("code");
+    expect(docsCode.embeddingText).toContain("description: Документация о программном коде и API.");
+    expect(docsCode.embeddingText).toContain("ancestors: docs: Документация и справочные материалы.");
+    expect(docsCode.embeddingText).toContain("path: docs/code");
+    expect(projectCode.embeddingText).toContain("ancestors: projects: Материалы по программным проектам.");
+    expect(projectCode.embeddingText).toContain("path: projects/code");
+    expect(docsCode.embeddingText).not.toBe(projectCode.embeddingText);
+  });
+
+  it("keeps fallback routeable for storage but excludes it from semantic ranking", () => {
+    const compiled = compileResourceTaxonomy({
+      schemaVersion: 1,
+      fallback: "inbox",
+      categories: {
+        inbox: category("__INBOX__"),
+        docs: category("docs", "Documentation"),
+      },
+    });
+
+    expect(compiled.routeableCategories.map((entry) => entry.key)).toEqual(["inbox", "docs"]);
+    expect(compiled.semanticCategories.map((entry) => entry.key)).toEqual(["docs"]);
   });
 
   it("allows organizational nodes to be non-routeable while keeping their children routeable", () => {
@@ -61,9 +121,20 @@ describe("resource taxonomy", () => {
       "inbox",
       "screenshots",
     ]);
+    expect(compiled.semanticCategories.map((entry) => entry.key)).toEqual(["screenshots"]);
     expect(compiled.byKey.get("screenshots")?.uri).toBe(
       "viking://resources/media/screenshots",
     );
+  });
+
+  it("requires at least one semantic category besides fallback", () => {
+    expect(() => compileResourceTaxonomy({
+      schemaVersion: 1,
+      fallback: "inbox",
+      categories: {
+        inbox: category("__INBOX__", "Fallback only"),
+      },
+    })).toThrow(/semantic category besides the fallback/i);
   });
 
   it("does not impose a shallow taxonomy depth limit", () => {
@@ -216,6 +287,8 @@ describe("resource taxonomy", () => {
     expect(compiled.fallbackKey).toBe("inbox");
     expect(compiled.fallbackUri).toBe("viking://resources/__INBOX__");
     expect(compiled.routeableCategories.length).toBeGreaterThan(40);
+    expect(compiled.semanticCategories.length).toBe(compiled.routeableCategories.length - 1);
+    expect(compiled.semanticCategories.some((entry) => entry.key === compiled.fallbackKey)).toBe(false);
     expect(compiled.byKey.get("media-images-screenshots")?.uri).toBe(
       "viking://resources/media/images/screenshots",
     );
@@ -250,4 +323,40 @@ describe("per-agent resource routing paths", () => {
       /absolute path/,
     );
   });
+
+  it("keeps embedding text positive while boundary hints are reranker-only", () => {
+    const taxonomy = compileResourceTaxonomy({
+      schemaVersion: 1,
+      fallback: "inbox",
+      categories: {
+        inbox: {
+          segment: "_INBOX",
+          description: "Uncertain resources",
+        },
+        docs: {
+          segment: "docs",
+          description: "Documentation",
+          distinguishFrom: ["Source code belongs under code"],
+          routeable: false,
+          children: {
+            guide: {
+              segment: "guide",
+              description: "Practical guide",
+              distinguishFrom: ["API reference belongs elsewhere"],
+            },
+          },
+        },
+      },
+    });
+
+    const guide = taxonomy.byKey.get("guide")!;
+    expect(guide.embeddingText).toContain("description: Practical guide");
+    expect(guide.embeddingText).toContain("docs: Documentation");
+    expect(guide.embeddingText).not.toContain("Source code belongs under code");
+    expect(guide.embeddingText).not.toContain("API reference belongs elsewhere");
+    expect(guide.rerankText).toContain("Source code belongs under code");
+    expect(guide.rerankText).toContain("API reference belongs elsewhere");
+    expect(guide.distinguishFrom).toEqual(["API reference belongs elsewhere"]);
+  });
+
 });

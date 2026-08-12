@@ -1,0 +1,687 @@
+[
+  {
+    "id": "project-active",
+    "summary": "Рабочие материалы активно разрабатываемого мной программного проекта: текущие задачи, решения и файлы проекта.",
+    "expected": "mine-projects-active"
+  },
+  {
+    "id": "brainstorm",
+    "summary": "Свободные заметки с сырыми идеями без оценки реализуемости и без принятого решения.",
+    "expected": "mine-ideas-brainstorming"
+  },
+  {
+    "id": "journal",
+    "summary": "Личная дневниковая запись о событиях дня, мыслях и переживаниях.",
+    "expected": "mine-notes-journal"
+  },
+  {
+    "id": "knowledge-note",
+    "summary": "Мой структурированный конспект о принципах работы Git с краткими пояснениями и примерами.",
+    "expected": "mine-notes-knowledge"
+  },
+  {
+    "id": "todo",
+    "summary": "Мой список конкретных задач, которые нужно выполнить в ближайшее время.",
+    "expected": "mine-reminders-todo"
+  },
+  {
+    "id": "benchmark",
+    "summary": "Результаты моего сравнительного CPU-бенчмарка локальных моделей с измерениями скорости и памяти.",
+    "expected": "mine-research-benchmarks"
+  },
+  {
+    "id": "api-token",
+    "summary": "Сохранённый API access token для моего личного аккаунта сервиса.",
+    "expected": "mine-passwords-api-tokens"
+  },
+  {
+    "id": "ssh-key",
+    "summary": "Мой приватный SSH-ключ и связанные данные доступа к серверу.",
+    "expected": "mine-passwords-ssh"
+  },
+  {
+    "id": "reading-list",
+    "summary": "Список сохранённых статей и страниц, которые я хочу прочитать позже.",
+    "expected": "mine-bookmarks-reading-list"
+  },
+  {
+    "id": "git-dotfile",
+    "summary": "Мой пользовательский Git config с aliases, signing и настройками поведения команд.",
+    "expected": "mine-configs-dotfiles-git"
+  },
+  {
+    "id": "vscode-config",
+    "summary": "Мои настройки Visual Studio Code, профили редактора и список расширений.",
+    "expected": "mine-configs-dotfiles-vscode"
+  },
+  {
+    "id": "docker-config",
+    "summary": "Моя конфигурация Docker Compose для собственных self-hosted сервисов и локальных volumes.",
+    "expected": "mine-configs-docker"
+  },
+  {
+    "id": "systemd-config",
+    "summary": "Мой systemd service unit для запуска собственного локального демона после загрузки сервера.",
+    "expected": "mine-configs-systemd"
+  },
+  {
+    "id": "automation-script",
+    "summary": "Мой служебный скрипт регулярной автоматизации резервного копирования и очистки файлов.",
+    "expected": "mine-scripts-automation"
+  },
+  {
+    "id": "screenshot",
+    "summary": "Скриншот терминала с выводом диагностики работающего сервиса.",
+    "expected": "mine-photos-screenshots"
+  },
+  {
+    "id": "tutorial",
+    "summary": "Учебное пошаговое руководство для новичка, последовательно обучающее работе с программой с самого начала.",
+    "expected": "docs-guides-tutorials"
+  },
+  {
+    "id": "howto",
+    "summary": "Краткая практическая инструкция по одной задаче: как восстановить PostgreSQL из резервной копии.",
+    "expected": "docs-guides-howtos"
+  },
+  {
+    "id": "troubleshooting",
+    "summary": "Руководство по диагностике ошибки запуска сервиса: симптомы, возможные причины и способы исправления.",
+    "expected": "docs-guides-troubleshooting"
+  },
+  {
+    "id": "admin-manual",
+    "summary": "Полное руководство администратора системы с настройкой пользователей, прав, backup и обслуживания.",
+    "expected": "docs-manuals-admin"
+  },
+  {
+    "id": "developer-manual",
+    "summary": "Руководство разработчика по сборке проекта, расширению модулей и интеграции новых компонентов.",
+    "expected": "docs-manuals-developer"
+  },
+  {
+    "id": "cheatsheet",
+    "summary": "Короткая шпаргалка с наиболее полезными командами tmux и сочетаниями клавиш.",
+    "expected": "docs-reference-cheatsheets"
+  },
+  {
+    "id": "gotchas",
+    "summary": "Справочный список известных подводных камней и неожиданных особенностей PostgreSQL replication.",
+    "expected": "docs-reference-gotchas"
+  },
+  {
+    "id": "protocol-spec",
+    "summary": "Формальная спецификация сетевого протокола с форматами сообщений, состояниями и правилами взаимодействия.",
+    "expected": "docs-specifications-protocols"
+  },
+  {
+    "id": "rfc",
+    "summary": "RFC-предложение с мотивацией, дизайном и формальным описанием нового поведения программного проекта.",
+    "expected": "docs-specifications-rfcs"
+  },
+  {
+    "id": "rest-api",
+    "summary": "Документация REST API с HTTP endpoints, параметрами запросов, объектами ответов и status codes.",
+    "expected": "docs-api-rest"
+  },
+  {
+    "id": "webhooks-api",
+    "summary": "Документация webhook-интеграции: события, callback payloads, подписи и правила повторной доставки.",
+    "expected": "docs-api-webhooks"
+  },
+  {
+    "id": "javascript-learning",
+    "summary": "Учебный материал по JavaScript и TypeScript с объяснением языка, promises и практическими упражнениями.",
+    "expected": "docs-languages-javascript"
+  },
+  {
+    "id": "python-learning",
+    "summary": "Учебный материал по Python с объяснением синтаксиса, типов, asyncio и примерами.",
+    "expected": "docs-languages-python"
+  },
+  {
+    "id": "fiction-book",
+    "summary": "Художественный фантастический роман о космической экспедиции и контакте с неизвестной цивилизацией.",
+    "expected": "docs-books-fiction"
+  },
+  {
+    "id": "technical-book",
+    "summary": "Полноценная техническая книга об архитектуре распределённых систем, консенсусе и отказоустойчивости.",
+    "expected": "docs-books-technical"
+  },
+  {
+    "id": "academic-paper",
+    "summary": "Научная статья с экспериментальной методикой, статистическим анализом и результатами исследования.",
+    "expected": "docs-papers-academic"
+  },
+  {
+    "id": "whitepaper",
+    "summary": "Технический white paper компании с описанием архитектуры новой системы хранения данных и её принципов.",
+    "expected": "docs-papers-whitepapers"
+  },
+  {
+    "id": "audit-report",
+    "summary": "Формальный отчёт аудита безопасности с найденными проблемами, уровнем риска и рекомендациями.",
+    "expected": "docs-reports-audits"
+  },
+  {
+    "id": "incident-report",
+    "summary": "Postmortem производственного инцидента с timeline, root cause, impact и corrective actions.",
+    "expected": "docs-reports-incidents"
+  },
+  {
+    "id": "architecture-doc",
+    "summary": "Архитектурная документация проекта с компонентами, потоками данных, интерфейсами и техническими решениями.",
+    "expected": "docs-project-architecture"
+  },
+  {
+    "id": "requirements-doc",
+    "summary": "Документ требований проекта с ограничениями, функциональным поведением и acceptance criteria.",
+    "expected": "docs-project-requirements"
+  },
+  {
+    "id": "release-notes",
+    "summary": "Описание конкретного релиза проекта с новыми возможностями, исправлениями и известными ограничениями.",
+    "expected": "docs-project-release-notes"
+  },
+  {
+    "id": "privacy-policy",
+    "summary": "Политика конфиденциальности сервиса с правилами сбора, обработки и хранения персональных данных.",
+    "expected": "docs-legal-privacy"
+  },
+  {
+    "id": "js-source",
+    "summary": "Исходный код Node.js приложения на JavaScript, которое обрабатывает Telegram сообщения и вызывает несколько API.",
+    "expected": "code-source-javascript"
+  },
+  {
+    "id": "ts-source",
+    "summary": "Исходный код backend-сервиса на TypeScript и Node.js с HTTP API и очередями задач.",
+    "expected": "code-source-javascript"
+  },
+  {
+    "id": "python-source",
+    "summary": "Исходный код Python сервиса с FastAPI, асинхронной обработкой запросов и доступом к PostgreSQL.",
+    "expected": "code-source-python"
+  },
+  {
+    "id": "go-source",
+    "summary": "Исходный код CLI-приложения на Go с пакетами, командами и HTTP-клиентом.",
+    "expected": "code-source-go"
+  },
+  {
+    "id": "rust-source",
+    "summary": "Исходный код системной утилиты на Rust с async runtime и обработкой файлов.",
+    "expected": "code-source-rust"
+  },
+  {
+    "id": "mixed-source",
+    "summary": "Большой многоязычный репозиторий, где backend написан на Go, frontend на TypeScript, а служебные части на Python.",
+    "expected": "code-source-mixed"
+  },
+  {
+    "id": "snippet",
+    "summary": "Небольшой готовый reusable фрагмент JavaScript для HTTP requests с exponential backoff.",
+    "expected": "code-snippets-reusable"
+  },
+  {
+    "id": "patch",
+    "summary": "Git patch с изменениями исходного кода, исправляющими race condition и добавляющими regression test.",
+    "expected": "code-patches"
+  },
+  {
+    "id": "unit-test",
+    "summary": "Набор модульных тестов отдельных функций и классов с mocks и assertions.",
+    "expected": "code-tests-unit"
+  },
+  {
+    "id": "integration-test",
+    "summary": "Интеграционные тесты взаимодействия API, базы данных и очереди сообщений.",
+    "expected": "code-tests-integration"
+  },
+  {
+    "id": "dockerfile",
+    "summary": "Dockerfile, описывающий сборку container image приложения и установку runtime dependencies.",
+    "expected": "code-build-dockerfiles"
+  },
+  {
+    "id": "compose",
+    "summary": "Docker Compose manifest с несколькими сервисами, сетями, volumes и health checks.",
+    "expected": "code-build-compose"
+  },
+  {
+    "id": "ci",
+    "summary": "GitHub Actions workflow для запуска тестов, сборки артефактов и публикации релиза.",
+    "expected": "code-build-ci-cd"
+  },
+  {
+    "id": "app-config",
+    "summary": "Проектный YAML config приложения с настройками HTTP сервера, базы данных и очередей.",
+    "expected": "code-config-application"
+  },
+  {
+    "id": "reddit",
+    "summary": "Сохранённый Reddit thread с обсуждением производительности новой версии Linux kernel.",
+    "expected": "web-articles-reddit"
+  },
+  {
+    "id": "tech-article",
+    "summary": "Техническая веб-статья о внутреннем устройстве PostgreSQL query planner и практических оптимизациях.",
+    "expected": "web-articles-technical"
+  },
+  {
+    "id": "news",
+    "summary": "Сохранённая новостная статья о выпуске новой версии программного продукта.",
+    "expected": "web-articles-news"
+  },
+  {
+    "id": "scraped-docs",
+    "summary": "Документация программной библиотеки, автоматически выгруженная с сайта через web scraping.",
+    "expected": "web-scraped-docs"
+  },
+  {
+    "id": "site-crawl",
+    "summary": "Полный crawl сайта документации со множеством страниц и сохранённой структурой разделов.",
+    "expected": "web-dumps-full-sites"
+  },
+  {
+    "id": "chatgpt",
+    "summary": "Экспорт длинного разговора пользователя с ChatGPT о проектировании программного обеспечения.",
+    "expected": "comms-ai-chatgpt"
+  },
+  {
+    "id": "telegram",
+    "summary": "Экспорт истории переписки двух людей из Telegram с сообщениями и временными метками.",
+    "expected": "comms-telegram"
+  },
+  {
+    "id": "signal",
+    "summary": "Экспорт личной переписки из Signal с сообщениями и датами.",
+    "expected": "comms-signal"
+  },
+  {
+    "id": "email-thread",
+    "summary": "Цепочка email-переписки между несколькими участниками по одному рабочему вопросу.",
+    "expected": "comms-email-threads"
+  },
+  {
+    "id": "meeting",
+    "summary": "Текстовая расшифровка рабочей встречи команды с решениями, задачами и следующими действиями.",
+    "expected": "comms-transcripts-meetings"
+  },
+  {
+    "id": "json-dataset",
+    "summary": "Большой структурированный JSONL dataset с тысячами записей для последующего анализа.",
+    "expected": "data-datasets-json"
+  },
+  {
+    "id": "spreadsheet",
+    "summary": "Табличный набор измерений в XLSX для последующего анализа и построения отчётов.",
+    "expected": "data-datasets-spreadsheets"
+  },
+  {
+    "id": "sql-dump",
+    "summary": "Полный PostgreSQL SQL dump, предназначенный для восстановления содержимого базы данных.",
+    "expected": "data-dumps-sql"
+  },
+  {
+    "id": "sqlite",
+    "summary": "Автономный файл SQLite с таблицами и данными локального приложения.",
+    "expected": "data-dumps-sqlite"
+  },
+  {
+    "id": "app-log",
+    "summary": "Runtime log приложения с timestamps, обработкой запросов, warnings и stack traces.",
+    "expected": "data-logs-application"
+  },
+  {
+    "id": "server-log",
+    "summary": "Системный журнал сервера с сообщениями kernel, network failures и состоянием системных демонов.",
+    "expected": "data-logs-server"
+  },
+  {
+    "id": "audit-log",
+    "summary": "Машинный audit trail с событиями аутентификации, изменениями прав и административными действиями.",
+    "expected": "data-logs-audit"
+  },
+  {
+    "id": "traces",
+    "summary": "Экспорт distributed tracing с цепочками spans между несколькими микросервисами.",
+    "expected": "data-observability-traces"
+  },
+  {
+    "id": "cpu-profile",
+    "summary": "CPU profiling data с flamegraph и распределением времени по функциям приложения.",
+    "expected": "data-observability-profiles"
+  },
+  {
+    "id": "full-backup",
+    "summary": "Полная резервная копия файлов и конфигурации сервера для аварийного восстановления.",
+    "expected": "archives-backups-full"
+  },
+  {
+    "id": "browser-export",
+    "summary": "Экспорт браузера с bookmarks, history и данными сохранённых сессий.",
+    "expected": "archives-exports-browser"
+  },
+  {
+    "id": "security-advisory",
+    "summary": "Security advisory поставщика с описанием уязвимости, затронутых версий и исправления.",
+    "expected": "security-advisories"
+  },
+  {
+    "id": "vulnerability",
+    "summary": "Техническое описание CVE с условиями эксплуатации, PoC и оценкой риска.",
+    "expected": "security-vulnerabilities"
+  },
+  {
+    "id": "hardening",
+    "summary": "Чек-лист безопасной настройки Linux сервера с ограничением сервисов, прав и сетевого доступа.",
+    "expected": "security-hardening"
+  },
+  {
+    "id": "threat-intel",
+    "summary": "Threat intelligence материал с IOC, TTP и сведениями о конкретной кампании атак.",
+    "expected": "security-threat-intel"
+  },
+  {
+    "id": "inbox-binary",
+    "summary": "Проприетарный исполняемый binary installer без исходного кода, документации и извлекаемого текста.",
+    "expected": "inbox"
+  },
+  {
+    "id": "inbox-3d",
+    "summary": "STL 3D mesh механической шестерни для печати, без текстового описания и документации.",
+    "expected": "inbox"
+  },
+  {
+    "id": "benchmark-formal-report",
+    "summary": "Готовый самостоятельный отчёт о сравнительном тестировании нескольких CPU с таблицами измерений, методикой и итоговыми выводами.",
+    "expected": "docs-reports-benchmarks"
+  },
+  {
+    "id": "benchmark-code",
+    "summary": "Исходный код набора микробенчмарков, который запускает тестовые функции, измеряет latency и сохраняет результаты.",
+    "expected": "code-tests-benchmarks"
+  },
+  {
+    "id": "research-working-evaluation",
+    "summary": "Мои рабочие заметки сравнения нескольких reranker-моделей с промежуточными измерениями и личной оценкой вариантов.",
+    "expected": "mine-research-evaluations"
+  },
+  {
+    "id": "security-audit-formal",
+    "summary": "Готовый формальный отчёт аудита безопасности с scope, найденными уязвимостями, уровнями риска и итоговыми рекомендациями заказчику.",
+    "expected": "docs-reports-audits"
+  },
+  {
+    "id": "pentest-working-notes",
+    "summary": "Рабочие материалы penetration test с scope, evidence, отдельными findings, командами проверки и PoC до подготовки итогового отчёта.",
+    "expected": "security-pentest"
+  },
+  {
+    "id": "security-incident-active",
+    "summary": "Операционный runbook реагирования на текущий инцидент безопасности с шагами изоляции узлов, сбором evidence и действиями команды IR.",
+    "expected": "security-incident-response"
+  },
+  {
+    "id": "incident-postmortem-finished",
+    "summary": "Завершённый postmortem инцидента безопасности с timeline, impact, root cause, corrective actions и итоговыми выводами после устранения атаки.",
+    "expected": "docs-reports-incidents"
+  },
+  {
+    "id": "personal-docker-runtime-config",
+    "summary": "Мой эксплуатационный Docker Compose для развёрнутых self-hosted сервисов дома с volumes, сетями и локальными runtime-настройками.",
+    "expected": "mine-configs-docker"
+  },
+  {
+    "id": "project-compose-file",
+    "summary": "Docker Compose manifest внутри репозитория приложения, описывающий локальный запуск его backend, frontend и базы для разработки проекта.",
+    "expected": "code-build-compose"
+  },
+  {
+    "id": "personal-admin-shell-script",
+    "summary": "Мой самостоятельный административный Bash-скрипт для регулярной очистки сервера и ротации резервных копий вне программного репозитория.",
+    "expected": "mine-scripts-maintenance"
+  },
+  {
+    "id": "project-shell-source",
+    "summary": "Shell-скрипт Bash, хранящийся в исходном дереве программного проекта и реализующий часть его runtime-логики запуска.",
+    "expected": "code-source-shell"
+  },
+  {
+    "id": "yaml-dataset",
+    "summary": "Большой YAML-каталог с тысячами структурированных записей объектов, используемый как входной dataset для последующего анализа.",
+    "expected": "data-datasets-yaml"
+  },
+  {
+    "id": "yaml-project-config",
+    "summary": "YAML-конфигурация внутри репозитория сервиса с runtime-параметрами HTTP, очередей, базы данных и feature flags приложения.",
+    "expected": "code-config-application"
+  },
+  {
+    "id": "scraped-docs-provenance",
+    "summary": "Пакет документации библиотеки, автоматически извлечённый crawler-ом с сайта и сохранённый как результат web scraping.",
+    "expected": "web-scraped-docs"
+  },
+  {
+    "id": "ordinary-project-doc",
+    "summary": "Обычный локальный документ проекта с описанием его архитектуры, компонентов и потоков данных, не являющийся scraped web-контентом.",
+    "expected": "docs-project-architecture"
+  },
+  {
+    "id": "saved-generic-web-page",
+    "summary": "Одиночная сохранённая текущая версия веб-страницы продукта с обзором разделов и навигацией, не являющаяся отдельной статьёй или форумным тредом.",
+    "expected": "web-pages-saved"
+  },
+  {
+    "id": "single-forum-topic",
+    "summary": "Одиночная сохранённая веб-тема форума с обсуждением настройки PostgreSQL и ответами участников.",
+    "expected": "web-articles-forums"
+  },
+  {
+    "id": "forum-history-export",
+    "summary": "Массовый экспорт истории форума с множеством тем, комментариев, авторов и временных меток.",
+    "expected": "comms-forums"
+  },
+  {
+    "id": "substack-web-post",
+    "summary": "Сохранённая веб-публикация автора на Substack о разработке баз данных, открытая как страница сайта.",
+    "expected": "web-articles-substack"
+  },
+  {
+    "id": "newsletter-email",
+    "summary": "Полученное по электронной почте очередное письмо регулярной технической рассылки с темой, отправителем и email-заголовками.",
+    "expected": "comms-email-newsletters"
+  },
+  {
+    "id": "talk-transcript",
+    "summary": "Дословная текстовая расшифровка произнесённого технического доклада с репликами спикера и временными метками.",
+    "expected": "comms-transcripts-talks"
+  },
+  {
+    "id": "lecture-notes-authored",
+    "summary": "Авторский учебный конспект лекции со структурированными тезисами, формулами и пояснениями, а не дословная расшифровка речи.",
+    "expected": "docs-courses-lecture-notes"
+  },
+  {
+    "id": "sql-source-query",
+    "summary": "SQL-файл внутри исходного дерева приложения с запросами и хранимыми процедурами, используемыми программной реализацией.",
+    "expected": "code-source-sql"
+  },
+  {
+    "id": "sql-database-dump",
+    "summary": "Сырой PostgreSQL SQL dump со схемой и данными базы, предназначенный для восстановления состояния базы данных.",
+    "expected": "data-dumps-sql"
+  },
+  {
+    "id": "database-backup-package",
+    "summary": "Архивный backup-пакет базы PostgreSQL вместе с метаданными резервного копирования и служебными файлами для disaster recovery.",
+    "expected": "archives-backups-database"
+  },
+  {
+    "id": "source-archive-bundle",
+    "summary": "ZIP-архив release source bundle программного проекта, где сохраняется именно пакет исходников как единый архивный артефакт.",
+    "expected": "archives-packages-source"
+  },
+  {
+    "id": "unpacked-mixed-repository",
+    "summary": "Распакованное дерево большого программного репозитория с исходным кодом на Go, TypeScript и Python без доминирующего языка.",
+    "expected": "code-source-mixed"
+  },
+  {
+    "id": "application-data-export",
+    "summary": "Пакетный экспорт пользовательских данных из desktop-приложения с историей, объектами и служебными metadata, не являющийся настройками приложения.",
+    "expected": "archives-exports-applications"
+  },
+  {
+    "id": "application-personal-config",
+    "summary": "Мой локальный конфигурационный файл пользовательского приложения с личными настройками интерфейса и поведения программы.",
+    "expected": "mine-configs-applications"
+  },
+  {
+    "id": "personal-active-project-workspace",
+    "summary": "Рабочий комплект материалов моего активного проекта, организованный как проектный workspace с текущими задачами, решениями и статусом разработки.",
+    "expected": "mine-projects-active"
+  },
+  {
+    "id": "project-architecture-artifact",
+    "summary": "Самостоятельный архитектурный документ конкретного проекта с диаграммой компонентов, интерфейсами и потоками данных.",
+    "expected": "docs-project-architecture"
+  },
+  {
+    "id": "adr-project-decision",
+    "summary": "ADR проекта фиксирует выбор PostgreSQL вместо MongoDB, контекст решения, альтернативы и технические последствия.",
+    "expected": "docs-project-adrs"
+  },
+  {
+    "id": "ops-runbook",
+    "summary": "Runbook восстановления сервиса после падения Redis с проверками health, командами переключения и критериями успешного возврата в работу.",
+    "expected": "docs-operations-runbooks"
+  },
+  {
+    "id": "meeting-minutes-authored",
+    "summary": "Структурированный протокол встречи команды с итогами обсуждения, принятыми решениями и ответственными, составленный после разговора.",
+    "expected": "docs-meetings-minutes"
+  },
+  {
+    "id": "meeting-transcript-verbatim",
+    "summary": "Дословная текстовая расшифровка рабочей встречи с репликами участников и временными метками.",
+    "expected": "comms-transcripts-meetings"
+  },
+  {
+    "id": "project-notebook",
+    "summary": "Jupyter notebook внутри исследовательского репозитория с Python-кодом, вычислениями и графиками для воспроизводимого анализа.",
+    "expected": "code-source-notebooks"
+  },
+  {
+    "id": "project-kubernetes-iac",
+    "summary": "Kubernetes Deployment, Service и Ingress manifests, хранящиеся в infrastructure-as-code репозитории приложения.",
+    "expected": "code-infrastructure-kubernetes"
+  },
+  {
+    "id": "personal-kubernetes-ops",
+    "summary": "Мои эксплуатационные настройки домашнего Kubernetes-кластера с контекстами, namespace и локальными параметрами администрирования вне проекта.",
+    "expected": "mine-configs-kubernetes"
+  },
+  {
+    "id": "saved-official-doc-page",
+    "summary": "Одиночная сохранённая страница официальной документации PostgreSQL о настройке replication slots, открытая с сайта документации.",
+    "expected": "web-docs-official"
+  },
+  {
+    "id": "stackoverflow-question",
+    "summary": "Сохранённый вопрос Stack Overflow о deadlock в PostgreSQL вместе с несколькими ответами и принятым решением.",
+    "expected": "web-discussions-stackoverflow"
+  },
+  {
+    "id": "issue-export",
+    "summary": "Структурированный экспорт GitHub issue с состояниями, labels, авторами и полной историей комментариев команды.",
+    "expected": "comms-collaboration-issues"
+  },
+  {
+    "id": "saved-public-issue",
+    "summary": "Одиночная сохранённая веб-страница публичного GitHub issue с обсуждением бага и ответами разработчиков.",
+    "expected": "web-discussions-issues"
+  },
+  {
+    "id": "network-pcap",
+    "summary": "PCAPNG-захват сетевого трафика между reverse proxy и backend во время воспроизведения ошибки TLS.",
+    "expected": "data-network-pcap"
+  },
+  {
+    "id": "browser-har",
+    "summary": "HAR-выгрузка браузерной сессии с HTTP-запросами, ответами и timing для диагностики медленной загрузки страницы.",
+    "expected": "data-network-har"
+  },
+  {
+    "id": "process-core-dump",
+    "summary": "Core dump упавшего Linux-процесса с образом памяти для последующего анализа в gdb.",
+    "expected": "data-crash-core"
+  },
+  {
+    "id": "model-checkpoint",
+    "summary": "Файл checkpoint с весами обученной ML-модели и состоянием параметров для продолжения inference или fine-tuning.",
+    "expected": "data-ml-checkpoints"
+  },
+  {
+    "id": "container-image-archive",
+    "summary": "Экспортированный Docker image в tar-архиве со слоями и manifest для переноса образа на другой сервер.",
+    "expected": "archives-images-containers"
+  },
+  {
+    "id": "vm-disk-image",
+    "summary": "QCOW2-образ виртуальной машины с файловой системой и установленной операционной системой.",
+    "expected": "archives-images-vm"
+  },
+  {
+    "id": "terminal-screenshot-media",
+    "summary": "Скриншот терминала с сообщением об ошибке запуска OpenClaw Gateway и фрагментом stack trace.",
+    "expected": "mine-photos-screenshots"
+  },
+  {
+    "id": "podcast-transcript",
+    "summary": "Текстовая расшифровка podcast-выпуска с репликами ведущего и гостя, разбитая по временным меткам.",
+    "expected": "comms-transcripts-podcasts"
+  },
+  {
+    "id": "security-scanner-output",
+    "summary": "Отчётный JSON-вывод vulnerability scanner с CVE, версиями пакетов, severity и найденными затронутыми компонентами.",
+    "expected": "security-scanner-results"
+  },
+  {
+    "id": "security-recon-working",
+    "summary": "Рабочий список обнаруженных доменов, IP, открытых сервисов и endpoints для последующей проверки поверхности атаки.",
+    "expected": "security-recon"
+  },
+  {
+    "id": "security-detection-rule",
+    "summary": "Sigma rule для обнаружения подозрительного запуска PowerShell с условиями по process creation events.",
+    "expected": "security-detection-rules"
+  },
+  {
+    "id": "security-forensics",
+    "summary": "Forensic timeline инцидента с файловыми артефактами, process events и результатами анализа дискового образа.",
+    "expected": "security-forensics"
+  },
+  {
+    "id": "personal-receipt",
+    "summary": "Электронный чек личной покупки оборудования с датой, магазином, суммой и перечнем товаров.",
+    "expected": "mine-records-receipts"
+  },
+  {
+    "id": "personal-lab-results",
+    "summary": "Личные результаты лабораторного анализа с показателями, единицами измерения и референсными значениями.",
+    "expected": "mine-records-labs"
+  },
+  {
+    "id": "travel-booking",
+    "summary": "Подтверждение бронирования гостиницы для личной поездки с датами заселения, номером брони и условиями отмены.",
+    "expected": "mine-records-bookings"
+  },
+  {
+    "id": "personal-resume",
+    "summary": "Актуальное резюме пользователя с опытом работы, навыками, образованием и контактными данными.",
+    "expected": "mine-records-resumes"
+  }
+]

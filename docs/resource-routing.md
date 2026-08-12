@@ -1,77 +1,42 @@
 # Configurable resource routing
 
-This fork can route `add_resource` imports into an agent-specific OpenViking resource taxonomy without allowing a model to generate `viking://` URIs.
+This fork can route agent-initiated `add_resource` imports into an agent-specific OpenViking resource taxonomy without allowing the model, embedder, or reranker to invent storage URIs.
 
-The router is intentionally deterministic at the trust boundary:
+The routing boundary is deliberately deterministic:
 
-1. the OpenClaw agent supplies a short semantic `summary`;
-2. BGE-M3 embeds that summary;
-3. cosine similarity selects the configured top candidates from the validated taxonomy;
-4. when the leading candidates are close enough, BGE-reranker-v2-m3 reranks only that candidate set;
-5. plugin code accepts only a validated semantic category key and resolves it to a trusted `viking://resources/...` parent URI;
-6. OpenViking performs the actual resource import with `create_parent=true` for category-based routing.
+1. the agent inspects the resource and supplies a short semantic `summary`;
+2. the configured embedding model embeds that summary;
+3. cosine similarity compares it with cached **semantic category** embeddings;
+4. the configured top candidates are reranked only when the top scores are close enough;
+5. plugin code resolves the selected validated category to its trusted `viking://resources/...` URI;
+6. a low-confidence classification goes to the configured fallback category;
+7. OpenViking receives only the trusted parent URI and performs the asynchronous import.
 
-Neither the embedder nor the reranker can supply an arbitrary URI.
+The fallback is a writable destination, not a semantic candidate. Infrastructure failures are not converted into fallback imports.
 
 ## Per-agent isolation
 
-Resource routing follows the same account-per-agent model as the rest of this fork. Every configured agent has its own:
+Resource routing follows the same account-per-agent model as the rest of this fork. Every configured OpenClaw agent has its own:
 
 - OpenViking account/API key;
 - `viking://resources` tree;
 - taxonomy YAML file;
-- taxonomy embedding cache;
+- category embedding cache;
 - routing audit JSONL file.
 
-The default file templates are:
+Typical file templates are:
 
 ```text
-~/.openclaw/{agentId}.yaml
+~/.openclaw/openviking/categories/{agentId}.yaml
 ~/.openclaw/openviking/resource-routing-cache/{agentId}.json
 ~/.openclaw/openviking/resource-routing-audit/{agentId}.jsonl
 ```
 
-For example, agents `main` and `igor` normally use:
-
-```text
-~/.openclaw/main.yaml
-~/.openclaw/igor.yaml
-```
-
-Changing a taxonomy is a restart operation in the initial implementation. There is no filesystem watcher or hot reload.
-
-## Default taxonomy
-
-The repository ships a starter taxonomy at:
-
-```text
-routing/default-resource-taxonomy.yaml
-```
-
-It contains general-purpose branches for:
-
-- projects;
-- documents;
-- code;
-- web material;
-- images, audio, and video;
-- datasets and structured data;
-- reference material;
-- communications;
-- operations;
-- security;
-- tests and fixtures;
-- `__INBOX__` fallback.
-
-The starter tree is intentionally uneven in depth. Taxonomies do not need identical depth across branches.
-
-Copy the starter taxonomy to each agent's configured taxonomy path and customize it independently for that agent.
+A `main` routing request never waits for an unrelated `igor` category cache to finish building. Router initialization is deduplicated per agent.
 
 ## Taxonomy schema
 
-A taxonomy is YAML with `schemaVersion: 1`, one fallback semantic key, and an arbitrarily nested `categories` tree.
-
-Example:
+A taxonomy uses `schemaVersion: 1`, one fallback semantic key, and an arbitrarily nested `categories` tree.
 
 ```yaml
 schemaVersion: 1
@@ -79,94 +44,199 @@ fallback: inbox
 
 categories:
   inbox:
-    segment: __INBOX__
-    description: >
-      Resources that cannot be classified confidently into a more specific category.
+    segment: _INBOX
+    description: Ресурсы, которые нельзя уверенно классифицировать автоматически.
 
-  projects:
-    segment: projects
-    description: >
-      Materials tied to a concrete project or implementation effort.
+  code:
+    segment: code
+    description: Исходный код и связанные с разработкой материалы.
+    routeable: false
     children:
-      project-openclaw:
-        segment: openclaw
-        description: >
-          OpenClaw project material, configuration, implementation and operation.
+      code-source:
+        segment: source
+        description: Исходные тексты программ, разделённые по языкам.
+        routeable: false
         children:
-          project-openviking:
-            segment: openviking
-            description: >
-              OpenViking integration, memory, resources and routing work for OpenClaw.
+          code-source-javascript:
+            segment: javascript
+            description: Исходный код программных проектов на JavaScript и TypeScript.
 ```
 
-Each mapping key such as `project-openviking` is a stable **semantic category key**. It is not an OpenViking URI and does not need to equal the visible directory segment.
+Each YAML mapping key is a globally unique stable **semantic key**. A visible `segment` may repeat under different parents.
 
-For the example above the plugin compiles:
+For the leaf above the compiler produces:
 
 ```text
-semantic key: project-openviking
-segment:      openviking
-URI:          viking://resources/projects/openclaw/openviking
+key:         code-source-javascript
+segment:     javascript
+path:        code/source/javascript
+uri:         viking://resources/code/source/javascript
+parentKey:   code-source
 ```
+
+The compiler maintains both `byKey` and `byPath` indexes. Two categories cannot resolve to the same URI. Repeated leaf names such as `code` are safe when their full paths differ.
 
 ### Category fields
 
-Each category supports:
-
 | Field | Required | Meaning |
 | --- | --- | --- |
-| mapping key | yes | Globally unique semantic category key. |
+| mapping key | yes | Globally unique stable semantic key. |
 | `segment` | yes | One safe `viking://resources` path segment. |
-| `description` | yes | Human/semantic description embedded for routing. |
-| `routeable` | no | Whether the category itself can receive resources. Defaults to `true`. |
+| `description` | yes | Positive semantic meaning of this taxonomy node. |
+| `distinguishFrom` | no | Boundary hints used by the reranker, never by the category embedding. |
+| `routeable` | no | Whether the node can receive resources. Schema v1 defaults to `true`. |
 | `children` | no | Nested child category mapping. |
 
-A category with `routeable: false` is organizational only. Its routeable descendants are still candidates.
+For production taxonomies, organizational nodes should explicitly use `routeable: false`; semantic destinations should normally be leaves. The audit tool reports structural nodes that are accidentally writable.
 
-Semantic keys must be globally unique across the whole taxonomy, not merely unique among siblings.
+The fallback key must exist and be routeable.
 
-The fallback key must exist and refer to a routeable category.
+## Writable categories versus semantic categories
+
+The compiled taxonomy deliberately separates two sets:
+
+- `routeableCategories`: all validated destinations that may receive a resource, including fallback;
+- `semanticCategories`: routeable categories eligible for embedding/cosine/reranking, **excluding fallback**.
+
+This distinction is important. `_INBOX` is not a semantic topic and must never win cosine similarity as though “uncertain material” were ordinary content.
+
+A taxonomy therefore needs at least one semantic category in addition to its fallback.
+
+## Ancestry-aware embedding and reranker texts
+
+A category embedding is not generated from the leaf description alone. The compiler builds two deterministic semantic documents for every category.
+
+### `embeddingText`
+
+`embeddingText` contains only positive semantic evidence:
+
+1. the leaf `description`;
+2. positive descriptions of all ancestors;
+3. the exact full taxonomy path.
+
+Conceptually:
+
+```text
+description: Исходный код программных проектов на JavaScript и TypeScript.
+ancestors: code: Исходный код и связанные с разработкой материалы. > code/source: Исходные тексты программ, разделённые по языкам.
+path: code/source/javascript
+```
+
+The cached category vector is generated from `embeddingText`.
+
+### `distinguishFrom` and `rerankText`
+
+Categories that are easy to confuse may declare boundary guidance separately:
+
+```yaml
+code-source-go:
+  segment: go
+  description: Исходный код программных проектов, сервисов и библиотек на Go.
+  distinguishFrom:
+    - Учебные и справочные материалы о языке относятся к docs/languages.
+```
+
+`distinguishFrom` is deliberately excluded from `embeddingText`. Contrastive phrases such as “not documentation” would otherwise add the competing topic to the bi-encoder vector and can make neighboring classes more similar.
+
+For conditional reranking the compiler builds `rerankText` from `embeddingText` plus boundary hints. Boundary hints from structural ancestors are inherited, so a leaf receives relevant branch-level disambiguation without duplicating that prose into every leaf description.
+
+The reranker therefore sees richer discrimination instructions only when cosine retrieval is ambiguous, while category embeddings remain positive and stable.
+
+Changes to descriptions, `distinguishFrom`, ancestry, paths, routeability, or fallback change canonical taxonomy identity. A cache built for an incompatible taxonomy is rejected.
 
 ## Flat semantic candidate set
 
-The YAML remains a tree for humans and for the final OpenViking directory structure, but classification is **not hierarchical**.
+The YAML remains a tree for humans and for the OpenViking directory layout, but automatic classification is intentionally flat.
 
-At load time the plugin flattens every routeable category into one candidate set. A query is compared directly with all routeable category embeddings. The router does not first choose a top-level branch and then descend one level at a time.
+The query embedding is compared directly with every compiled `semanticCategory`. The router does not make an irreversible top-level branch decision and then descend the tree.
 
-This avoids making an early wrong branch decision impossible to recover from.
+The ancestry-aware `embeddingText` supplies branch context while preserving the ability for a globally better leaf to beat a superficially similar leaf in another branch.
 
-## `add_resource` routing precedence
+A hierarchical multi-stage classifier may be evaluated later if measurements justify its additional model calls and failure modes; it is not part of the current routing contract.
 
-Routing precedence is strict:
+## Agent-facing `add_resource` contract
 
-1. explicit `to`;
-2. explicit `parent`;
-3. explicit semantic `category`;
-4. automatic routing.
+When `resourceRouting.enabled=true`, the agent-facing resource import tool is intentionally small:
 
-Explicit routing never invokes the embedding or reranker services.
+```text
+source
+summary
+category
+```
 
-`to`, `parent`, and `category` are mutually exclusive.
+`source` is required.
 
-For an explicit semantic `category`, the model supplies only an existing semantic key. The plugin validates the key and resolves the URI itself.
+`summary` is required for automatic routing and omitted only when an explicit `category` override is supplied.
+
+`category` is an optional explicit taxonomy selector. Prefer the full taxonomy path:
+
+```text
+code/source/javascript
+```
+
+Stable semantic keys such as `code-source-javascript` remain accepted for compatibility.
+
+The agent-facing tool does **not** expose arbitrary `to` or `parent` URIs, `create_parent`, extraction instructions, parser filters, strictness controls, watch settings, or other low-level import knobs. Those remain available through lower-level/manual interfaces where a human can choose them deliberately.
+
+### Explicit category behavior
+
+An explicit selector is resolved only against the validated taxonomy.
+
+- existing routeable path/key → import there;
+- organizational path/key → fallback category;
+- unknown path/key → fallback category;
+- ambiguous selector → fallback category.
+
+No unknown selector creates a new taxonomy path. The tool result reports the requested selector, selected category/path, whether fallback was used, and the fallback reason.
+
+Explicit category resolution does not call the embedding or reranker services.
 
 ## Automatic routing summary
 
-Automatic routing requires `summary`.
-
-The agent should inspect or read enough of the resource to understand its actual content unless that content is already established in the conversation. It must not guess from a filename or path.
-
-The default semantic input is:
+The default semantic input is summary-only:
 
 ```text
 {{summary}}
 ```
 
-The tested baseline intentionally uses summary-only routing. Filename/path/MIME metadata is not automatically appended to the semantic query because earlier tests showed that technical metadata can pull routing toward irrelevant categories.
+The agent must inspect or read enough of the resource to understand its real content unless that content is already established in the conversation. It must not infer semantic content from filename or storage path alone.
 
-A good summary is one short sentence describing what the resource is and what it is useful for. When provenance is semantically part of the resource type, it should be stated naturally, for example `online technical article`, `email thread`, `meeting transcript`, or `terminal screenshot`. Do not put raw paths, storage locations, or MIME strings into the summary.
+A good summary is one short sentence describing **what the resource contains and what it is useful for**.
 
-If automatic routing is required and `summary` is missing or blank, `add_resource` rejects the call before contacting a model or OpenViking and tells the agent to inspect the resource, provide a semantic summary, and retry.
+When provenance or container form defines the semantic type, state that fact naturally in the summary. Examples include:
+
+- a saved web article or saved web page;
+- a batch scraping/crawling result;
+- an email message or delivered newsletter;
+- an exported chat/forum history;
+- a spoken-talk transcript;
+- a machine log, database dump, backup, or archive bundle;
+- a screenshot.
+
+Do not copy raw filename, path, MIME type, storage URI, or unrelated technical metadata into the semantic summary.
+
+This provenance rule matters because a local architecture document and scraped website documentation may contain nearly identical prose while belonging to different taxonomy branches.
+
+## Summary language policy
+
+`resourceRouting.summaryLanguage` controls language validation for automatic summaries:
+
+```text
+any   no language restriction; generic default
+ru    require a genuinely Russian semantic summary
+```
+
+The default is `any` so the routing mechanism remains compatible with non-Russian taxonomies.
+
+For a Russian taxonomy, configure:
+
+```json
+"summaryLanguage": "ru"
+```
+
+The Russian validator allows technical names and identifiers such as `OpenClaw`, `JavaScript`, `API`, commands, protocols, and model names, but rejects an English sentence containing only a token Cyrillic character.
+
+Language validation applies to automatic routing only. It does not change taxonomy parsing or explicit category selection.
 
 ## Configurable semantic input template
 
@@ -176,11 +246,11 @@ If automatic routing is required and `summary` is missing or blank, `add_resourc
 {{summary}}
 ```
 
-Advanced deployments can explicitly include additional fields:
+Advanced deployments may explicitly include additional fields, for example:
 
 ```text
 {{summary}}
-Source kind: {{sourceKind}}
+Source type: {{sourceKind}}
 ```
 
 Supported placeholders are:
@@ -197,144 +267,53 @@ instruction
 agentId
 ```
 
-`{{summary}}` is mandatory even in a customized template.
+`{{summary}}` remains mandatory.
 
-Changing the default summary-only input should be treated as a routing-model change and calibrated on real resources before deployment.
-
-## Plugin configuration
-
-All routing mechanism settings live inside the existing OpenViking plugin configuration under `resourceRouting`.
-
-Example:
-
-```jsonc
-{
-  "plugins": {
-    "entries": {
-      "openviking": {
-        "config": {
-          "resourceRouting": {
-            "enabled": true,
-            "taxonomyFile": "/home/openclaw/.openclaw/{agentId}.yaml",
-            "cacheFile": "/home/openclaw/.openclaw/openviking/resource-routing-cache/{agentId}.json",
-            "semanticInputTemplate": "{{summary}}",
-
-            "embedding": {
-              "baseUrl": "http://127.0.0.1:18081",
-              "model": "bge-m3",
-              "dimensions": 1024,
-              "timeoutMs": 3000,
-              "apiKey": "${RESOURCE_EMBEDDING_API_KEY}",
-              "headers": {
-                "X-Custom-Header": "${RESOURCE_EMBEDDING_HEADER}"
-              }
-            },
-
-            "reranker": {
-              "baseUrl": "http://127.0.0.1:18080",
-              "model": "bge-reranker-v2-m3",
-              "timeoutMs": 3000,
-              "apiKey": "${RESOURCE_RERANKER_API_KEY}",
-              "headers": {}
-            },
-
-            "retrieval": {
-              "topK": 2,
-              "minScore": 0.64,
-              "rerankBelowMargin": 0.06
-            },
-
-            "fallbackCategory": "inbox",
-            "failurePolicy": "error",
-
-            "audit": {
-              "enabled": true,
-              "file": "/home/openclaw/.openclaw/openviking/resource-routing-audit/{agentId}.jsonl",
-              "summaryPreviewChars": 240
-            }
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-The local BGE URLs/models shown above are defaults, not hard requirements. A deployment can point at different compatible embedding/reranking services, models, authentication keys, and custom HTTP headers.
-
-`apiKey` and header values support `${ENV_VAR}` expansion. Missing referenced environment variables are configuration errors.
-
-### Routing defaults
-
-| Setting | Default |
-| --- | --- |
-| `enabled` | `false` |
-| embedding `baseUrl` | `http://127.0.0.1:18081` |
-| embedding `model` | `bge-m3` |
-| embedding `dimensions` | `1024` |
-| reranker `baseUrl` | `http://127.0.0.1:18080` |
-| reranker `model` | `bge-reranker-v2-m3` |
-| HTTP timeout | `3000 ms` |
-| `topK` | `2` |
-| `minScore` | `0.64` |
-| `rerankBelowMargin` | `0.06` |
-| `fallbackCategory` | `inbox` |
-| `failurePolicy` | `error` |
-| `semanticInputTemplate` | `{{summary}}` |
-| audit | enabled |
-
-The tested `0.64` score and `0.06` margin are starting defaults, not universal model constants. Tune them from routing audit data collected on real resources.
+Changing the template changes query semantics and should be treated as a routing-model change requiring recalibration.
 
 ## Embedding and reranking policy
 
 For automatic routing:
 
-1. embed `semanticInputTemplate` rendered from the resource summary;
-2. calculate cosine similarity against cached category embeddings;
-3. select the configured `topK` candidates;
-4. if top-1 is below `minScore`, choose the configured fallback category;
-5. otherwise compare top-1 and top-2 similarity;
-6. if their difference is less than `rerankBelowMargin`, rerank the candidate set;
-7. otherwise accept top-1;
-8. resolve the final semantic key through the validated taxonomy;
-9. import under the resulting trusted parent URI with `create_parent=true`.
+1. render the semantic input;
+2. embed it once;
+3. calculate cosine similarity against cached semantic-category vectors;
+4. retain configured `topK` candidates;
+5. if top-1 score is below `minScore`, choose fallback immediately;
+6. otherwise compare top-1 and top-2 cosine scores;
+7. if their gap is below `rerankBelowMargin`, rerank the entire retained candidate set using boundary-aware `rerankText` documents;
+8. otherwise accept top-1;
+9. resolve the selected key through the validated taxonomy;
+10. import asynchronously under its trusted parent URI.
 
-The default `topK=2` was chosen because larger rerank candidate sets increased latency substantially in testing without enough quality benefit to justify using them by default.
+Fallback never appears in cosine or reranker candidates.
 
 ## Semantic uncertainty versus infrastructure failure
 
-These cases are deliberately different.
+These states intentionally behave differently.
 
 ### Semantic uncertainty
 
-If the embedding score is below `minScore`, automatic routing selects the configured fallback semantic category, normally `inbox`.
+If the best semantic candidate is below `minScore`, the plugin imports under the configured fallback category, normally `_INBOX`.
 
-The resource import continues normally under that fallback category.
-
-The fallback is not hard-coded to `inbox`: `fallbackCategory` selects the semantic key, and that key must exist in each agent taxonomy.
-
-The visible directory name is controlled by the fallback category `segment`. The bundled taxonomy uses:
+The decision is marked:
 
 ```text
-__INBOX__
+fallback: true
+fallbackReason: below_min_score
 ```
-
-so uncertain resources stand out in the OpenViking panel.
-
-A resource can also reach `inbox` through normal semantic classification. In that case the decision is not marked as threshold fallback; the audit distinguishes these cases.
 
 ### Infrastructure failure
 
 Examples include:
 
 - embedding service unavailable;
-- reranker unavailable when policy requires reranking;
+- reranker unavailable when reranking is required;
 - HTTP timeout;
 - malformed model response;
-- embedding dimension mismatch;
+- vector dimension mismatch;
 - missing or invalid taxonomy;
-- fallback key mismatch;
-- invalid category result;
+- taxonomy/config fallback mismatch;
 - corrupt cache that cannot be rebuilt.
 
 Infrastructure failure is fail-closed:
@@ -343,141 +322,212 @@ Infrastructure failure is fail-closed:
 add_resource is NOT executed
 ```
 
-The tool returns an explicit routing error and tells the agent/user to inspect the routing configuration/model services and retry.
-
-Infrastructure failure is never silently converted into an INBOX import.
+A broken model service must not silently turn every resource into an inbox import.
 
 ## Category embedding cache
 
-Taxonomy category embeddings are not recomputed on every resource import or every restart.
+The cache is per agent and stores vectors only for `semanticCategories`.
 
-The plugin computes a canonical taxonomy hash and stores a per-agent cache containing at least:
+A valid cache is tied to:
 
 - cache schema version;
-- taxonomy SHA-256;
-- embedding model name;
-- a secret-safe embedding endpoint identity hash;
-- vector dimensions;
-- category keys;
-- vectors.
+- canonical taxonomy hash;
+- embedding model;
+- secret-safe embedding endpoint identity;
+- dimensions;
+- exact ordered semantic-category key set.
 
-The endpoint identity hash includes routing-relevant endpoint identity such as base URL, model, API key value, and headers, but the secret values themselves are not stored in the cache.
+The endpoint identity includes routing-relevant endpoint configuration but stores only its hash, not raw credentials.
 
-A cache hit requires the taxonomy hash, embedding identity, dimensions, and category set to match.
+### Cold-cache construction
 
-When a cache is missing, stale, or safely recoverably corrupt, the plugin recomputes the taxonomy embeddings and atomically replaces the cache.
+A missing or stale cache is built **sequentially, one semantic category per embedding request**. This intentionally avoids sending a large taxonomy batch through one HTTP timeout on CPU-only local embedding services.
 
-Cache writes use a temporary file, fsync, and atomic rename. Cache files are owner-only (`0600`).
+Nothing is persisted until every category succeeds. The completed cache is written owner-only and atomically.
 
-The vectors are then retained in process memory for routing.
+A partial cache is never accepted.
 
-## Startup preload
+### Taxonomy change operation
 
-When resource routing is enabled, the plugin preloads routing state for the agents listed in the existing per-agent OpenViking key map.
+Treat taxonomy changes as maintenance:
 
-This validates each agent taxonomy and warms/rebuilds its category embedding cache during gateway startup instead of delaying the first automatic import.
+1. install the changed plugin/taxonomy;
+2. remove the affected agent cache file(s);
+3. restart the OpenClaw gateway;
+4. observe startup preload;
+5. wait for `resource routing ready for agent <id>`;
+6. verify the new cache with the audit/probe tools;
+7. resume normal automatic imports.
 
-A preload failure is logged per agent. It does not disable memory for other agents. Automatic routing for the affected agent remains fail-closed until the underlying taxonomy/model-service problem is fixed; a later route attempt can retry initialization.
+The cache identity checks remain as a defensive backstop, but explicit cache deletion makes the maintenance intent obvious.
 
-## Routing audit
+## Startup preload lifecycle
 
-Routing audit is JSONL and enabled by default when routing is enabled.
+Resource routing preload is started from the OpenClaw gateway **service start lifecycle**, not directly from plugin registration.
 
-Each successful decision records compact calibration evidence such as:
+This matters because OpenClaw may invoke plugin registration multiple times while constructing runtime surfaces. Expensive cold-cache work must not be duplicated for each registration pass.
+
+The service has a one-shot preload guard. Agents are preloaded sequentially, while router promises remain deduplicated per agent.
+
+Preload itself is asynchronous: gateway service startup is not blocked until the entire CPU embedding cache finishes. If an automatic route arrives during preload, it waits only for that agent's router initialization, not for unrelated agents.
+
+A preload failure is logged per agent. Other agents continue working.
+
+## Routing audit JSONL
+
+A successful routing record can include:
 
 - timestamp;
 - agent ID;
 - source hash rather than raw source path;
-- summary hash and bounded preview;
+- summary hash and optional bounded preview;
 - taxonomy hash;
 - embedding/reranker model names;
-- embedding candidates and cosine scores;
-- whether reranking was used;
-- reranker scores when used;
+- candidate key + full path + cosine score;
+- reranker key + full path + score when used;
 - final category;
-- threshold fallback reason when applicable;
-- embedding/reranker/total decision latency;
+- fallback and reason;
+- model/total latency;
 - status/error code.
-
-The audit is intentionally separate from the taxonomy and from OpenViking memory data. Its purpose is calibration and operational diagnosis.
 
 Audit files are owner-only (`0600`).
 
-## `create_parent`
+`summaryPreviewChars=0` disables plaintext summary previews while retaining hashes and decision evidence. During calibration a bounded preview may be useful; after calibration privacy-sensitive deployments should consider setting it to zero.
 
-OpenViking 0.4.12 supports `parent` plus `create_parent=true` for resource import.
+## Read-only taxonomy audit
 
-This fork exposes that option through the OpenViking client and `add_resource` tool.
+The repository provides:
 
-For automatic and semantic-category routing the plugin always supplies the trusted taxonomy parent and forces `create_parent=true`. OpenViking therefore creates missing taxonomy branches through its normal API.
+```bash
+npm run routing:audit -- --agent main --language ru
+```
 
-For explicit `parent`, callers can choose `create_parent` themselves.
+The taxonomy audit performs **zero model calls**. It reports structural/textual problems such as:
 
-`create_parent` without a `parent` is rejected, and it cannot be combined with exact `to` routing.
+- total, routeable, semantic, and structural counts;
+- fallback accidentally appearing in semantic ranking;
+- writable structural parents;
+- semantic non-leaf nodes;
+- exact duplicate descriptions;
+- repeated visible segments;
+- unusually short descriptions;
+- Russian-language violations when requested;
+- lexically close semantic-category pairs.
 
-No Qdrant data is manipulated directly by the plugin.
+If a valid cache already exists, the same command also reports the nearest category pairs by real cached embedding cosine similarity, still without making new model calls.
+
+Repeated visible segments are informational rather than errors because full paths and semantic keys remain unique.
+
+## Read-only routing probe
+
+The routing probe executes the exact production query embedding, cosine and conditional reranking logic against an **existing valid cache** without importing, moving, or deleting OpenViking resources:
+
+```bash
+npm run routing:probe -- \
+  --agent main \
+  --cases /path/routing-cases.ru.json \
+  --details mismatches
+```
+
+It reports:
+
+- expected and selected category keys;
+- selected full paths;
+- cosine candidates and paths;
+- reranker candidates and paths;
+- fallback behavior;
+- latency;
+- aggregate accuracy.
+
+Threshold sweeps are available with `--min-scores` and `--rerank-margins`.
+
+Tune `minScore`, `topK`, and `rerankBelowMargin` only after the final taxonomy and clean category cache exist. Ancestry changes, fallback exclusion, or description edits change the embedding distribution and invalidate conclusions drawn from the previous cache.
+
+## Russian routing examples
+
+The repository packages reviewed Russian examples:
+
+```text
+examples/resource-taxonomy.ru.yaml
+examples/routing-cases.ru.json
+```
+
+The taxonomy contains structural parents plus writable semantic leaves. The accompanying cases intentionally include cross-branch adversarial boundaries such as:
+
+- benchmark code versus benchmark report;
+- working research notes versus formal report;
+- security audit report versus pentest evidence;
+- active incident response versus completed postmortem;
+- personal runtime Docker configuration versus repository Compose manifest;
+- personal administrative shell script versus project shell source;
+- YAML dataset versus application configuration;
+- scraped web documentation versus ordinary local project documentation;
+- single forum topic versus bulk forum-history export;
+- SQL source versus database dump versus backup archive.
+
+These examples are calibration material, not universal taxonomy doctrine.
+
+## OpenViking directory descriptions
+
+Taxonomy descriptions used by this router are local classifier metadata. They are not automatically identical to OpenViking directory `.abstract.md` metadata.
+
+OpenViking 0.4.12 supports `POST /api/v1/fs/mkdir` with a `description`, which writes directory abstract metadata and vectorizes it. Synchronizing a taxonomy into OpenViking directory descriptions should therefore be a separate explicit maintenance operation, not a hidden side effect of every gateway start.
+
+Do not manipulate OpenViking vector storage directly.
 
 ## Security boundary
 
-Automatic routing treats model output as untrusted classification data.
-
-The embedder and reranker operate only on a known candidate list. They do not generate URIs.
+The embedder and reranker receive only known semantic candidate documents. Neither can generate a destination URI.
 
 The plugin:
 
-- validates the YAML taxonomy strictly;
-- compiles semantic keys to trusted URIs itself;
-- accepts only a category that exists in that validated taxonomy/candidate set;
-- applies existing OpenViking URI/client validation;
-- keeps existing per-agent API-key routing unchanged.
+- parses the YAML strictly;
+- requires globally unique semantic keys;
+- forbids unsafe path segments and URI collisions;
+- compiles full paths and URIs itself;
+- excludes fallback from semantic ranking;
+- resolves explicit selectors only against the compiled taxonomy;
+- converts bad explicit selectors to the configured fallback rather than creating arbitrary paths;
+- preserves per-agent API-key isolation;
+- keeps routing infrastructure failures fail-closed.
 
-A model cannot use classification output to create `..`, another namespace, another agent's path, or arbitrary `viking://` data.
+The agent cannot route a resource into `..`, another namespace, another agent's tree, or an invented `viking://` path through the category interface.
 
-## Calibration baseline
+## Configuration example
 
-The local deployment used during development runs:
-
-- BGE-M3, 1024 dimensions, for embeddings;
-- BGE-reranker-v2-m3 for conditional reranking;
-- `topK=2`;
-- `minScore=0.64`;
-- `rerankBelowMargin=0.06`.
-
-With the bundled 87-routeable-category taxonomy, a 27-case cross-branch calibration set produced:
-
-```text
-exact accuracy:  25/27 = 92.6%
-branch accuracy: 26/27 = 96.3%
+```jsonc
+{
+  "resourceRouting": {
+    "enabled": true,
+    "taxonomyFile": "/home/openclaw/.openclaw/openviking/categories/{agentId}.yaml",
+    "cacheFile": "/home/openclaw/.openclaw/openviking/resource-routing-cache/{agentId}.json",
+    "semanticInputTemplate": "{{summary}}",
+    "summaryLanguage": "ru",
+    "embedding": {
+      "baseUrl": "http://127.0.0.1:18081",
+      "model": "bge-m3",
+      "timeoutMs": 10000,
+      "dimensions": 1024
+    },
+    "reranker": {
+      "baseUrl": "http://127.0.0.1:18080",
+      "model": "bge-reranker-v2-m3",
+      "timeoutMs": 10000
+    },
+    "retrieval": {
+      "topK": 3,
+      "minScore": 0.57,
+      "rerankBelowMargin": 0.06
+    },
+    "fallbackCategory": "inbox",
+    "failurePolicy": "error",
+    "audit": {
+      "enabled": true,
+      "file": "/home/openclaw/.openclaw/openviking/resource-routing-audit/{agentId}.jsonl",
+      "summaryPreviewChars": 240
+    }
+  }
+}
 ```
 
-A correct parent/child branch result is tracked separately from exact-leaf accuracy because intermediate categories are intentionally routeable. The baseline is for initial deployment only; real audit data should drive later tuning.
-
-The same server showed approximately:
-
-```text
-fresh taxonomy embedding startup: ~7 seconds
-cached taxonomy startup:           ~20 ms
-common embedding-only route:       tens to low hundreds of ms
-conditional reranked route:        roughly 300-400 ms
-```
-
-These timings are deployment-specific, not API guarantees.
-
-## Recommended rollout
-
-For an existing OpenViking deployment with live data:
-
-1. do not modify Qdrant directly;
-2. install/build the plugin version containing resource routing;
-3. copy/customize a taxonomy YAML for every isolated agent;
-4. enable `resourceRouting` in the existing OpenViking plugin config;
-5. restart the OpenClaw gateway;
-6. confirm startup preload succeeds and cache files are created;
-7. test `add_resource` first with a disposable resource;
-8. verify the resulting tree in the OpenViking panel/`ov_list`;
-9. test missing-summary guidance;
-10. test semantic fallback to `__INBOX__`;
-11. test an infrastructure failure separately and confirm no resource is imported;
-12. keep existing `remove_resource` approval policy unchanged.
-
-The router changes only placement of new resource imports. Enabling it does not rewrite or reindex existing OpenViking resources, memories, or Qdrant vectors.
+The values above are a deployment example, not universal thresholds. Calibrate the final taxonomy/cache before changing them.
