@@ -19,7 +19,7 @@ function makeCategory(key: string, uri: string) {
     routeable: true,
     uri,
     path,
-    routingText: `path: ${path}\ndescription: ${description}`,
+    routingText: `description: ${description}\npath: ${path}`,
     parentKey: null,
     depth: 1,
   };
@@ -52,13 +52,13 @@ function setup(options: {
         uri: "viking://resources/documents/guides",
         fallback: false,
         embeddingCandidates: [
-          { key: "documents_guides", description: "Guides", score: 0.82 },
-          { key: "documents", description: "Documents", score: 0.79 },
+          { key: "documents_guides", path: "documents/guides", routingText: "Guides", score: 0.82 },
+          { key: "documents", path: "documents", routingText: "Documents", score: 0.79 },
         ],
         rerankerUsed: true,
         rerankerScores: [
-          { key: "documents_guides", score: 0.91 },
-          { key: "documents", score: 0.72 },
+          { key: "documents_guides", path: "documents/guides", score: 0.91 },
+          { key: "documents", path: "documents", score: 0.72 },
         ],
         timing: {
           embeddingMs: 82,
