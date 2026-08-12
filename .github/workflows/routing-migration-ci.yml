@@ -29,6 +29,9 @@ jobs:
       - name: Apply routing semantic-text separation
         run: python3 tools/apply-routing-text-separation.py
 
+      - name: Repair migrated routing fixtures
+        run: python3 tools/repair-routing-text-separation-fixtures.py
+
       - name: Validate generated patch
         run: git diff --check
 
