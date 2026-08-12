@@ -2,7 +2,7 @@
 
 This repository is a focused fork of the OpenViking OpenClaw context-engine plugin, based on upstream plugin version **2026.7.15**.
 
-The fork keeps the upstream context-engine behavior while routing each OpenClaw agent to a separate OpenViking account/API key. Release **2026.7.15-isolation.8** keeps the configurable per-agent resource routing introduced in `isolation.7` and hardens the agent-facing mutation lifecycle on top of the guarded `remove_resource` support introduced in `isolation.6`.
+The fork keeps the upstream context-engine behavior while routing each OpenClaw agent to a separate OpenViking account/API key. Release **2026.7.15-isolation.9** hardens agent-facing resource routing and deletion against speculative tool arguments while preserving the calibrated semantic router introduced in earlier isolation releases.
 
 ## Design goals
 
@@ -20,7 +20,7 @@ The fork keeps the upstream context-engine behavior while routing each OpenClaw 
 | Component | Version |
 | --- | --- |
 | Forked OpenViking OpenClaw plugin | 2026.7.15 |
-| This release | 2026.7.15-isolation.8 |
+| This release | 2026.7.15-isolation.9 |
 | Minimum OpenClaw | 2026.5.27 |
 | Minimum OpenViking for this release | 0.4.4 |
 | Recommended/tested OpenViking | 0.4.12 |
@@ -71,6 +71,17 @@ Release `isolation.8` changes only the agent-facing mutation contract, not the l
 | `remove_resource` | Treats OpenViking `NOT_FOUND` as already absent and returns queued semantic-refresh state without making the agent wait. |
 | Result reporting | Async imports report accepted/queued semantics and preserve OpenViking `task_id` when present. |
 | Manual/internal API | Low-level client and slash-command wait/timeout controls remain available for deliberate operator workflows. |
+
+Release `isolation.9` hardens resource mutation behavior for ordinary agent use:
+
+| Area | Change |
+| --- | --- |
+| `add_resource` category override | `category` remains available only for an exact destination explicitly named by the user; tool and Skill guidance forbid the model from inferring or guessing it. |
+| Invalid explicit category | Unknown, ambiguous, or organizational selectors are rejected without importing anything instead of silently creating an `_INBOX` resource. |
+| `remove_resource` agent schema | Exposes only `uri`; the model no longer chooses recursive deletion. |
+| Category deletion guard | Exact current taxonomy category/container URIs are protected from agent deletion. |
+| Document deletion | A specific imported document/resource root is first removed non-recursively and retried exactly once with recursive deletion only for OpenViking's specific non-empty-directory precondition. |
+| Tests | Adds regression coverage for stale/speculative arguments, category-root protection, and the internal recursive fallback. |
 
 The memory/session/account-isolation path is not replaced by resource routing. Automatic resource classification is confined to `add_resource` when no explicit destination was supplied.
 
