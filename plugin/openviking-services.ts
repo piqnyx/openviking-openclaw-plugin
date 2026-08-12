@@ -30,6 +30,8 @@ export function createOpenVikingService({
   registerRecallTraceRoutes,
   preloadResourceRouting,
 }: OpenVikingServiceOptions) {
+  let resourceRoutingPreloadStarted = false;
+
   return {
     id: "openviking",
     start: async (ctx?: unknown) => {
@@ -49,7 +51,8 @@ export function createOpenVikingService({
       // runtime surfaces. The gateway service start lifecycle is the single place
       // where expensive startup work belongs. Keep preload asynchronous so service
       // startup itself is not held hostage by a cold CPU embedding cache.
-      if (preloadResourceRouting) {
+      if (preloadResourceRouting && !resourceRoutingPreloadStarted) {
+        resourceRoutingPreloadStarted = true;
         void preloadResourceRouting().catch((error) => {
           logger.error(
             `openviking: resource routing startup preload failed: ${error instanceof Error ? error.message : String(error)}`,
