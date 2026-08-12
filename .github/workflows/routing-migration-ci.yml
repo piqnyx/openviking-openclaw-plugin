@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate-migration:
@@ -52,3 +52,15 @@ jobs:
           tests/resource-routing-preload.test.ts
           tests/resource-routing-service.test.ts
           tests/routing-probe.test.mjs
+
+      - name: Materialize verified migration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add routing/ tools/routing-probe.mjs tests/ dist/
+          if git diff --cached --quiet; then
+            echo "No migration changes to materialize"
+          else
+            git commit -m "refactor: separate embedding and rerank category texts"
+            git push origin HEAD:agent/russian-routing-taxonomy
+          fi
