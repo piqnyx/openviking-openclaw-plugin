@@ -17,7 +17,9 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
 
 def regex_once(path: Path, pattern: str, replacement: str, label: str, flags: int = 0) -> None:
     text = path.read_text(encoding="utf-8")
-    updated, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+    # Use a callable replacement so Python's regex engine does not reinterpret
+    # backslashes in generated TypeScript strings (for example "\\n").
+    updated, count = re.subn(pattern, lambda _match: replacement, text, count=1, flags=flags)
     if count != 1:
         raise SystemExit(f"{label}: expected exactly one regex match, got {count}")
     path.write_text(updated, encoding="utf-8")
@@ -335,7 +337,7 @@ replace_once(
 
 # Most test fixtures used the old single semantic text as a generic candidate
 # document. Rename those fixtures to embeddingText; rerankText is optional at the
-# retrieval boundary and defaults to embeddingText unless a compiled taxonomy
+# embedded-category boundary and defaults to embeddingText unless a compiled taxonomy
 # supplies explicit boundary guidance.
 for path in sorted((ROOT / "tests").glob("*")):
     if path.suffix not in {".ts", ".mjs"}:
@@ -343,6 +345,44 @@ for path in sorted((ROOT / "tests").glob("*")):
     text = path.read_text(encoding="utf-8")
     if "routingText" in text:
         path.write_text(text.replace("routingText", "embeddingText"), encoding="utf-8")
+
+# Compiled category fixtures must include all compiler-owned semantic fields.
+add_tool_test = ROOT / "tests/add-resource-routing-tool.test.ts"
+replace_once(
+    add_tool_test,
+    '''    description,
+    routeable: true,
+    uri,
+    path,
+    embeddingText: `description: ${description}\\npath: ${path}`,
+    parentKey: null,
+''',
+    '''    description,
+    distinguishFrom: [],
+    routeable: true,
+    uri,
+    path,
+    embeddingText: `description: ${description}\\npath: ${path}`,
+    rerankText: `description: ${description}\\npath: ${path}`,
+    parentKey: null,
+''',
+    "add_resource compiled category fixture",
+)
+
+# Audit tests construct ResourceRoutingCandidate directly, so both semantic texts are explicit.
+audit_test = ROOT / "tests/resource-routing-semantic-audit.test.ts"
+replace_once(
+    audit_test,
+    '{ key: "security", path: "security", embeddingText: "Security", score: 0.8 },',
+    '{ key: "security", path: "security", embeddingText: "Security", rerankText: "Security", score: 0.8 },',
+    "audit candidate security rerankText",
+)
+replace_once(
+    audit_test,
+    '{ key: "security_audits", path: "security/audits", embeddingText: "Audits", score: 0.79 },',
+    '{ key: "security_audits", path: "security/audits", embeddingText: "Audits", rerankText: "Audits", score: 0.79 },',
+    "audit candidate audits rerankText",
+)
 
 # Add an explicit semantic-contract regression test to the core taxonomy suite.
 test_path = ROOT / "tests/resource-taxonomy.test.ts"
