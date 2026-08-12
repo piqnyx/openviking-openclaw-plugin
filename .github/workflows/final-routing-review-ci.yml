@@ -1,0 +1,66 @@
+name: Final routing review CI
+
+on:
+  push:
+    branches:
+      - agent/russian-routing-taxonomy
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  review:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Apply reviewed documentation sync
+        run: python3 tools/finalize-routing-docs.py
+      - name: Build
+        run: npm run build
+      - name: Audit final taxonomy without model calls
+        run: |
+          npm run routing:audit -- --taxonomy "$PWD/examples/resource-taxonomy.ru.yaml" --language ru --top 100 --json > /tmp/final-routing-audit.json
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const report = JSON.parse(readFileSync('/tmp/final-routing-audit.json', 'utf8'));
+          console.log(JSON.stringify({
+            counts: report.counts,
+            fallback: report.fallback,
+            structuralRouteable: report.structuralRouteable.length,
+            semanticNonLeaves: report.semanticNonLeaves.length,
+            exactDuplicateDescriptions: report.exactDuplicateDescriptions.length,
+            shortDescriptions: report.shortDescriptions.length,
+            languageProblems: report.languageProblems.length,
+            repeatedSegments: report.repeatedSegments.length,
+            lexicalNearPairs: report.lexicalNearPairs,
+          }, null, 2));
+          const goodCounts = report.counts.total === 394 && report.counts.routeable === 310 && report.counts.semantic === 309 && report.counts.structural === 84;
+          const clean = !report.fallback.appearsInSemanticRanking && !report.structuralRouteable.length && !report.semanticNonLeaves.length && !report.exactDuplicateDescriptions.length && !report.shortDescriptions.length && !report.languageProblems.length;
+          if (!goodCounts || !clean) process.exitCode = 1;
+          NODE
+      - name: Guard obsolete routing prose
+        run: |
+          if grep -nE 'explicit to > explicit parent|same `routingText`|using the same ancestry-aware `routingText`|starter taxonomy contains.*media' README.md docs/resource-routing.md; then
+            echo 'obsolete routing documentation remains' >&2
+            false
+          fi
+      - name: Full verification
+        run: |
+          npm run typecheck
+          npm run verify
+          git diff --check
+      - name: Materialize reviewed docs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md docs/resource-routing.md dist/
+          git commit -m "docs: align routing docs with final semantic model"
+          git push origin HEAD:agent/russian-routing-taxonomy
