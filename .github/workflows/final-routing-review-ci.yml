@@ -27,7 +27,7 @@ jobs:
         run: npm run build
       - name: Audit final taxonomy without model calls
         run: |
-          npm run routing:audit -- --taxonomy "$PWD/examples/resource-taxonomy.ru.yaml" --language ru --top 100 --json > /tmp/final-routing-audit.json
+          node tools/routing-taxonomy-audit.mjs --taxonomy "$PWD/examples/resource-taxonomy.ru.yaml" --language ru --top 100 --json > /tmp/final-routing-audit.json
           node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
           const report = JSON.parse(readFileSync('/tmp/final-routing-audit.json', 'utf8'));
