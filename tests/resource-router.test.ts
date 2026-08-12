@@ -63,6 +63,10 @@ const taxonomy = compileResourceTaxonomy({
   },
 });
 
+function embedded(key: string, path: string, routingText: string, embedding: number[]) {
+  return { key, path, routingText, embedding };
+}
+
 function embeddingClientFor(vector: number[], transportOverride?: HttpTransport) {
   const transport: HttpTransport = transportOverride ?? vi.fn(async () => new Response(JSON.stringify({
     data: [{ index: 0, embedding: vector }],
@@ -88,10 +92,10 @@ function rerankerClient(transport: HttpTransport) {
 }
 
 describe("buildResourceRoutingEmbeddingState", () => {
-  it("embeds category path and description sequentially, writes cache, and reuses it on the next startup", async () => {
+  it("embeds only semantic categories sequentially and never embeds fallback", async () => {
     const config = makeTempConfig();
     const seenInputs: string[] = [];
-    const expectedRoutingTexts = taxonomy.routeableCategories.map((category) => category.routingText);
+    const expectedRoutingTexts = taxonomy.semanticCategories.map((category) => category.routingText);
     const firstTransport: HttpTransport = vi.fn(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { input: string[] };
       expect(body.input).toHaveLength(1);
@@ -115,9 +119,10 @@ describe("buildResourceRoutingEmbeddingState", () => {
     });
     expect(first.source).toBe("recomputed");
     expect(first.cacheMissReason).toBe("missing");
-    expect(first.categories).toHaveLength(taxonomy.routeableCategories.length);
-    expect(firstTransport).toHaveBeenCalledTimes(taxonomy.routeableCategories.length);
+    expect(first.categories).toHaveLength(taxonomy.semanticCategories.length);
+    expect(firstTransport).toHaveBeenCalledTimes(taxonomy.semanticCategories.length);
     expect(seenInputs).toEqual(expectedRoutingTexts);
+    expect(seenInputs).not.toContain(taxonomy.byKey.get("inbox")?.routingText);
 
     const forbiddenTransport: HttpTransport = vi.fn(async () => {
       throw new Error("embedder must not be called on cache hit");
@@ -169,7 +174,7 @@ describe("buildResourceRoutingEmbeddingState", () => {
 });
 
 describe("ResourceRouter", () => {
-  it("accepts a confident embedding top1 without calling the reranker", async () => {
+  it("accepts a confident semantic top1 without allowing fallback to compete", async () => {
     const config = makeTempConfig();
     const rerankTransport: HttpTransport = vi.fn(async () => {
       throw new Error("reranker should not be called");
@@ -180,10 +185,9 @@ describe("ResourceRouter", () => {
       embeddings: {
         source: "cache",
         categories: [
-          { key: "inbox", description: "Inbox", embedding: [0, 1] },
-          { key: "docs", description: "Docs", embedding: [1, 0] },
-          { key: "security", description: "Security", embedding: [0.4, 0.6] },
-          { key: "security_audits", description: "Audits", embedding: [0.3, 0.7] },
+          embedded("docs", "documents", "Docs", [1, 0]),
+          embedded("security", "security", "Security", [0.4, 0.6]),
+          embedded("security_audits", "security/audits", "Audits", [0.3, 0.7]),
         ],
       },
       embedder: embeddingClientFor([1, 0]),
@@ -197,10 +201,11 @@ describe("ResourceRouter", () => {
       fallback: false,
       rerankerUsed: false,
     });
+    expect(decision.embeddingCandidates.every((candidate) => candidate.key !== "inbox")).toBe(true);
     expect(rerankTransport).not.toHaveBeenCalled();
   });
 
-  it("reranks only a close top2 and can refine the selection to the second candidate", async () => {
+  it("reranks close semantic candidates using routingText and can refine to second place", async () => {
     const config = makeTempConfig();
     const rerankTransport: HttpTransport = vi.fn(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { documents: string[] };
@@ -218,10 +223,9 @@ describe("ResourceRouter", () => {
       embeddings: {
         source: "cache",
         categories: [
-          { key: "inbox", description: "Inbox", embedding: [0, 1] },
-          { key: "docs", description: "Docs", embedding: [0.2, 0.8] },
-          { key: "security", description: "Security", embedding: [1, 0] },
-          { key: "security_audits", description: "Security audits", embedding: [0.999, 0.04] },
+          embedded("docs", "documents", "Docs", [0.2, 0.8]),
+          embedded("security", "security", "Security", [1, 0]),
+          embedded("security_audits", "security/audits", "Security audits", [0.999, 0.04]),
         ],
       },
       embedder: embeddingClientFor([1, 0]),
@@ -232,10 +236,14 @@ describe("ResourceRouter", () => {
     expect(decision.categoryKey).toBe("security_audits");
     expect(decision.uri).toBe("viking://resources/security/audits");
     expect(decision.rerankerUsed).toBe(true);
-    expect(decision.rerankerScores?.[0]).toEqual({ key: "security_audits", score: 0.94 });
+    expect(decision.rerankerScores?.[0]).toEqual({
+      key: "security_audits",
+      path: "security/audits",
+      score: 0.94,
+    });
   });
 
-  it("sends semantic uncertainty to the configured taxonomy fallback without reranking", async () => {
+  it("sends semantic uncertainty to fallback without making fallback a candidate", async () => {
     const config = makeTempConfig();
     const rerankTransport: HttpTransport = vi.fn(async () => {
       throw new Error("reranker should not be called for below-threshold uncertainty");
@@ -246,10 +254,9 @@ describe("ResourceRouter", () => {
       embeddings: {
         source: "cache",
         categories: [
-          { key: "inbox", description: "Inbox", embedding: [1, 0] },
-          { key: "docs", description: "Docs", embedding: [0.9, 0.1] },
-          { key: "security", description: "Security", embedding: [0.8, 0.2] },
-          { key: "security_audits", description: "Audits", embedding: [0.7, 0.3] },
+          embedded("docs", "documents", "Docs", [0.9, 0.1]),
+          embedded("security", "security", "Security", [0.8, 0.2]),
+          embedded("security_audits", "security/audits", "Audits", [0.7, 0.3]),
         ],
       },
       embedder: embeddingClientFor([0, 1]),
@@ -264,6 +271,7 @@ describe("ResourceRouter", () => {
       fallbackReason: "below_min_score",
       rerankerUsed: false,
     });
+    expect(decision.embeddingCandidates.every((candidate) => candidate.key !== "inbox")).toBe(true);
     expect(rerankTransport).not.toHaveBeenCalled();
   });
 
@@ -275,10 +283,9 @@ describe("ResourceRouter", () => {
       embeddings: {
         source: "cache",
         categories: [
-          { key: "inbox", description: "Inbox", embedding: [0, 1] },
-          { key: "docs", description: "Docs", embedding: [0.1, 0.9] },
-          { key: "security", description: "Security", embedding: [1, 0] },
-          { key: "security_audits", description: "Audits", embedding: [0.999, 0.04] },
+          embedded("docs", "documents", "Docs", [0.1, 0.9]),
+          embedded("security", "security", "Security", [1, 0]),
+          embedded("security_audits", "security/audits", "Audits", [0.999, 0.04]),
         ],
       },
       embedder: embeddingClientFor([1, 0]),
