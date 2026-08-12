@@ -1,0 +1,79 @@
+name: isolation9 self bump
+
+on:
+  push:
+    branches:
+      - agent/harden-resource-mutations
+
+permissions:
+  contents: write
+
+jobs:
+  bump-test-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/harden-resource-mutations
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Bump release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm version 2026.7.15-isolation.9 --no-git-tag-version
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const manifestPath = 'install-manifest.json';
+          const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+          manifest.pluginVersion = '2026.7.15-isolation.9';
+          fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+
+          const readmePath = 'README.md';
+          let readme = fs.readFileSync(readmePath, 'utf8');
+          readme = readme.replace(
+            'The fork keeps the upstream context-engine behavior while routing each OpenClaw agent to a separate OpenViking account/API key. Release **2026.7.15-isolation.8** keeps the configurable per-agent resource routing introduced in `isolation.7` and hardens the agent-facing mutation lifecycle on top of the guarded `remove_resource` support introduced in `isolation.6`.',
+            'The fork keeps the upstream context-engine behavior while routing each OpenClaw agent to a separate OpenViking account/API key. Release **2026.7.15-isolation.9** hardens agent-facing resource routing and deletion against speculative tool arguments while preserving the calibrated semantic router introduced in earlier isolation releases.'
+          );
+          readme = readme.replace('| This release | 2026.7.15-isolation.8 |', '| This release | 2026.7.15-isolation.9 |');
+
+          const anchor = 'The memory/session/account-isolation path is not replaced by resource routing. Automatic resource classification is confined to `add_resource` when no explicit destination was supplied.';
+          const section = `Release \`isolation.9\` hardens resource mutation behavior for ordinary agent use:\n\n| Area | Change |\n| --- | --- |\n| \`add_resource\` category override | \`category\` remains available only for an exact destination explicitly named by the user; tool and Skill guidance forbid the model from inferring or guessing it. |\n| Invalid explicit category | Unknown, ambiguous, or organizational selectors are rejected without importing anything instead of silently creating an \`_INBOX\` resource. |\n| \`remove_resource\` agent schema | Exposes only \`uri\`; the model no longer chooses recursive deletion. |\n| Category deletion guard | Exact current taxonomy category/container URIs are protected from agent deletion. |\n| Document deletion | A specific imported document/resource root is first removed non-recursively and retried exactly once with recursive deletion only for OpenViking's specific non-empty-directory precondition. |\n| Tests | Adds regression coverage for stale/speculative arguments, category-root protection, and the internal recursive fallback. |\n\n`;
+          if (!readme.includes('Release `isolation.9` hardens resource mutation behavior')) {
+            readme = readme.replace(anchor, section + anchor);
+          }
+          fs.writeFileSync(readmePath, readme);
+          NODE
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Verify
+        run: npm run verify
+
+      - name: Diff check
+        run: git diff --check
+
+      - name: Remove temporary workflow
+        run: rm -f .github/workflows/isolation9-self-bump.yml
+
+      - name: Commit verified release bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git status --short
+          git commit -m 'chore: bump isolation.9 release metadata'
+          git push origin HEAD:agent/harden-resource-mutations
