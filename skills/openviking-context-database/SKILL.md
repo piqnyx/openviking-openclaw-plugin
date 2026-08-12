@@ -182,28 +182,27 @@ Use after an archive search or when the `[Archive Index]` already identifies the
 
 ### `add_resource`
 
-Import resources into `viking://resources/...`.
+Import resources into the validated `viking://resources/...` taxonomy. This agent tool is disabled by default and should be used only when the user explicitly asks to import, add, upload, save, or index a resource. Never call it merely to improve search or retrieval.
 
-This agent tool is disabled by default. Prefer manual `/add-resource` for resource ingestion. If `enableAddResourceTool=true` exposes the tool, use it only for explicit import/index requests and never as part of search/retrieval optimization.
-
-When `resourceRouting.enabled=true`, destination priority is: explicit `to`, explicit `parent`, explicit semantic `category`, then automatic routing. Explicit routing must never be overwritten by automatic classification.
-
-For automatic routing, first inspect/read enough of the resource to understand its actual content unless the content is already known from the conversation. Then provide `summary` as one short sentence describing semantic content and purpose. When provenance is part of the semantic resource type, state it naturally, for example online article, email thread, meeting transcript, or terminal screenshot. Do not use filename/path/MIME/storage location as a substitute for content or copy those raw values into the summary. The plugin performs deterministic category selection and builds the trusted `viking://resources/...` parent URI; do not invent a URI or category key.
+The agent-facing contract is intentionally minimal:
 
 | Parameter | Required | Description |
 |---|---|---|
 | `source` | Yes | Local path, OpenClaw media attachment path, directory path, public URL, or Git URL. |
-| `summary` | Automatic routing only | One short sentence based on known/inspected content describing what the resource is about and what it is useful for; include semantically relevant provenance such as online article/email/transcript/screenshot when it defines the resource type. |
-| `to` | No | Explicit exact target URI. Bypasses automatic routing. Mutually exclusive with `parent` and `category`. |
-| `parent` | No | Explicit parent URI under `viking://resources`. Bypasses automatic routing. Mutually exclusive with `to` and `category`. |
-| `category` | No | Existing semantic category key from this agent's taxonomy. The plugin resolves it to a trusted URI; never invent keys. |
-| `create_parent` | No | Used only with explicit `parent`. Automatic/category routing manages this and forces parent creation as needed. |
-| `reason` | No | Reason/note for import. |
-| `instruction` | No | Processing instruction for OpenViking semantic extraction. |
+| `summary` | Automatic routing only | One short semantic sentence based on known/inspected content: what the resource contains and what it is useful for. Obey the configured `resourceRouting.summaryLanguage`; with `ru`, write a genuinely Russian sentence while preserving technical names and identifiers where useful. |
+| `category` | No | Explicit override using an existing full taxonomy path such as `code/source/javascript`; stable semantic keys remain accepted for compatibility. |
 
-If automatic routing cannot classify the summary confidently, the plugin uses the configured taxonomy fallback category (normally the visible inbox). If the embedding/reranker/taxonomy infrastructure fails, the resource is **not imported**; report the routing failure instead of pretending the operation succeeded.
+When `category` is omitted, inspect/read enough of the resource to understand its actual content before writing `summary`. Never infer content from filename/path alone.
 
-The current OpenClaw tool exposes the parameters above and always submits the import with `wait=false`. OpenViking continues parsing, VLM, embedding, and indexing work asynchronously after accepting the job. If a mutating request loses its HTTP response, the tool reports an outcome-unknown state; inspect OpenViking before retrying and never repeat the same import automatically. The underlying client also supports explicit `wait`/`timeout` and server-facing resource options such as `strict`, `ignore_dirs`, `include`, `exclude`, and `preserve_structure` for manual/command/internal paths; do not pass them to the agent tool unless its registered schema exposes them.
+When provenance or container form defines the semantic resource type, state it naturally in `summary`. Examples: saved web article/page, batch scraping or crawling result, email/newsletter, exported chat/forum history, spoken transcript, machine log, database dump, backup/archive bundle, or screenshot. Do not copy raw filename, path, MIME type, storage URI, or unrelated metadata into the semantic summary.
+
+Explicit category selection is deterministic and model-free. The plugin accepts only categories from the validated taxonomy. Unknown, ambiguous, or organizational selectors are sent to the configured fallback inbox; they never create a new arbitrary path.
+
+Automatic semantic uncertainty below the configured confidence threshold also goes to fallback. Routing infrastructure failures remain fail-closed and the resource is not imported.
+
+The agent tool deliberately does **not** expose arbitrary `to`/`parent` URIs, `create_parent`, `reason`, `instruction`, parser filters, strictness switches, structure switches, watch controls, tags, or other low-level connector arguments. Those remain available through lower-level/manual interfaces where a human can choose them deliberately.
+
+The agent tool always submits the accepted resource import with `wait=false`. If a mutating request loses its HTTP response, inspect OpenViking state before any deliberate retry; never repeat the same import automatically after an outcome-unknown result.
 
 ### `add_skill`
 

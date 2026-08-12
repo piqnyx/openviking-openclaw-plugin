@@ -1,0 +1,1449 @@
+schemaVersion: 1
+fallback: inbox
+categories:
+  inbox:
+    segment: _INBOX
+    description: Ресурсы, которые нельзя уверенно отнести к более конкретной категории.
+  mine:
+    segment: mine
+    description: "Личные материалы пользователя: проекты, заметки, задачи, исследования, секреты, конфигурации, скрипты и изображения."
+    routeable: false
+    children:
+      mine-projects:
+        segment: projects
+        description: Личные проекты пользователя и связанные с ними рабочие материалы.
+        routeable: false
+        children:
+          mine-projects-active:
+            segment: active
+            description: Рабочие материалы личных проектов пользователя, которые сейчас активно разрабатываются или эксплуатируются и организуются прежде всего по статусу проекта.
+          mine-projects-planned:
+            segment: planned
+            description: Рабочие материалы личных запланированных или предлагаемых проектов пользователя, работа над которыми ещё не началась.
+          mine-projects-archived:
+            segment: archived
+            description: Рабочие материалы личных завершённых, замороженных или больше не используемых проектов пользователя.
+      mine-ideas:
+        segment: ideas
+        description: Личные идеи, наброски, мозговые штурмы и результаты их оценки.
+        routeable: false
+        children:
+          mine-ideas-brainstorming:
+            segment: brainstorming
+            description: Свободные наброски и результаты мозгового штурма без окончательной оценки.
+          mine-ideas-evaluated:
+            segment: evaluated
+            description: Идеи, для которых уже проведена оценка реализуемости, пользы или приоритетов.
+          mine-ideas-rejected:
+            segment: rejected
+            description: Отвергнутые или отложенные идеи с объяснением причин.
+      mine-notes:
+        segment: notes
+        description: Личные заметки, дневники, размышления и рабочие черновики.
+        routeable: false
+        children:
+          mine-notes-personal:
+            segment: personal
+            description: Обычные личные заметки, не относящиеся к более специальной категории.
+          mine-notes-journal:
+            segment: journal
+            description: Дневниковые записи о событиях, делах и состоянии пользователя.
+          mine-notes-reflections:
+            segment: reflections
+            description: Развёрнутые личные размышления, выводы и самоанализ.
+          mine-notes-knowledge:
+            segment: knowledge
+            description: Личные конспекты и структурированные знания, собранные пользователем.
+          mine-notes-drafts:
+            segment: drafts
+            description: Черновики текстов, сообщений, документов и других материалов пользователя.
+      mine-reminders:
+        segment: reminders
+        description: Личные задачи, напоминания и ожидаемые действия.
+        routeable: false
+        children:
+          mine-reminders-todo:
+            segment: todo
+            description: Конкретные задачи, которые пользователь планирует выполнить.
+          mine-reminders-waiting-for:
+            segment: waiting-for
+            description: Задачи и вопросы, ожидающие действий или ответа от других людей или систем.
+          mine-reminders-scheduled:
+            segment: scheduled
+            description: Задачи и напоминания, привязанные к конкретной дате или времени.
+          mine-reminders-someday:
+            segment: someday
+            description: Необязательные задачи и идеи на будущее без конкретного срока.
+      mine-research:
+        segment: research
+        description: "Рабочие материалы собственных исследований пользователя: эксперименты, сравнения, измерения, наблюдения и предварительные оценки до оформления отдельного отчёта."
+        routeable: false
+        children:
+          mine-research-experiments:
+            segment: experiments
+            description: Экспериментальные проверки гипотез, конфигураций и вариантов реализации.
+          mine-research-benchmarks:
+            segment: benchmarks
+            description: Рабочие результаты собственных сравнительных тестов пользователя с измерениями производительности; готовые самостоятельные отчёты относятся к ветке отчётов.
+          mine-research-evaluations:
+            segment: evaluations
+            description: Рабочие оценки пользователем инструментов, моделей, сервисов или подходов с выводами, ещё не оформленные как самостоятельный формальный отчёт.
+          mine-research-observations:
+            segment: observations
+            description: Наблюдения и собранные факты, ещё не оформленные в полный анализ.
+      mine-passwords:
+        segment: secrets
+        description: "Личные секреты и материалы доступа пользователя: учётные данные, токены, криптографические ключи и сертификаты."
+        routeable: false
+        children:
+          mine-passwords-accounts:
+            segment: accounts
+            description: "Учётные данные аккаунтов: логины, пароли и связанные сведения."
+          mine-passwords-api-tokens:
+            segment: api-tokens
+            description: API-ключи, access tokens, refresh tokens и другие программные токены доступа.
+          mine-passwords-ssh:
+            segment: ssh
+            description: SSH-ключи, known_hosts и связанные данные доступа по SSH.
+          mine-passwords-crypto-keys:
+            segment: crypto-keys
+            description: GPG, age, minisign и другие криптографические ключи.
+          mine-passwords-certificates:
+            segment: certificates
+            description: Клиентские сертификаты, приватные ключи сертификатов и цепочки доверия.
+      mine-bookmarks:
+        segment: bookmarks
+        description: Сохранённые ссылки, списки чтения и коллекции полезных ресурсов.
+        routeable: false
+        children:
+          mine-bookmarks-reading-list:
+            segment: reading-list
+            description: Материалы и ссылки, которые пользователь собирается прочитать позже.
+          mine-bookmarks-favorites:
+            segment: favorites
+            description: Часто используемые или особо ценные сохранённые ссылки.
+          mine-bookmarks-tools:
+            segment: tools
+            description: Ссылки на онлайн-инструменты, сервисы и утилиты.
+          mine-bookmarks-reference:
+            segment: reference
+            description: Ссылки на справочные страницы и ресурсы, к которым нужно возвращаться.
+      mine-configs:
+        segment: configs
+        description: Личные и эксплуатационные конфигурации пользовательской среды и собственных сервисов вне исходного дерева конкретного программного проекта.
+        routeable: false
+        children:
+          mine-configs-dotfiles:
+            segment: dotfiles
+            description: Пользовательские dotfiles и настройки интерактивной среды.
+            routeable: false
+            children:
+              mine-configs-dotfiles-nvim:
+                segment: nvim
+                description: Конфигурация Neovim и его плагинов.
+              mine-configs-dotfiles-vscode:
+                segment: vscode
+                description: Пользовательские настройки Visual Studio Code, профили и расширения.
+              mine-configs-dotfiles-tmux:
+                segment: tmux
+                description: "Пользовательская конфигурация tmux: параметры сессий, окон, клавиш и поведения терминального мультиплексора."
+              mine-configs-dotfiles-zsh:
+                segment: zsh
+                description: Пользовательская конфигурация Zsh.
+              mine-configs-dotfiles-bash:
+                segment: bash
+                description: Пользовательская конфигурация Bash.
+              mine-configs-dotfiles-fish:
+                segment: fish
+                description: Пользовательская конфигурация Fish shell.
+              mine-configs-dotfiles-git:
+                segment: git
+                description: Пользовательская конфигурация Git, алиасы и настройки поведения.
+              mine-configs-dotfiles-ssh:
+                segment: ssh
+                description: "Пользовательская конфигурация SSH: hosts, aliases, connection options и параметры клиента."
+                distinguishFrom:
+                  - Приватные SSH-ключи и чувствительные материалы доступа относятся к mine/secrets/ssh.
+          mine-configs-docker:
+            segment: docker
+            description: Эксплуатационные конфигурации Docker и Docker Compose для собственных развёрнутых или self-hosted сервисов пользователя, а не build-файлы проекта.
+          mine-configs-kubernetes:
+            segment: kubernetes
+            description: Личные Kubernetes manifests, контексты и эксплуатационные настройки собственных кластеров.
+            distinguishFrom:
+              - Секретные токены и credentials не относятся к конфигурационной ветке и должны храниться среди личных секретов.
+              - Kubernetes manifests, являющиеся частью программного репозитория или infrastructure-as-code проекта, относятся к code/infrastructure/kubernetes.
+          mine-configs-systemd:
+            segment: systemd
+            description: Личные systemd service, timer и связанные unit-файлы.
+          mine-configs-nginx:
+            segment: nginx
+            description: Личные конфигурации Nginx и reverse proxy.
+          mine-configs-databases:
+            segment: databases
+            description: Личные настройки PostgreSQL, MySQL, Redis, Neo4j и других баз данных.
+          mine-configs-applications:
+            segment: applications
+            description: Конфигурации пользовательских приложений, не подходящие к более специальной категории.
+      mine-scripts:
+        segment: scripts
+        description: Самостоятельные личные или административные скрипты пользователя для установки, настройки и автоматизации вне исходного дерева конкретного программного проекта.
+        routeable: false
+        children:
+          mine-scripts-install:
+            segment: install
+            description: Скрипты установки программ и компонентов.
+          mine-scripts-setup:
+            segment: setup
+            description: Скрипты первичной настройки среды и систем.
+          mine-scripts-automation:
+            segment: automation
+            description: Регулярная автоматизация, cron-задачи и повторяемые служебные процедуры.
+          mine-scripts-maintenance:
+            segment: maintenance
+            description: Скрипты обслуживания, очистки, резервного копирования и диагностики.
+          mine-scripts-migration:
+            segment: migration
+            description: Одноразовые или повторяемые скрипты миграции данных и конфигураций.
+          mine-scripts-one-off:
+            segment: one-off
+            description: Разовые утилиты и временные служебные скрипты.
+      mine-photos:
+        segment: photos
+        description: Личные фотографии, изображения документов и скриншоты.
+        routeable: false
+        children:
+          mine-photos-people:
+            segment: people
+            description: Личные фотографии людей, портреты и снимки, где основным содержимым являются люди.
+          mine-photos-nature:
+            segment: nature
+            description: Фотографии природы, пейзажей и мест.
+          mine-photos-screenshots:
+            segment: screenshots
+            description: Скриншоты приложений, браузера, терминала и интерфейсов.
+          mine-photos-documents:
+            segment: documents
+            description: Фотографии или снимки бумажных документов и записей.
+          mine-photos-misc:
+            segment: misc
+            description: Прочие личные изображения и фотографии.
+      mine-records:
+        segment: records
+        description: Личные записи и документы пользователя о личности, финансах, здоровье, поездках, работе, образовании и покупках.
+        routeable: false
+        children:
+          mine-records-identity:
+            segment: identity
+            description: Официальные и идентификационные документы, а также персональные контактные сведения пользователя.
+            routeable: false
+            children:
+              mine-records-identity-documents:
+                segment: documents
+                description: Паспорта, удостоверения, свидетельства и другие официальные документы, подтверждающие личность или гражданское состояние.
+              mine-records-contacts:
+                segment: contacts
+                description: Личные адресные книги, vCard-файлы и структурированные контактные сведения.
+          mine-records-finance:
+            segment: finance
+            description: Личные финансовые документы, платежи, банковские записи и налоговые материалы пользователя.
+            routeable: false
+            children:
+              mine-records-receipts:
+                segment: receipts
+                description: Кассовые и электронные чеки, подтверждающие личные покупки и платежи.
+              mine-records-invoices:
+                segment: invoices
+                description: Счета на оплату и инвойсы, выставленные пользователю или сохранённые для личного учёта.
+              mine-records-banking:
+                segment: banking
+                description: Банковские выписки, отчёты по счетам и другие личные банковские документы.
+              mine-records-taxes:
+                segment: taxes
+                description: Налоговые декларации, расчёты, уведомления и подтверждающие документы пользователя.
+              mine-records-subscriptions:
+                segment: subscriptions
+                description: Записи о личных подписках, тарифах, регулярных платежах и сроках продления.
+          mine-records-health:
+            segment: health
+            description: Личные медицинские документы и сведения о здоровье пользователя.
+            routeable: false
+            children:
+              mine-records-medical:
+                segment: medical-records
+                description: Медицинские заключения, выписки, истории обращений и другие клинические документы пользователя.
+              mine-records-labs:
+                segment: lab-results
+                description: Результаты лабораторных анализов, исследований и диагностических измерений пользователя.
+              mine-records-prescriptions:
+                segment: prescriptions
+                description: Рецепты, назначения лекарств и схемы лечения пользователя.
+          mine-records-travel:
+            segment: travel
+            description: Личные документы поездок, маршруты, бронирования и транспортные билеты.
+            routeable: false
+            children:
+              mine-records-itineraries:
+                segment: itineraries
+                description: Маршруты и планы личных поездок с последовательностью мест, дат и действий.
+              mine-records-bookings:
+                segment: bookings
+                description: Подтверждения бронирований жилья, транспорта, мероприятий и других услуг для поездок.
+              mine-records-tickets:
+                segment: tickets
+                description: Билеты и посадочные документы на самолёты, поезда, автобусы, мероприятия и другие поездки.
+          mine-records-career:
+            segment: career
+            description: Личные документы карьеры, поиска работы и трудовых отношений.
+            routeable: false
+            children:
+              mine-records-resumes:
+                segment: resumes
+                description: Резюме, CV и профессиональные профили пользователя.
+              mine-records-employment:
+                segment: employment
+                description: Трудовые предложения, кадровые документы и записи о занятости пользователя.
+          mine-records-education:
+            segment: education
+            description: Личные документы об обучении, квалификации и академических результатах.
+            routeable: false
+            children:
+              mine-records-certificates:
+                segment: certificates
+                description: Дипломы, сертификаты о прохождении обучения и документы о квалификации пользователя.
+              mine-records-transcripts:
+                segment: transcripts
+                description: Академические ведомости, приложения к диплому и другие записи об образовательных результатах.
+          mine-records-purchases:
+            segment: purchases
+            description: Документы о личных покупках, заказах и гарантийных обязательствах.
+            routeable: false
+            children:
+              mine-records-orders:
+                segment: orders
+                description: Подтверждения заказов и карточки приобретённых товаров или услуг.
+              mine-records-warranties:
+                segment: warranties
+                description: Гарантийные талоны, условия гарантии и подтверждения сервисного обслуживания личных покупок.
+  docs:
+    segment: docs
+    description: Документация, руководства, справочные материалы, книги, курсы, исследования и отчёты.
+    routeable: false
+    children:
+      docs-guides:
+        segment: guides
+        description: Практические руководства и пошаговые инструкции.
+        routeable: false
+        children:
+          docs-guides-tutorials:
+            segment: tutorials
+            description: Учебные пошаговые руководства, которые последовательно обучают теме с нуля.
+          docs-guides-howtos:
+            segment: howtos
+            description: Краткие практические инструкции по выполнению одной конкретной задачи.
+          docs-guides-walkthroughs:
+            segment: walkthroughs
+            description: Подробные проходы по процессу, интерфейсу или сценарию использования.
+          docs-guides-best-practices:
+            segment: best-practices
+            description: Рекомендованные практики, устойчивые подходы и проверенные шаблоны работы.
+          docs-guides-troubleshooting:
+            segment: troubleshooting
+            description: Диагностика неисправностей, симптомы, причины и способы устранения проблем.
+      docs-manuals:
+        segment: manuals
+        description: Полные руководства по использованию, администрированию и эксплуатации систем.
+        routeable: false
+        children:
+          docs-manuals-user:
+            segment: user
+            description: Руководства для конечных пользователей.
+          docs-manuals-admin:
+            segment: admin
+            description: Руководства системного или прикладного администратора.
+          docs-manuals-operator:
+            segment: operator
+            description: Эксплуатационные руководства для операторов, SRE и дежурных инженеров.
+          docs-manuals-developer:
+            segment: developer
+            description: Руководства разработчика по расширению, сборке или интеграции системы.
+          docs-manuals-installation:
+            segment: installation
+            description: Полные руководства по установке, развёртыванию и первоначальной настройке.
+      docs-reference:
+        segment: reference
+        description: Краткие справочные материалы для быстрого поиска конкретной информации.
+        routeable: false
+        children:
+          docs-reference-cheatsheets:
+            segment: cheatsheets
+            description: Короткие шпаргалки и компактные памятки для быстрого поиска команд, синтаксиса, сочетаний клавиш и практических приёмов.
+          docs-reference-commands:
+            segment: commands
+            description: Справочники команд CLI, shell и интерактивных инструментов.
+          docs-reference-patterns:
+            segment: patterns
+            description: Каталоги архитектурных, программных и эксплуатационных шаблонов.
+          docs-reference-gotchas:
+            segment: gotchas
+            description: Известные подводные камни, ограничения и неожиданные особенности.
+          docs-reference-glossary:
+            segment: glossary
+            description: Глоссарии терминов, сокращений и понятий.
+      docs-specifications:
+        segment: specifications
+        description: Формальные спецификации, стандарты и определения форматов.
+        routeable: false
+        children:
+          docs-specifications-protocols:
+            segment: protocols
+            description: Формальные спецификации сетевых, прикладных и межсистемных протоколов.
+          docs-specifications-schemas:
+            segment: schemas
+            description: Формальные схемы данных, конфигураций, сообщений и API.
+          docs-specifications-standards:
+            segment: standards
+            description: Отраслевые и технические стандарты.
+          docs-specifications-rfcs:
+            segment: rfcs
+            description: RFC, proposal-документы и формальные предложения изменений.
+          docs-specifications-formats:
+            segment: formats
+            description: Спецификации файловых форматов, сериализации и контейнеров данных.
+      docs-api:
+        segment: api
+        description: Документация программных интерфейсов и способов интеграции.
+        routeable: false
+        children:
+          docs-api-rest:
+            segment: rest
+            description: "Документация REST/HTTP API: endpoints, параметры, тела запросов и ответы."
+          docs-api-graphql:
+            segment: graphql
+            description: GraphQL schema, queries, mutations и правила использования.
+          docs-api-sdk:
+            segment: sdk
+            description: Документация SDK и клиентских библиотек.
+          docs-api-cli:
+            segment: cli
+            description: Справочник программного CLI как интерфейса автоматизации.
+          docs-api-webhooks:
+            segment: webhooks
+            description: Документация webhooks, callbacks и событийных интеграций.
+      docs-languages:
+        segment: languages
+        description: Учебные и справочные материалы по языкам программирования.
+        routeable: false
+        children:
+          docs-languages-javascript:
+            segment: javascript
+            description: "Учебные и справочные материалы по JavaScript и TypeScript: язык, платформы, библиотеки, idioms и практические примеры."
+            distinguishFrom:
+              - Исходный код программного проекта на этом языке относится к соответствующей категории code/source.
+          docs-languages-python:
+            segment: python
+            description: "Учебные и справочные материалы по Python: язык, стандартная библиотека, idioms и практические примеры."
+            distinguishFrom:
+              - Исходный код программного проекта на этом языке относится к соответствующей категории code/source.
+          docs-languages-go:
+            segment: go
+            description: "Учебные и справочные материалы по Go: язык, стандартная библиотека, idioms и практические примеры."
+            distinguishFrom:
+              - Исходный код программного проекта на этом языке относится к соответствующей категории code/source.
+          docs-languages-rust:
+            segment: rust
+            description: "Учебные и справочные материалы по Rust: язык, стандартная библиотека, idioms и практические примеры."
+            distinguishFrom:
+              - Исходный код программного проекта на этом языке относится к соответствующей категории code/source.
+          docs-languages-shell:
+            segment: shell
+            description: Обучающие материалы по Bash, Zsh, shell scripting и командной строке.
+            distinguishFrom:
+              - Исходный код программного проекта на этом языке относится к соответствующей категории code/source.
+          docs-languages-cpp:
+            segment: cpp
+            description: "Учебные и справочные материалы по C и C++: язык, библиотеки, idioms и практические примеры."
+            distinguishFrom:
+              - Исходный код программного проекта на этом языке относится к соответствующей категории code/source.
+          docs-languages-java:
+            segment: java
+            description: Обучающие материалы по Java и Kotlin.
+            distinguishFrom:
+              - Исходный код программного проекта на этом языке относится к соответствующей категории code/source.
+          docs-languages-sql:
+            segment: sql
+            description: Обучающие материалы по SQL и языкам запросов к базам данных.
+            distinguishFrom:
+              - Исходный код программного проекта на этом языке относится к соответствующей категории code/source.
+          docs-languages-other:
+            segment: other
+            description: Обучающие материалы по другим языкам программирования.
+      docs-courses:
+        segment: courses
+        description: Структурированные учебные курсы и материалы занятий.
+        routeable: false
+        children:
+          docs-courses-text:
+            segment: text-courses
+            description: Текстовые курсы, разбитые на последовательные уроки или модули.
+          docs-courses-lecture-notes:
+            segment: lecture-notes
+            description: Конспекты лекций, семинаров и учебных занятий.
+          docs-courses-exercises:
+            segment: exercises
+            description: Учебные задания, упражнения и практические работы.
+      docs-books:
+        segment: books
+        description: Книги, учебники и другие длинные цельные тексты, сохраняемые как самостоятельные издания или крупные произведения.
+        routeable: false
+        children:
+          docs-books-fiction:
+            segment: fiction
+            description: "Художественная литература: романы, повести, рассказы и другая проза."
+          docs-books-non-fiction:
+            segment: non-fiction
+            description: "Нехудожественные книги общего характера: история, биографии, публицистика и научпоп."
+          docs-books-technical:
+            segment: technical
+            description: Технические книги по программированию, инфраструктуре, инженерии и вычислительным системам.
+          docs-books-textbooks:
+            segment: textbooks
+            description: Учебники и академические книги, предназначенные для систематического обучения.
+          docs-books-excerpts:
+            segment: excerpts
+            description: Отрывки, главы, цитаты и заметки из книг.
+      docs-papers:
+        segment: papers
+        description: Научные статьи, препринты, white papers и исследовательские публикации.
+        routeable: false
+        children:
+          docs-papers-academic:
+            segment: academic
+            description: Рецензируемые научные статьи и академические публикации.
+          docs-papers-preprints:
+            segment: preprints
+            description: Препринты и исследовательские работы до формальной публикации.
+          docs-papers-whitepapers:
+            segment: whitepapers
+            description: Технические white papers и концептуальные документы организаций или проектов.
+          docs-papers-theses:
+            segment: theses
+            description: Диссертации, дипломные исследования и другие крупные академические квалификационные работы.
+      docs-reports:
+        segment: reports
+        description: Готовые самостоятельные отчёты, оформленные результаты исследований и формализованные анализы, где основной тип ресурса именно отчётный документ.
+        routeable: false
+        children:
+          docs-reports-audits:
+            segment: audits
+            description: Готовые формальные аудиторские отчёты с областью проверки, замечаниями, рисками и рекомендациями, включая итоговые отчёты аудита безопасности.
+            distinguishFrom:
+              - Рабочие технические материалы penetration testing до итогового отчёта относятся к security/assessment/pentest.
+          docs-reports-research:
+            segment: research
+            description: Готовые самостоятельные исследовательские отчёты с методикой, данными, анализом и выводами.
+            distinguishFrom:
+              - Рабочие заметки, измерения и предварительные оценки собственного исследования относятся к mine/research.
+          docs-reports-analysis:
+            segment: analysis
+            description: Готовые самостоятельные аналитические отчёты со сравнением, интерпретацией данных и итоговыми выводами.
+          docs-reports-benchmarks:
+            segment: benchmarks
+            description: Готовые самостоятельные отчёты о сравнительных тестах производительности и характеристик с методикой, измерениями и выводами.
+            distinguishFrom:
+              - Исполняемый benchmark-код относится к code/tests/benchmarks.
+              - Промежуточные рабочие результаты собственных измерений относятся к mine/research/benchmarks.
+          docs-reports-incidents:
+            segment: incidents
+            description: Завершённые отчёты об инцидентах и postmortem с timeline, impact, root cause и corrective actions.
+            distinguishFrom:
+              - Операционные материалы активного реагирования относятся к security/incidents/incident-response.
+          docs-reports-status:
+            segment: status
+            description: Периодические отчёты о состоянии проекта, системы, работ или показателей.
+      docs-project:
+        segment: project
+        description: Документация конкретных программных и технических проектов.
+        routeable: false
+        children:
+          docs-project-getting-started:
+            segment: getting-started
+            description: Документация быстрого старта и первого запуска проекта.
+          docs-project-faq:
+            segment: faq
+            description: Часто задаваемые вопросы и ответы по конкретному проекту.
+          docs-project-design:
+            segment: design
+            description: Проектные документы о техническом устройстве, решениях и предлагаемых изменениях системы.
+            routeable: false
+            children:
+              docs-project-architecture:
+                segment: architecture
+                description: "Архитектура проекта: компоненты, взаимодействия, потоки данных и технические решения."
+              docs-project-internals:
+                segment: internals
+                description: Внутреннее устройство, алгоритмы и детали реализации проекта.
+              docs-project-adrs:
+                segment: adrs
+                description: Architecture Decision Records с контекстом, принятым техническим решением и его последствиями.
+              docs-project-proposals:
+                segment: proposals
+                description: Проектные RFC, design proposals и технические предложения изменений до или во время реализации.
+                distinguishFrom:
+                  - Формальные внешние стандарты и общие протокольные RFC относятся к docs/specifications.
+          docs-project-planning:
+            segment: planning
+            description: Проектные требования, планы развития и документы планирования реализации.
+            routeable: false
+            children:
+              docs-project-requirements:
+                segment: requirements
+                description: Требования, ограничения, acceptance criteria и спецификации поведения проекта.
+              docs-project-roadmap:
+                segment: roadmap
+                description: Планы развития, этапы, milestones и будущие изменения проекта.
+          docs-project-releases:
+            segment: releases
+            description: Документация истории изменений и отдельных выпусков программного проекта.
+            routeable: false
+            children:
+              docs-project-changelog:
+                segment: changelog
+                description: История изменений проекта по версиям или релизам.
+              docs-project-release-notes:
+                segment: release-notes
+                description: Описание конкретных релизов, новых возможностей, исправлений и известных ограничений.
+      docs-legal:
+        segment: legal
+        description: Юридические, лицензионные, политические и compliance-документы.
+        routeable: false
+        children:
+          docs-legal-licenses:
+            segment: licenses
+            description: Лицензии программ, библиотек, контента и условия их использования.
+          docs-legal-contracts:
+            segment: contracts
+            description: Договоры, соглашения и юридические обязательства.
+          docs-legal-policies:
+            segment: policies
+            description: Организационные политики, правила и внутренние регламенты.
+          docs-legal-privacy:
+            segment: privacy
+            description: Политики конфиденциальности, обработки и защиты персональных данных.
+          docs-legal-compliance:
+            segment: compliance
+            description: Материалы соответствия требованиям, контролям и нормативам.
+      docs-operations:
+        segment: operations
+        description: "Авторские эксплуатационные документы: runbooks, процедуры, чек-листы и планы восстановления систем."
+        routeable: false
+        children:
+          docs-operations-runbooks:
+            segment: runbooks
+            description: Пошаговые runbooks для повторяемых эксплуатационных операций, диагностики и восстановления сервисов.
+          docs-operations-procedures:
+            segment: procedures
+            description: Стандартные операционные процедуры и регламентированные последовательности действий.
+          docs-operations-checklists:
+            segment: checklists
+            description: Операционные чек-листы для запуска, проверки, релиза, обслуживания или завершения работ.
+          docs-operations-recovery:
+            segment: disaster-recovery
+            description: Планы аварийного восстановления, восстановления после потери данных и возврата критичных сервисов в рабочее состояние.
+      docs-meetings:
+        segment: meetings
+        description: "Авторские документы встреч: повестки, протоколы и зафиксированные решения, а не дословные расшифровки речи."
+        routeable: false
+        children:
+          docs-meetings-agendas:
+            segment: agendas
+            description: Повестки встреч с целями, вопросами для обсуждения и запланированным порядком работы.
+          docs-meetings-minutes:
+            segment: minutes
+            description: Протоколы и структурированные заметки встреч с обсуждёнными вопросами, выводами и итогами.
+            distinguishFrom:
+              - Дословные расшифровки разговоров относятся к comms/transcripts/meetings.
+          docs-meetings-decisions:
+            segment: decisions
+            description: Зафиксированные решения встреч с выбранным вариантом, ответственными лицами и контекстом принятия решения.
+      docs-presentations:
+        segment: presentations
+        description: Презентационные материалы, подготовленные для показа аудитории.
+        routeable: false
+        children:
+          docs-presentations-slides:
+            segment: slides
+            description: Слайды презентаций и докладов в PDF, PPTX или другом презентационном формате.
+          docs-presentations-speaker-notes:
+            segment: speaker-notes
+            description: Подготовленные заметки и тезисы выступающего, сопровождающие презентацию или доклад.
+      docs-templates:
+        segment: templates
+        description: Шаблоны документов и формы для повторного заполнения или создания однотипных материалов.
+        routeable: false
+        children:
+          docs-templates-documents:
+            segment: documents
+            description: Шаблоны писем, отчётов, спецификаций, заметок и других документов.
+          docs-templates-forms:
+            segment: forms
+            description: Пустые или типовые формы, анкеты и бланки, предназначенные для последующего заполнения.
+  code:
+    segment: code
+    description: Исходный код, фрагменты, патчи, тесты, build-конфигурации и проектные настройки.
+    routeable: false
+    children:
+      code-source:
+        segment: source
+        description: Исходный код программ, библиотек, сервисов и репозиториев.
+        routeable: false
+        children:
+          code-source-javascript:
+            segment: javascript
+            description: Исходный код программных проектов, сервисов и библиотек на JavaScript и TypeScript, включая Node.js и браузерные приложения.
+            distinguishFrom:
+              - Учебные и справочные материалы о языке относятся к docs/languages.
+          code-source-python:
+            segment: python
+            description: Исходный код программных проектов, сервисов и библиотек на Python.
+            distinguishFrom:
+              - Учебные и справочные материалы о языке относятся к docs/languages.
+          code-source-go:
+            segment: go
+            description: Исходный код программных проектов, сервисов и библиотек на Go.
+            distinguishFrom:
+              - Учебные и справочные материалы о языке относятся к docs/languages.
+          code-source-rust:
+            segment: rust
+            description: Исходный код программных проектов, сервисов и библиотек на Rust.
+            distinguishFrom:
+              - Учебные и справочные материалы о языке относятся к docs/languages.
+          code-source-shell:
+            segment: shell
+            description: Shell-код Bash, Zsh, POSIX sh и подобных языков командной оболочки, являющийся частью исходного дерева программного проекта.
+            distinguishFrom:
+              - Самостоятельные административные и эксплуатационные скрипты пользователя относятся к mine/scripts.
+          code-source-cpp:
+            segment: cpp
+            description: Исходный код программных проектов, сервисов и библиотек на C или C++.
+            distinguishFrom:
+              - Учебные и справочные материалы о языке относятся к docs/languages.
+          code-source-java:
+            segment: java-kotlin
+            description: Исходный код программных проектов, сервисов и библиотек на Java или Kotlin.
+            distinguishFrom:
+              - Учебные и справочные материалы о языке относятся к docs/languages.
+          code-source-dotnet:
+            segment: dotnet
+            description: Исходный код C#, F# и других проектов платформы .NET.
+          code-source-php-ruby:
+            segment: php-ruby
+            description: Исходный код программных проектов, сервисов и библиотек на PHP или Ruby.
+            distinguishFrom:
+              - Учебные и справочные материалы о языке относятся к docs/languages.
+          code-source-sql:
+            segment: sql
+            description: SQL-код, хранимые процедуры и запросы, являющиеся частью программной реализации.
+          code-source-web:
+            segment: html-css
+            description: HTML, CSS и статический веб-код без существенной JavaScript/TypeScript логики.
+          code-source-mixed:
+            segment: mixed
+            description: Многоязычные репозитории и деревья исходного кода без одного явно доминирующего языка.
+          code-source-other:
+            segment: other
+            description: Исходный код на других языках программирования.
+          code-source-notebooks:
+            segment: notebooks
+            description: Исполняемые Jupyter, Marimo и другие notebook-документы, объединяющие код, вычисления и пояснения в программной работе.
+          code-source-generated:
+            segment: generated
+            description: Сгенерированный исходный код, автоматически произведённый компиляторами схем, генераторами клиентов или build-процессом.
+          code-source-migrations:
+            segment: migrations
+            description: Миграции схемы или данных базы, являющиеся частью исходного дерева и процесса развёртывания приложения.
+      code-snippets:
+        segment: snippets
+        description: Небольшие фрагменты кода, которые не являются полным проектом.
+        routeable: false
+        children:
+          code-snippets-reusable:
+            segment: reusable
+            description: Готовые для повторного использования фрагменты и функции.
+          code-snippets-examples:
+            segment: examples
+            description: Демонстрационные примеры кода для понимания API, языка или приёма.
+          code-snippets-recipes:
+            segment: recipes
+            description: Небольшие кодовые рецепты для типовых практических задач.
+      code-patches:
+        segment: patches
+        description: Патчи, diff-файлы и наборы изменений исходного кода.
+      code-tests:
+        segment: tests
+        description: Автоматизированные тесты и связанные тестовые артефакты.
+        routeable: false
+        children:
+          code-tests-unit:
+            segment: unit
+            description: Модульные тесты отдельных функций, классов и компонентов.
+          code-tests-integration:
+            segment: integration
+            description: Интеграционные тесты взаимодействия нескольких компонентов или сервисов.
+          code-tests-e2e:
+            segment: e2e
+            description: End-to-end тесты пользовательских или системных сценариев.
+          code-tests-fixtures:
+            segment: fixtures
+            description: Тестовые fixtures, golden files, mocks и статические входные данные тестов.
+          code-tests-benchmarks:
+            segment: benchmarks
+            description: Код микробенчмарков и performance-тестов.
+      code-build:
+        segment: build
+        description: Файлы сборки, контейнеризации, инфраструктуры и CI/CD.
+        routeable: false
+        children:
+          code-build-ci-cd:
+            segment: ci-cd
+            description: CI/CD pipelines для GitHub Actions, GitLab CI, Jenkins и аналогов.
+          code-build-containers:
+            segment: containers
+            description: Проектные файлы контейнерной сборки и локального многоконтейнерного запуска.
+            routeable: false
+            children:
+              code-build-dockerfiles:
+                segment: dockerfiles
+                description: Dockerfile и связанные определения сборки container images.
+              code-build-compose:
+                segment: compose
+                description: Docker Compose manifests, хранящиеся как часть программного проекта или репозитория и описывающие его многоконтейнерную сборку либо запуск.
+                distinguishFrom:
+                  - Эксплуатационный Compose собственных уже развёрнутых сервисов пользователя относится к mine/configs/docker.
+              code-build-devcontainers:
+                segment: devcontainers
+                description: Dev Container и container-based development environment конфигурации программного проекта.
+          code-build-tooling:
+            segment: tooling
+            description: Системы сборки, dependency manifests и инструменты управления проектной сборкой.
+            routeable: false
+            children:
+              code-build-make:
+                segment: make-cmake
+                description: Makefile, CMake и другие классические файлы систем сборки.
+              code-build-packages:
+                segment: package-manifests
+                description: "Package manifests и lock-файлы: package.json, pyproject, Cargo.toml, go.mod и аналоги."
+              code-build-bazel-meson:
+                segment: bazel-meson
+                description: Bazel, Meson и другие декларации систем сборки, не относящиеся к Make или CMake.
+      code-config:
+        segment: config
+        description: Конфигурации, являющиеся частью конкретного программного проекта или его репозитория.
+        routeable: false
+        children:
+          code-config-application:
+            segment: application
+            description: "Конфигурация приложения или сервиса: YAML, TOML, JSON, INI и другие форматы."
+          code-config-lint-format:
+            segment: lint-format
+            description: Настройки линтеров, форматтеров и статического анализа.
+          code-config-compiler:
+            segment: compiler
+            description: Настройки компиляторов, транспайлеров и build toolchains.
+          code-config-package-manager:
+            segment: package-manager
+            description: Настройки package managers и registries, являющиеся частью программного проекта.
+            distinguishFrom:
+              - Секретные registry credentials и access tokens относятся к личным секретам, а не к проектной конфигурации.
+          code-config-environment:
+            segment: environment
+            description: Проектные environment templates и несекретные переменные окружения, определяющие runtime-настройки приложения.
+          code-config-feature-flags:
+            segment: feature-flags
+            description: Проектные декларации feature flags, экспериментальных переключателей и управляемых runtime-возможностей.
+      code-infrastructure:
+        segment: infrastructure
+        description: Infrastructure-as-code и декларативные конфигурации инфраструктуры, хранящиеся как программный проект.
+        routeable: false
+        children:
+          code-build-terraform:
+            segment: terraform
+            description: Terraform/OpenTofu конфигурация инфраструктуры как кода.
+          code-build-ansible:
+            segment: ansible
+            description: Ansible playbooks, roles и inventory-файлы.
+          code-infrastructure-kubernetes:
+            segment: kubernetes
+            description: Kubernetes manifests и Kustomize-конфигурации, являющиеся частью infrastructure-as-code или программного репозитория.
+            distinguishFrom:
+              - Личные эксплуатационные настройки собственных кластеров вне проекта относятся к mine/configs/kubernetes.
+          code-infrastructure-helm:
+            segment: helm
+            description: Helm charts, values и шаблоны Kubernetes-пакетов в infrastructure-as-code проекте.
+          code-infrastructure-pulumi:
+            segment: pulumi
+            description: Pulumi programs и конфигурации управления инфраструктурой как кодом.
+          code-infrastructure-nix:
+            segment: nix
+            description: Nix, NixOS, flakes и Home Manager декларации, используемые как infrastructure/configuration-as-code.
+  web:
+    segment: web
+    description: "Сохранённый или извлечённый веб-контент: статьи, страницы, форумы и результаты scraping."
+    routeable: false
+    children:
+      web-articles:
+        segment: articles
+        description: Отдельные статьи, посты и публикации из интернета.
+        routeable: false
+        children:
+          web-articles-editorial:
+            segment: editorial
+            description: Одиночные веб-публикации, классифицируемые прежде всего по редакционному типу материала.
+            routeable: false
+            children:
+              web-articles-technical:
+                segment: technical
+                description: Технические статьи и инженерные публикации в интернете.
+              web-articles-news:
+                segment: news
+                description: Новостные статьи и сообщения о текущих событиях.
+              web-articles-blogs:
+                segment: blogs
+                description: Авторские блог-посты и личные публикации.
+          web-articles-platforms:
+            segment: platforms
+            description: Одиночные публикации, для которых издательская платформа является полезной частью классификации.
+            routeable: false
+            children:
+              web-articles-habr:
+                segment: habr
+                description: Одиночные сохранённые статьи и публикации, опубликованные на Habr.
+              web-articles-medium:
+                segment: medium
+                description: Одиночные сохранённые статьи и публикации, опубликованные на Medium.
+              web-articles-substack:
+                segment: substack
+                description: Веб-публикации и newsletter-страницы, опубликованные на Substack; email-доставка рассылки относится к почтовым newsletters.
+                distinguishFrom:
+                  - Письмо рассылки, доставленное по email, относится к comms/email/newsletters.
+      web-scraped:
+        segment: scraped
+        description: Результаты автоматического пакетного scraping или crawling веб-сайтов, где происхождение из crawler-процесса существенно для типа ресурса.
+        routeable: false
+        children:
+          web-scraped-docs:
+            segment: docs
+            description: Документация, полученная как результат автоматического пакетного scraping или crawling веб-сайта.
+            distinguishFrom:
+              - Одиночная сохранённая страница онлайн-документации относится к web/docs.
+              - Обычный локальный проектный документ относится к docs/project.
+          web-scraped-tutorials:
+            segment: tutorials
+            description: Учебные и практические руководства, полученные как результат автоматического scraping или crawling веб-сайта.
+          web-scraped-reference:
+            segment: reference
+            description: Справочные страницы и каталоги, полученные пакетным scraper или crawler с веб-сайта.
+          web-scraped-articles:
+            segment: articles
+            description: Статьи и публикации, полученные как результат автоматического scraping или crawling, а не одиночная сохранённая веб-статья.
+        distinguishFrom:
+          - Одиночные сохранённые URL-страницы относятся к web/pages, web/docs, web/articles или web/discussions по их типу.
+      web-pages:
+        segment: pages
+        description: Сохранённые веб-страницы как отдельные ресурсы.
+        routeable: false
+        children:
+          web-pages-saved:
+            segment: saved
+            description: Одиночные сохранённые текущие версии веб-страниц общего назначения.
+            distinguishFrom:
+              - Статьи, дискуссии и страницы онлайн-документации относятся к соответствующим более специальным web-веткам; пакетный crawling относится к web/scraped.
+          web-pages-archives:
+            segment: archives
+            description: Архивные снимки веб-страниц на конкретный момент времени.
+      web-dumps:
+        segment: dumps
+        description: Многостраничные выгрузки и crawls веб-сайтов.
+        routeable: false
+        children:
+          web-dumps-full-sites:
+            segment: full-sites
+            description: Полные или почти полные crawls сайтов.
+          web-dumps-sections:
+            segment: sections
+            description: Выгрузки отдельных разделов или поддеревьев сайтов.
+      web-discussions:
+        segment: discussions
+        description: Одиночные сохранённые веб-дискуссии, вопросы, ответы и обсуждения на публичных площадках.
+        routeable: false
+        children:
+          web-articles-reddit:
+            segment: reddit
+            description: Одиночные сохранённые посты, треды и обсуждения, опубликованные на Reddit.
+          web-articles-forums:
+            segment: forums
+            description: Одиночные сохранённые темы и обсуждения на веб-форумах; массовый экспорт форумной истории относится к communication exports.
+            distinguishFrom:
+              - Массовый экспорт истории форума с множеством тем относится к comms/forum-exports.
+          web-discussions-stackoverflow:
+            segment: stackoverflow
+            description: Одиночные сохранённые вопросы и ответы Stack Overflow, Stack Exchange и аналогичных Q&A-площадок.
+          web-discussions-issues:
+            segment: issue-trackers
+            description: Одиночные сохранённые публичные issue, bug tracker или pull-request страницы с обсуждением и техническим контекстом.
+            distinguishFrom:
+              - Массовые или структурированные экспорты рабочих issue/PR обсуждений относятся к comms/collaboration.
+      web-docs:
+        segment: docs
+        description: Одиночные сохранённые страницы онлайн-документации и веб-справки, не являющиеся пакетным scraping результатом.
+        routeable: false
+        children:
+          web-docs-official:
+            segment: official
+            description: Одиночные сохранённые страницы официальной документации продукта, библиотеки, API или сервиса.
+            distinguishFrom:
+              - Пакетно извлечённая crawler-ом документация относится к web/scraped/docs.
+              - Локальная проектная документация относится к docs/project.
+          web-docs-wiki:
+            segment: wiki
+            description: Одиночные сохранённые энциклопедические, wiki и collaboratively-edited справочные страницы.
+          web-docs-reference:
+            segment: reference
+            description: Одиночные веб-справочники, таблицы параметров и reference-страницы для быстрого обращения.
+          web-docs-knowledge-base:
+            segment: knowledge-base
+            description: Одиночные статьи базы знаний, help center и support documentation веб-сервисов.
+      web-feeds:
+        segment: feeds
+        description: Сохранённые RSS, Atom и другие веб-ленты публикаций как самостоятельные ресурсы.
+  comms:
+    segment: comms
+    description: Экспорты коммуникаций и текстовые расшифровки разговоров.
+    routeable: false
+    children:
+      comms-ai:
+        segment: ai
+        description: История разговоров с AI-ассистентами.
+        routeable: false
+        children:
+          comms-ai-chatgpt:
+            segment: chatgpt
+            description: Экспорты и сохранённые разговоры с ChatGPT.
+          comms-ai-claude:
+            segment: claude
+            description: Экспорты и сохранённые разговоры с Claude.
+          comms-ai-gemini:
+            segment: gemini
+            description: Экспорты и сохранённые разговоры с Gemini.
+          comms-ai-other:
+            segment: other
+            description: Разговоры с другими AI-ассистентами.
+      comms-messaging:
+        segment: messaging
+        description: Экспорты переписки из мессенджеров и чат-платформ.
+        routeable: false
+        children:
+          comms-telegram:
+            segment: telegram
+            description: Экспорты истории переписки, чатов или каналов из Telegram с сообщениями и метаданными разговора.
+          comms-whatsapp:
+            segment: whatsapp
+            description: Экспорты истории личной или групповой переписки из WhatsApp с сообщениями и метаданными разговора.
+          comms-signal:
+            segment: signal
+            description: Экспорты истории личной или групповой переписки из Signal с сообщениями и метаданными разговора.
+          comms-simplex:
+            segment: simplex
+            description: Экспорты переписки из SimpleX Chat.
+          comms-discord:
+            segment: discord
+            description: Экспорты каналов и переписки из Discord.
+          comms-slack:
+            segment: slack
+            description: Экспорты workspace, каналов и переписки из Slack.
+          comms-matrix:
+            segment: matrix
+            description: Экспорты комнат и переписки из Matrix.
+          comms-messaging-other:
+            segment: other
+            description: Экспорты других мессенджеров и чат-систем.
+          comms-teams:
+            segment: teams
+            description: Экспорты чатов, каналов и переписки из Microsoft Teams.
+          comms-mattermost:
+            segment: mattermost
+            description: Экспорты каналов и переписки из Mattermost.
+          comms-irc:
+            segment: irc
+            description: Логи и экспорты разговоров из IRC-каналов и приватных IRC-сообщений.
+          comms-zulip:
+            segment: zulip
+            description: Экспорты streams, topics и сообщений из Zulip.
+      comms-email:
+        segment: email
+        description: Сохранённые email-сообщения, цепочки переписки, почтовые рассылки и массовые экспорты электронной почты.
+        routeable: false
+        children:
+          comms-email-threads:
+            segment: threads
+            description: Отдельные email threads и цепочки деловой или личной переписки.
+          comms-email-newsletters:
+            segment: newsletters
+            description: Email newsletters и регулярные почтовые рассылки.
+          comms-email-exports:
+            segment: exports
+            description: Массовые экспорты почтовых ящиков или наборов сообщений.
+      comms-forums:
+        segment: forum-exports
+        description: Массовые экспорты истории форумов с несколькими темами, комментариями, авторами и временными метаданными.
+        distinguishFrom:
+          - Одиночная сохранённая веб-тема форума относится к web/discussions/forums.
+      comms-transcripts:
+        segment: transcripts
+        description: Текстовые расшифровки разговоров и выступлений.
+        routeable: false
+        children:
+          comms-transcripts-meetings:
+            segment: meetings
+            description: Расшифровки рабочих и организационных встреч.
+            distinguishFrom:
+              - Авторский протокол или структурированные итоги встречи относятся к docs/meetings/minutes, а не к дословным transcript-материалам.
+          comms-transcripts-calls:
+            segment: calls
+            description: Расшифровки телефонных и голосовых разговоров.
+          comms-transcripts-interviews:
+            segment: interviews
+            description: Расшифровки интервью в формате вопросов и ответов.
+          comms-transcripts-talks:
+            segment: talks
+            description: Текстовые расшифровки произнесённых лекций, докладов, презентаций и публичных выступлений.
+            distinguishFrom:
+              - Авторские конспекты лекций относятся к docs/courses/lecture-notes.
+          comms-transcripts-podcasts:
+            segment: podcasts
+            description: Текстовые расшифровки подкастов и записанных разговорных выпусков.
+          comms-transcripts-voice-notes:
+            segment: voice-notes
+            description: Текстовые расшифровки голосовых заметок и коротких аудиосообщений.
+      comms-collaboration:
+        segment: collaboration
+        description: Структурированные экспорты рабочих обсуждений из issue trackers, code review и support/helpdesk систем.
+        routeable: false
+        children:
+          comms-collaboration-issues:
+            segment: issues
+            description: Экспорты рабочих issues и bug reports с историей комментариев, статусами и метаданными задачи.
+            distinguishFrom:
+              - Одиночная сохранённая публичная issue-страница относится к web/discussions/issue-trackers.
+          comms-collaboration-pull-requests:
+            segment: pull-requests
+            description: Экспорты pull request или merge request обсуждений с review comments, решениями и историей изменений.
+          comms-collaboration-support:
+            segment: support-tickets
+            description: Экспорты helpdesk и support tickets с перепиской, статусами, участниками и историей обработки обращения.
+  data:
+    segment: data
+    description: Машиночитаемые данные, выгрузки баз, логи, метрики и технические трассировки.
+    routeable: false
+    children:
+      data-datasets:
+        segment: datasets
+        description: Структурированные наборы данных для анализа, обучения или обработки.
+        routeable: false
+        children:
+          data-datasets-json:
+            segment: json
+            description: Структурированные наборы данных в JSON или построчном JSONL для анализа, обучения или машинной обработки.
+            distinguishFrom:
+              - JSON-конфигурация приложения относится к code/config/application.
+          data-datasets-csv:
+            segment: csv
+            description: Табличные наборы данных в CSV/TSV.
+          data-datasets-yaml:
+            segment: yaml
+            description: Структурированные наборы данных и каталоги в YAML, используемые как данные для анализа, обучения или машинной обработки.
+            distinguishFrom:
+              - YAML-конфигурация программного проекта относится к code/config/application.
+          data-datasets-xml:
+            segment: xml
+            description: Структурированные наборы данных в XML.
+          data-datasets-parquet:
+            segment: parquet
+            description: Колонночные наборы данных в Parquet или совместимых форматах.
+          data-datasets-spreadsheets:
+            segment: spreadsheets
+            description: Табличные данные в XLSX/ODS и других форматах электронных таблиц.
+      data-dumps:
+        segment: dumps
+        description: Выгрузки и снимки состояния баз данных и приложений.
+        routeable: false
+        children:
+          data-dumps-sql:
+            segment: sql
+            description: SQL dumps PostgreSQL, MySQL, MariaDB и других реляционных баз.
+            distinguishFrom:
+              - SQL-код запросов и хранимых процедур проекта относится к code/source/sql; backup-пакет базы с backup metadata относится к archives/backups/database.
+          data-dumps-nosql:
+            segment: nosql
+            description: Выгрузки MongoDB, Redis, Neo4j и других нереляционных хранилищ.
+          data-dumps-sqlite:
+            segment: sqlite
+            description: Файлы SQLite и автономные локальные базы данных.
+          data-dumps-snapshots:
+            segment: snapshots
+            description: Снимки состояния приложений, сервисов и хранилищ данных.
+      data-logs:
+        segment: logs
+        description: Машинные журналы работы систем, приложений и инфраструктуры.
+        routeable: false
+        children:
+          data-logs-application:
+            segment: application
+            description: Логи приложений и прикладных сервисов.
+          data-logs-server:
+            segment: server
+            description: Системные журналы серверов, kernel, init-систем и системных демонов.
+          data-logs-access:
+            segment: access
+            description: Access logs веб-серверов, proxies, API gateways и сетевых сервисов.
+          data-logs-error:
+            segment: error
+            description: Error logs и журналы сбоев, исключений и stack traces.
+          data-logs-audit:
+            segment: audit
+            description: Audit trail с событиями аутентификации, прав, изменений и административных действий.
+          data-logs-build:
+            segment: build
+            description: Логи компиляции, сборки, CI jobs и deployment pipelines.
+          data-logs-containers:
+            segment: containers
+            description: Логи Docker, Kubernetes pods и других контейнерных runtime.
+      data-observability:
+        segment: observability
+        description: Метрики, трассировки и профили производительности.
+        routeable: false
+        children:
+          data-observability-metrics:
+            segment: metrics
+            description: Экспорты временных рядов и метрик мониторинга.
+          data-observability-traces:
+            segment: traces
+            description: Distributed tracing данные и трассировки запросов.
+          data-observability-profiles:
+            segment: profiles
+            description: CPU, memory, flamegraph и другие профили производительности.
+          data-observability-alerts:
+            segment: alerts
+            description: Экспорты событий мониторинговых alerts, срабатываний правил и связанных временных меток.
+      data-network:
+        segment: network
+        description: Сырые и структурированные данные сетевого трафика, HTTP-сеансов и сетевых наблюдений.
+        routeable: false
+        children:
+          data-network-pcap:
+            segment: pcap
+            description: PCAP/PCAPNG захваты сетевых пакетов и другие packet-capture файлы.
+          data-network-har:
+            segment: har
+            description: HTTP Archive (HAR) файлы с запросами, ответами, таймингами и ресурсами браузерных или API-сеансов.
+          data-network-flows:
+            segment: flows
+            description: NetFlow, IPFIX и другие агрегированные записи сетевых потоков и соединений.
+      data-crash:
+        segment: crash
+        description: Технические артефакты сбоев процессов и снимки памяти для диагностики ошибок.
+        routeable: false
+        children:
+          data-crash-core:
+            segment: core-dumps
+            description: Core dumps и другие снимки памяти упавших процессов для отладки.
+          data-crash-heap:
+            segment: heap-dumps
+            description: Heap dumps и снимки управляемой памяти процессов для анализа утечек и потребления памяти.
+          data-crash-reports:
+            segment: crash-reports
+            description: Структурированные crash reports с stack traces, signal/exception metadata и состоянием процесса при сбое.
+      data-ml:
+        segment: ml
+        description: "Машиночитаемые артефакты ML/AI систем: модели, embeddings и векторные индексы."
+        routeable: false
+        children:
+          data-ml-checkpoints:
+            segment: checkpoints
+            description: Model checkpoints, веса, adapters и другие сохраняемые состояния ML-моделей.
+          data-ml-embeddings:
+            segment: embeddings
+            description: Экспорты embedding-векторов и связанные таблицы векторных представлений объектов.
+          data-ml-vector-indexes:
+            segment: vector-indexes
+            description: Экспорты и файлы векторных индексов или коллекций vector database, сохраняемые как технические данные.
+  archives:
+    segment: archives
+    description: Резервные копии, архивы и массовые экспорты данных.
+    routeable: false
+    children:
+      archives-backups:
+        segment: backups
+        description: Резервные копии систем, конфигураций и пользовательских данных.
+        routeable: false
+        children:
+          archives-backups-full:
+            segment: full
+            description: Полные резервные копии систем или наборов данных.
+          archives-backups-incremental:
+            segment: incremental
+            description: Инкрементальные и дифференциальные резервные копии.
+          archives-backups-config:
+            segment: config
+            description: Резервные копии конфигурационных файлов и настроек.
+          archives-backups-database:
+            segment: database
+            description: Архивные backup-пакеты баз данных с метаданными резервного копирования и служебными файлами восстановления.
+            distinguishFrom:
+              - Сырой SQL/NoSQL dump без backup-контейнера относится к data/dumps.
+      archives-packages:
+        segment: packages
+        description: Архивные контейнеры и пакеты файлов.
+        routeable: false
+        children:
+          archives-packages-source:
+            segment: source-bundles
+            description: ZIP/TAR и release source bundles, сохраняемые как единый архивный пакет исходников.
+            distinguishFrom:
+              - Распакованное дерево исходного кода относится к code/source.
+          archives-packages-documents:
+            segment: document-bundles
+            description: Архивы, содержащие набор документов или материалов одного комплекта.
+          archives-packages-mixed:
+            segment: mixed-bundles
+            description: Смешанные архивы с разнородным содержимым без одной доминирующей категории.
+          archives-packages-binary:
+            segment: binary-releases
+            description: Готовые бинарные release bundles и собранные пакеты программ, сохраняемые как распространяемые артефакты.
+          archives-packages-installers:
+            segment: installers
+            description: Инсталляторы, установочные пакеты и standalone setup bundles программного обеспечения.
+      archives-exports:
+        segment: exports
+        description: Массовые экспорты из приложений и сервисов.
+        routeable: false
+        children:
+          archives-exports-browser:
+            segment: browser
+            description: "Экспорты браузера: bookmarks, history, sessions и связанные данные."
+          archives-exports-accounts:
+            segment: accounts
+            description: Полные экспорты данных пользовательских аккаунтов из онлайн-сервисов.
+          archives-exports-applications:
+            segment: applications
+            description: Пакетные экспорты пользовательских данных из приложений и сервисов, не являющиеся конфигурационными файлами приложения и не подходящие к более специальной export-категории.
+          archives-exports-password-managers:
+            segment: password-managers
+            description: Полные или пакетные экспорты хранилищ password manager, содержащие записи и метаданные нескольких учётных данных.
+            distinguishFrom:
+              - Отдельные рабочие credentials относятся к mine/secrets; этот класс предназначен именно для целостного export bundle.
+      archives-images:
+        segment: system-images
+        description: Архивные образы контейнеров, виртуальных машин, дисков и установочных носителей.
+        routeable: false
+        children:
+          archives-images-containers:
+            segment: container-images
+            description: Экспортированные OCI/Docker container images и image tar archives.
+          archives-images-vm:
+            segment: vm-disk-images
+            description: Образы виртуальных машин и виртуальных дисков, включая qcow2, vmdk, vdi и raw disk images.
+          archives-images-iso:
+            segment: iso
+            description: ISO и другие образы установочных, rescue или оптических носителей.
+  security:
+    segment: security
+    description: Материалы по информационной безопасности, уязвимостям, инцидентам и защите систем.
+    routeable: false
+    children:
+      security-vulnerability-management:
+        segment: vulnerabilities
+        description: Материалы о конкретных уязвимостях, advisories, результатах обнаружения и техническом анализе риска.
+        routeable: false
+        children:
+          security-advisories:
+            segment: advisories
+            description: Security advisories и уведомления поставщиков об уязвимостях и исправлениях.
+          security-vulnerabilities:
+            segment: analysis
+            description: Технические описания и анализ конкретных уязвимостей, CVE, причин, exploitability и возможного воздействия.
+          security-scanner-results:
+            segment: scanner-results
+            description: Результаты автоматических vulnerability scanners с найденными уязвимостями, версиями компонентов и уровнями серьёзности.
+      security-assessment:
+        segment: assessment
+        description: "Рабочие материалы технической оценки защищённости: reconnaissance, scanning и penetration testing."
+        routeable: false
+        children:
+          security-pentest:
+            segment: pentest
+            description: "Рабочие технические материалы penetration testing: scope, evidence, заметки проверки, отдельные findings и PoC."
+            distinguishFrom:
+              - Готовый формальный итоговый audit report относится к docs/reports/audits.
+          security-recon:
+            segment: recon
+            description: "Материалы reconnaissance и attack-surface discovery: активы, сервисы, домены, endpoints и собранная техническая информация."
+          security-scanning:
+            segment: scanning
+            description: Рабочие результаты портового, сервисного, web и другого технического сканирования в рамках оценки безопасности.
+      security-defense:
+        segment: defense
+        description: Материалы защитных мер, безопасной конфигурации, правил обнаружения и контроля доступа.
+        routeable: false
+        children:
+          security-hardening:
+            segment: hardening
+            description: Руководства и чек-листы по безопасной настройке и усилению защиты систем.
+          security-detection-rules:
+            segment: detection-rules
+            description: Правила обнаружения для SIEM, IDS/IPS, EDR, YARA, Sigma и других defensive detection систем.
+          security-access-control:
+            segment: access-control
+            description: Материалы политик и технических правил аутентификации, авторизации, RBAC/ACL и управления доступом.
+      security-intelligence:
+        segment: intelligence
+        description: Threat intelligence, indicators of compromise и материалы анализа вредоносной активности.
+        routeable: false
+        children:
+          security-threat-intel:
+            segment: threat-intel
+            description: "Threat intelligence: индикаторы компрометации, TTP и сведения об угрозах."
+          security-iocs:
+            segment: iocs
+            description: "Наборы indicators of compromise: hashes, domains, IP addresses, URLs, signatures и связанные контекстные сведения."
+          security-malware:
+            segment: malware-analysis
+            description: Технический анализ malware, образцов, поведения, persistence, capabilities и артефактов выполнения.
+      security-incidents:
+        segment: incidents
+        description: Операционные материалы расследования и активного реагирования на инциденты безопасности.
+        routeable: false
+        children:
+          security-incident-response:
+            segment: incident-response
+            description: "Операционные материалы активного реагирования на инциденты безопасности: runbooks, playbooks, рабочие действия и координация восстановления."
+            distinguishFrom:
+              - Завершённый postmortem и итоговый разбор причин относятся к docs/reports/incidents.
+          security-forensics:
+            segment: forensics
+            description: "Digital forensics материалы: forensic images, timelines, артефакты систем и результаты технического расследования инцидента."
+          security-evidence:
+            segment: evidence
+            description: Собранные evidence bundles и рабочие доказательные материалы конкретного security incident.
+      security-design:
+        segment: design
+        description: "Проектирование безопасности: архитектура защиты, модели угроз, trust boundaries и security controls."
+        routeable: false
+        children:
+          security-architecture:
+            segment: architecture
+            description: Архитектура безопасности, trust boundaries, модели угроз и проектные решения защиты.
+          security-threat-models:
+            segment: threat-models
+            description: Threat models с активами, доверительными границами, adversary assumptions, угрозами и предлагаемыми mitigations.

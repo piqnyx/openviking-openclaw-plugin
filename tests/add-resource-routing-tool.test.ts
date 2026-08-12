@@ -35,6 +35,7 @@ function setup(options: {
   routingEnabled?: boolean;
   routeFailure?: Error;
   explicitFallback?: boolean;
+  summaryLanguage?: "any" | "ru";
 } = {}) {
   const factories = new Map<string, ToolFactory>();
   const addResource = vi.fn(async () => ({
@@ -103,6 +104,7 @@ function setup(options: {
     enableRemoveResourceTool: false,
     resourceRouting: {
       enabled: options.routingEnabled ?? true,
+      summaryLanguage: options.summaryLanguage ?? "ru",
       resolveCategoryOrFallback,
       routeAutomatic,
     },
@@ -164,6 +166,23 @@ describe("add_resource routing tool", () => {
     }
     expect(routeAutomatic).not.toHaveBeenCalled();
     expect(getClient).not.toHaveBeenCalled();
+  });
+
+  it("allows an unrestricted-language taxonomy to route a non-Russian summary", async () => {
+    const { factories, routeAutomatic } = setup({ summaryLanguage: "any" });
+    const summary = "A practical guide to configuring OpenClaw services.";
+    await factories.get("add_resource")!({}).execute("call", {
+      source: "/workspace/guide.md",
+      summary,
+    });
+    expect(routeAutomatic).toHaveBeenCalledWith(expect.objectContaining({ summary }));
+  });
+
+  it("publishes provenance guidance for categories where source form is semantic", () => {
+    const tool = setup().factories.get("add_resource")!({});
+    expect(tool.description).toContain("batch scraping or crawling result");
+    expect(tool.description).toContain("exported chat or forum history");
+    expect(tool.description).toContain("database dump");
   });
 
   it("routes a Russian summary automatically and forwards only a trusted parent", async () => {

@@ -114,6 +114,10 @@ export class ResourceRoutingService {
     return this.#config.enabled;
   }
 
+  get summaryLanguage(): ParsedResourceRoutingConfig["summaryLanguage"] {
+    return this.#config.summaryLanguage;
+  }
+
   #getTaxonomy(agentId: string): CompiledResourceTaxonomy {
     const cached = this.#taxonomies.get(agentId);
     if (cached) {

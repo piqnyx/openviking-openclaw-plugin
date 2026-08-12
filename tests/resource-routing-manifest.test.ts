@@ -24,6 +24,7 @@ describe("resourceRouting manifest schema", () => {
       "taxonomyFile",
       "cacheFile",
       "semanticInputTemplate",
+      "summaryLanguage",
       "embedding",
       "reranker",
       "retrieval",
@@ -31,6 +32,14 @@ describe("resourceRouting manifest schema", () => {
       "failurePolicy",
       "audit",
     ]);
+  });
+
+  it("exposes the optional summary language policy", () => {
+    const routing = manifest.configSchema?.properties?.resourceRouting as {
+      properties?: Record<string, { enum?: string[]; default?: unknown }>;
+    } | undefined;
+    expect(routing?.properties?.summaryLanguage?.enum).toEqual(["any", "ru"]);
+    expect(routing?.properties?.summaryLanguage?.default).toBe("any");
   });
 
   it("keeps embedding dimensions separate from the reranker schema", () => {

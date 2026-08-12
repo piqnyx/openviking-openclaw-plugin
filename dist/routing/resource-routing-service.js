@@ -51,6 +51,9 @@ export class ResourceRoutingService {
     get enabled() {
         return this.#config.enabled;
     }
+    get summaryLanguage() {
+        return this.#config.summaryLanguage;
+    }
     #getTaxonomy(agentId) {
         const cached = this.#taxonomies.get(agentId);
         if (cached) {

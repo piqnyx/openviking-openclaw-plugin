@@ -556,6 +556,15 @@
             "type": "string",
             "default": "{{summary}}"
           },
+          "summaryLanguage": {
+            "type": "string",
+            "enum": [
+              "any",
+              "ru"
+            ],
+            "default": "any",
+            "description": "Optional automatic-summary language policy. Use ru for a Russian taxonomy; any leaves language unrestricted."
+          },
           "embedding": {
             "type": "object",
             "additionalProperties": false,

@@ -52,7 +52,7 @@ export type OpenVikingImportToolsDeps = {
   enableRemoveResourceTool: boolean;
   resourceRouting?: Pick<
     ResourceRoutingService,
-    "enabled" | "resolveCategoryOrFallback" | "routeAutomatic"
+    "enabled" | "summaryLanguage" | "resolveCategoryOrFallback" | "routeAutomatic"
   >;
 };
 
@@ -204,6 +204,14 @@ export function isRussianSemanticSummary(summary: string): boolean {
 }
 
 export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): void {
+  const requireRussianSummary = deps.resourceRouting?.summaryLanguage === "ru";
+  const summaryLanguageGuidance = requireRussianSummary
+    ? "Write the summary in Russian even when the source material is in another language; preserve product names, commands, code identifiers, protocols, and other technical terms when useful. "
+    : "Write the summary in the natural language appropriate for the configured taxonomy; preserve product names, commands, code identifiers, protocols, and other technical terms when useful. ";
+  const summaryParameterGuidance = requireRussianSummary
+    ? "Required for automatic routing: one short Russian sentence based on known or inspected content, describing what the resource is about and what it is useful for. Technical product names, commands, protocols and code identifiers may remain in their natural form. When provenance or container form defines the resource type, state it naturally."
+    : "Required for automatic routing: one short sentence based on known or inspected content, describing what the resource is about and what it is useful for. When provenance or container form defines the resource type, state it naturally.";
+
   if (deps.enableAddResourceTool) {
     deps.registerTool(
       (ctx: OpenVikingImportToolContext) => ({
@@ -213,7 +221,9 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
           "Use only when the user explicitly asks to import, add, upload, save, or index a document, directory, URL, Git repository, or OpenClaw media attachment into OpenViking resources. " +
           "Never use this during search, retrieval, URI reading, or search-result optimization; use ov_search and ov_read for those flows. " +
           "For a '[media attached: /path ...]' document, set source to that exact local media path. Do not invent OpenViking upload REST endpoints. " +
-          "When automatic resource routing is enabled and category is omitted, you MUST provide summary in Russian: one short sentence describing the actual semantic content and purpose of the resource. Write the summary in Russian even when the source material is in another language; preserve product names, commands, code identifiers, protocols, and other technical terms when useful. Inspect or read enough of the resource to understand it unless its contents are already established in the conversation; never guess from its filename or path. " +
+          "When automatic resource routing is enabled and category is omitted, you MUST provide summary: one short sentence describing the actual semantic content and purpose of the resource. " +
+          summaryLanguageGuidance +
+          "Inspect or read enough of the resource to understand it unless its contents are already established in the conversation; never guess from its filename or path. When provenance or container form defines the semantic type, state it naturally in the summary, for example a saved web article/page, batch scraping or crawling result, email/newsletter, exported chat or forum history, spoken transcript, machine log, database dump, backup/archive bundle, or screenshot. Do not copy raw filename, path, MIME type, storage URI, or unrelated metadata into the semantic summary. " +
           "Use category only as an explicit override with an existing full taxonomy path such as code/source/javascript, or a stable semantic key for compatibility. Never invent category paths, keys, or resource URIs. Unknown, ambiguous, or organizational category selectors are routed to the configured fallback inbox rather than creating new paths. " +
           "The agent-facing tool deliberately does not expose arbitrary target URIs, extraction instructions, parser controls, or watch settings. This tool always submits imports asynchronously and returns after OpenViking accepts the job. Never retry the same import automatically after an outcome-unknown transport failure; inspect OpenViking state first.",
         parameters: Type.Object({
@@ -221,7 +231,7 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
             description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL",
           }),
           summary: Type.Optional(Type.String({
-            description: "Required for automatic routing: one short Russian sentence based on known or inspected content, describing what the resource is about and what it is useful for. Technical product names, commands, protocols and code identifiers may remain in their natural form.",
+            description: summaryParameterGuidance,
           })),
           category: Type.Optional(Type.String({
             description: "Optional explicit override using an existing full taxonomy path such as code/source/javascript. A stable semantic key is also accepted for compatibility. The plugin resolves the selector to a trusted URI; never invent a path/key or provide an arbitrary URI.",
@@ -274,13 +284,15 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
             const summary = typeof params.summary === "string" ? params.summary.trim() : "";
             if (!summary) {
               return rejectedResourceImport(
-                "Automatic resource routing requires `summary`. Inspect or read enough of the resource to understand its actual content, then describe in one short Russian sentence what it is about and what it is useful for. Do not guess from or merely repeat its filename, path, MIME type, or storage location.",
+                requireRussianSummary
+                  ? "Automatic resource routing requires `summary`. Inspect or read enough of the resource to understand its actual content, then describe in one short Russian sentence what it is about and what it is useful for. When provenance or container form defines the semantic type, state it naturally. Do not guess from or merely repeat filename, path, MIME type, storage location, or unrelated metadata."
+                  : "Automatic resource routing requires `summary`. Inspect or read enough of the resource to understand its actual content, then describe in one short sentence what it is about and what it is useful for. When provenance or container form defines the semantic type, state it naturally. Do not guess from or merely repeat filename, path, MIME type, storage location, or unrelated metadata.",
                 { routing: "automatic", source },
               );
             }
-            if (!isRussianSemanticSummary(summary)) {
+            if (requireRussianSummary && !isRussianSemanticSummary(summary)) {
               return rejectedResourceImport(
-                "Automatic resource routing requires a genuinely Russian semantic `summary`, not an English sentence with a token Cyrillic character. Rewrite the content-and-purpose summary in Russian; technical product names, commands, protocols and code identifiers may remain in their original form.",
+                "Automatic resource routing is configured with summaryLanguage=ru and requires a genuinely Russian semantic `summary`, not an English sentence with a token Cyrillic character. Rewrite the content-and-purpose summary in Russian; technical product names, commands, protocols and code identifiers may remain in their original form.",
                 { routing: "automatic", source, summaryLanguage: "ru" },
               );
             }
