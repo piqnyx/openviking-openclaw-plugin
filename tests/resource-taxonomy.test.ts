@@ -51,7 +51,7 @@ describe("resource taxonomy", () => {
           description: "Документация и справочные материалы.",
           routeable: false,
           children: {
-            code: {
+            "docs-code": {
               segment: "code",
               description: "Документация о программном коде и API.",
             },
@@ -62,7 +62,7 @@ describe("resource taxonomy", () => {
           description: "Материалы по программным проектам.",
           routeable: false,
           children: {
-            code: {
+            "projects-code": {
               segment: "code",
               description: "Исходный код, относящийся к конкретным проектам.",
             },
@@ -73,6 +73,10 @@ describe("resource taxonomy", () => {
 
     const docsCode = compiled.byPath.get("docs/code")!;
     const projectCode = compiled.byPath.get("projects/code")!;
+    expect(docsCode.key).toBe("docs-code");
+    expect(projectCode.key).toBe("projects-code");
+    expect(docsCode.segment).toBe("code");
+    expect(projectCode.segment).toBe("code");
     expect(docsCode.routingText).toContain("description: Документация о программном коде и API.");
     expect(docsCode.routingText).toContain("ancestors: docs: Документация и справочные материалы.");
     expect(docsCode.routingText).toContain("path: docs/code");
