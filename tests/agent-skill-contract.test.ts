@@ -33,7 +33,9 @@ describe("embedded OpenViking agent skill mutation contract", () => {
     const text = section("remove_resource", "ov_search");
     expect(text).toContain("enableRemoveResourceTool=true");
     expect(text).toContain("| `uri` | Yes |");
-    expect(text).toContain("| `recursive` | No |");
+    expect(text).not.toContain("| `recursive` |");
+    expect(text).toContain("taxonomy category/container URIs are protected");
+    expect(text).toContain("retries exactly once recursively");
     expect(text).not.toContain("| `wait` |");
     expect(text).not.toContain("| `timeout` |");
     expect(text).toContain("semantic_status=queued");

@@ -129,6 +129,13 @@ function isOpenVikingNotFoundError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("OpenViking request failed [NOT_FOUND]");
 }
 
+function isOpenVikingDirectoryRequiresRecursiveError(error: unknown): boolean {
+  return error instanceof Error &&
+    error.message.includes(
+      "OpenViking request failed [FAILED_PRECONDITION]: Cannot remove directory without --recursive:",
+    );
+}
+
 function unknownMutationResult(options: {
   action: string;
   mutation: "add_resource" | "remove_resource" | "add_skill";
@@ -224,7 +231,7 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
           "When automatic resource routing is enabled and category is omitted, you MUST provide summary: one short sentence describing the actual semantic content and purpose of the resource. " +
           summaryLanguageGuidance +
           "Inspect or read enough of the resource to understand it unless its contents are already established in the conversation; never guess from its filename or path. When provenance or container form defines the semantic type, state it naturally in the summary, for example a saved web article/page, batch scraping or crawling result, email/newsletter, exported chat or forum history, spoken transcript, machine log, database dump, backup/archive bundle, or screenshot. Do not copy raw filename, path, MIME type, storage URI, or unrelated metadata into the semantic summary. " +
-          "Use category only as an explicit override with an existing full taxonomy path such as code/source/javascript, or a stable semantic key for compatibility. Never invent category paths, keys, or resource URIs. Unknown, ambiguous, or organizational category selectors are routed to the configured fallback inbox rather than creating new paths. " +
+          "Set category ONLY when the user's current request explicitly names the exact taxonomy destination/path/key. If the user merely asks to add, save, import, upload, or index the resource, NEVER set category: omit it and let automatic routing decide. Never infer, guess, browse for, list, or choose a category from the resource content. Never try alternative categories after a category error. Invalid explicit categories are rejected without importing anything. " +
           "The agent-facing tool deliberately does not expose arbitrary target URIs, extraction instructions, parser controls, or watch settings. This tool always submits imports asynchronously and returns after OpenViking accepts the job. Never retry the same import automatically after an outcome-unknown transport failure; inspect OpenViking state first.",
         parameters: Type.Object({
           source: Type.String({
@@ -234,7 +241,7 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
             description: summaryParameterGuidance,
           })),
           category: Type.Optional(Type.String({
-            description: "Optional explicit override using an existing full taxonomy path such as code/source/javascript. A stable semantic key is also accepted for compatibility. The plugin resolves the selector to a trusted URI; never invent a path/key or provide an arbitrary URI.",
+            description: "Use ONLY when the user's current request explicitly names the exact existing writable taxonomy path/key. NEVER infer, guess, browse for, list, or choose category yourself. If the user did not explicitly name a destination, omit category so automatic routing decides.",
           })),
         }),
         async execute(_toolCallId: string, params: Record<string, unknown>) {
@@ -268,6 +275,16 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
               session.agentId,
               explicitCategory,
             );
+            if (resolved.fallback) {
+              return rejectedResourceImport(
+                "Explicit `category` is not an exact writable taxonomy destination. The resource was NOT imported. Do not guess another category. If the user did not explicitly request this exact category, retry once with `category` omitted so automatic routing can decide. If the user explicitly requested it, report that the destination is unavailable or not writable.",
+                {
+                  category: explicitCategory,
+                  matchedBy: resolved.matchedBy,
+                  fallbackReason: resolved.fallbackReason,
+                },
+              );
+            }
             targetParent = resolved.category.uri;
             createParent = true;
             routingDetails = {
@@ -382,18 +399,15 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
         name: "remove_resource",
         label: "Remove Resource (OpenViking)",
         description:
-          "Use when the user explicitly asks to delete or remove content from OpenViking resources. " +
-          "This tool is restricted to descendants of viking://resources/ and must never be used for memories, sessions, skills, or other namespaces. " +
-          "To clear all resources, first use ov_list on viking://resources, then remove each top-level child; the viking://resources root itself cannot be deleted. " +
-          "Set recursive=true for a non-empty resource directory. The resource deletion itself is submitted without waiting for semantic refresh; OpenViking may continue semantic/index consistency work asynchronously. " +
+          "Use when the user explicitly asks to delete or remove one imported OpenViking resource/document. " +
+          "This tool is restricted to descendants of viking://resources/ and must never be used for memories, sessions, skills, or the resources root. " +
+          "Provide the exact URI of the imported resource to remove. Exact taxonomy category/container URIs are protected and cannot be removed by this agent tool. " +
+          "The tool handles OpenViking's directory-like document representation internally: it first attempts a non-recursive delete and retries exactly once recursively only for the specific FAILED_PRECONDITION that says the selected resource root is a non-empty directory requiring --recursive. " +
           "If the transport outcome is unknown, inspect the URI before any deliberate retry. A NOT_FOUND response is treated as already absent.",
         parameters: Type.Object({
           uri: Type.String({
-            description: "Exact resource URI below viking://resources/, for example viking://resources/project-docs or viking://resources/project-docs/file.pdf. The viking://resources root itself is not allowed.",
+            description: "Exact URI of one imported resource below viking://resources/. Do not pass a taxonomy category/container URI; category roots are protected.",
           }),
-          recursive: Type.Optional(Type.Boolean({
-            description: "Remove the entire subtree below uri. Required for non-empty resource directories; default false.",
-          })),
         }),
         async execute(_toolCallId: string, params: Record<string, unknown>) {
           if (deps.isBypassedSession(ctx)) {
@@ -409,14 +423,42 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
           }
 
           const session = deps.resolvePluginSessionRouting(ctx);
+          if (deps.resourceRouting?.enabled) {
+            const selector = validation.uri.slice("viking://resources/".length);
+            const categoryResolution = deps.resourceRouting.resolveCategoryOrFallback(
+              session.agentId,
+              selector,
+            );
+            const exactCurrentCategory =
+              !categoryResolution.fallback ||
+              categoryResolution.fallbackReason === "organizational_category";
+            if (exactCurrentCategory) {
+              return rejectedResourceImport(
+                "Refusing to remove a taxonomy category/container. Remove a specific imported resource below that category instead.",
+                { uri: validation.uri, protectedCategory: true },
+              );
+            }
+          }
+
           const client = await deps.getClient(session.agentId);
           let result: RemoveResourceResult;
           try {
-            result = await client.removeResource({
-              uri: validation.uri,
-              recursive: typeof params.recursive === "boolean" ? params.recursive : undefined,
-              wait: false,
-            }, session.actorPeerId);
+            try {
+              result = await client.removeResource({
+                uri: validation.uri,
+                recursive: false,
+                wait: false,
+              }, session.actorPeerId);
+            } catch (error) {
+              if (!isOpenVikingDirectoryRequiresRecursiveError(error)) {
+                throw error;
+              }
+              result = await client.removeResource({
+                uri: validation.uri,
+                recursive: true,
+                wait: false,
+              }, session.actorPeerId);
+            }
           } catch (error) {
             if (isOpenVikingNotFoundError(error)) {
               return {
