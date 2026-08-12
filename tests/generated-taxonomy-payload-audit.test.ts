@@ -34,13 +34,21 @@ function jaccard(left: Set<string>, right: Set<string>): number {
 }
 
 describe("embedded Russian taxonomy payload audit", () => {
-  it("decodes the exact generator payload and prints the complete semantic catalog", () => {
+  it("decodes exact generator payloads and prints the semantic catalog plus routing cases", () => {
     const generator = readFileSync("tools/apply-russian-routing-taxonomy.py", "utf8");
     const expectedSha = extractString(generator, "TAXONOMY_SHA256");
     const payload = extractString(generator, "TAXONOMY_GZIP_B64").replace(/\\s+/g, "");
     const yaml = gunzipSync(Buffer.from(payload, "base64")).toString("utf8");
     const actualSha = createHash("sha256").update(yaml, "utf8").digest("hex");
     expect(actualSha).toBe(expectedSha);
+
+    const casesPayload = extractString(generator, "CASES_GZIP_B64").replace(/\\s+/g, "");
+    const cases = JSON.parse(gunzipSync(Buffer.from(casesPayload, "base64")).toString("utf8")) as Array<{
+      id: string;
+      summary: string;
+      expected: string | string[];
+      note?: string;
+    }>;
 
     const taxonomy = parseResourceTaxonomyYaml(yaml, "embedded Russian resource taxonomy");
     const parentKeys = new Set(
@@ -96,7 +104,7 @@ describe("embedded Russian taxonomy payload audit", () => {
 
     console.log("=== EMBEDDED TAXONOMY AUDIT ===");
     console.log(`sha256=${actualSha}`);
-    console.log(`total=${taxonomy.categories.length} routeable=${taxonomy.routeableCategories.length} semantic=${taxonomy.semanticCategories.length}`);
+    console.log(`total=${taxonomy.categories.length} routeable=${taxonomy.routeableCategories.length} semantic=${taxonomy.semanticCategories.length} cases=${cases.length}`);
     console.log(`structuralRouteable=${structuralRouteable.length} exactDuplicates=${exactDuplicates.length} shortDescriptions=${short.length}`);
     console.log("=== ALL CATEGORIES path | key | routeable | description ===");
     for (const category of taxonomy.categories) {
@@ -114,12 +122,16 @@ describe("embedded Russian taxonomy payload audit", () => {
       console.log(`  L: ${pair.leftDescription}`);
       console.log(`  R: ${pair.rightDescription}`);
     }
+    console.log("=== ROUTING CASES id | expected | summary ===");
+    for (const testCase of cases) {
+      const expected = Array.isArray(testCase.expected) ? testCase.expected.join("|") : testCase.expected;
+      console.log(`${testCase.id} | ${expected} | ${testCase.summary}${testCase.note ? ` | note=${testCase.note}` : ""}`);
+    }
 
-    // This temporary audit intentionally pins only hard structural facts. Textual
-    // ambiguity is reviewed from the emitted catalog before examples are committed.
     expect(taxonomy.categories).toHaveLength(275);
     expect(taxonomy.routeableCategories).toHaveLength(224);
     expect(taxonomy.semanticCategories).toHaveLength(223);
     expect(structuralRouteable).toEqual([]);
+    expect(cases.length).toBeGreaterThanOrEqual(70);
   });
 });
