@@ -67,9 +67,9 @@ describe("ResourceRouter configurable topK", () => {
       embeddings: {
         source: "cache",
         categories: [
-          { key: "security", path: "security", routingText: "Security", embedding: [1, 0] },
-          { key: "audits", path: "audits", routingText: "Audits", embedding: [0.999, 0.04] },
-          { key: "reports", path: "reports", routingText: "Reports", embedding: [0.997, 0.07] },
+          { key: "security", path: "security", embeddingText: "Security", embedding: [1, 0] },
+          { key: "audits", path: "audits", embeddingText: "Audits", embedding: [0.999, 0.04] },
+          { key: "reports", path: "reports", embeddingText: "Reports", embedding: [0.997, 0.07] },
         ],
       },
       embedder: new ResourceRoutingEmbeddingClient(config.embedding, { transport: embeddingTransport }),

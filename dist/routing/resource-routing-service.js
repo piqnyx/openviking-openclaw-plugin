@@ -3,7 +3,39 @@ import { writeResourceRoutingAudit } from "./resource-routing-audit.js";
 import { ResourceRoutingEmbeddingClient, ResourceRoutingRerankerClient, } from "./resource-routing-model-client.js";
 import { renderResourceRoutingSemanticInput } from "./resource-routing-semantic-input.js";
 import { buildResourceRoutingEmbeddingState, ResourceRouter, } from "./resource-router.js";
-import { loadResourceTaxonomyFile, resolvePerAgentFileTemplate, } from "./resource-taxonomy.js";
+import { RESOURCE_TAXONOMY_ROOT_URI, loadResourceTaxonomyFile, resolvePerAgentFileTemplate, } from "./resource-taxonomy.js";
+function normalizeCategoryPathSelector(selector) {
+    const uriPrefix = `${RESOURCE_TAXONOMY_ROOT_URI}/`;
+    let normalized = selector.trim();
+    if (normalized.startsWith(uriPrefix)) {
+        normalized = normalized.slice(uriPrefix.length);
+    }
+    return normalized.replace(/^\/+|\/+$/g, "");
+}
+function resolveSelector(taxonomy, selector) {
+    const trimmed = selector.trim();
+    const path = normalizeCategoryPathSelector(trimmed);
+    const explicitPath = trimmed.includes("/") || trimmed.startsWith(`${RESOURCE_TAXONOMY_ROOT_URI}/`);
+    if (explicitPath) {
+        return {
+            category: path ? taxonomy.byPath.get(path) : undefined,
+            matchedBy: path && taxonomy.byPath.has(path) ? "path" : undefined,
+            ambiguous: false,
+        };
+    }
+    const keyMatch = taxonomy.byKey.get(trimmed);
+    const pathMatch = path ? taxonomy.byPath.get(path) : undefined;
+    if (keyMatch && pathMatch && keyMatch.key !== pathMatch.key) {
+        return { ambiguous: true };
+    }
+    if (keyMatch) {
+        return { category: keyMatch, matchedBy: "key", ambiguous: false };
+    }
+    if (pathMatch) {
+        return { category: pathMatch, matchedBy: "path", ambiguous: false };
+    }
+    return { ambiguous: false };
+}
 export class ResourceRoutingService {
     #config;
     #embeddingTransport;
@@ -32,22 +64,77 @@ export class ResourceRoutingService {
         this.#taxonomies.set(agentId, taxonomy);
         return taxonomy;
     }
-    resolveCategory(agentId, categoryKey) {
+    #fallbackCategory(taxonomy) {
+        const fallback = taxonomy.byKey.get(this.#config.fallbackCategory);
+        if (!fallback || !fallback.routeable) {
+            throw new Error(`resource routing fallback category ${JSON.stringify(this.#config.fallbackCategory)} is missing or not routeable`);
+        }
+        return fallback;
+    }
+    resolveCategory(agentId, selector) {
         if (!this.#config.enabled) {
             throw new Error("resource routing is disabled; semantic category routing is unavailable");
         }
-        if (typeof categoryKey !== "string" || !categoryKey.trim()) {
-            throw new Error("resource routing category key must be a non-empty string");
+        if (typeof selector !== "string" || !selector.trim()) {
+            throw new Error("resource routing category selector must be a non-empty string");
         }
         const taxonomy = this.#getTaxonomy(agentId);
-        const category = taxonomy.byKey.get(categoryKey.trim());
+        const resolved = resolveSelector(taxonomy, selector);
+        if (resolved.ambiguous) {
+            throw new Error(`Resource category selector ${JSON.stringify(selector.trim())} is ambiguous between a semantic key and a taxonomy path. Use the full taxonomy path.`);
+        }
+        const category = resolved.category;
         if (!category) {
-            throw new Error(`Unknown resource category ${JSON.stringify(categoryKey.trim())}. Use a semantic key that exists in this agent's taxonomy.`);
+            throw new Error(`Unknown resource category ${JSON.stringify(selector.trim())}. Use an existing semantic key or taxonomy path such as code/source/javascript.`);
         }
         if (!category.routeable) {
-            throw new Error(`Resource category ${JSON.stringify(category.key)} is organizational only and cannot receive resources directly.`);
+            throw new Error(`Resource category ${JSON.stringify(category.path)} is organizational only and cannot receive resources directly.`);
         }
         return category;
+    }
+    resolveCategoryOrFallback(agentId, selector) {
+        if (!this.#config.enabled) {
+            throw new Error("resource routing is disabled; semantic category routing is unavailable");
+        }
+        if (typeof selector !== "string" || !selector.trim()) {
+            throw new Error("resource routing category selector must be a non-empty string");
+        }
+        const requested = selector.trim();
+        const taxonomy = this.#getTaxonomy(agentId);
+        const resolved = resolveSelector(taxonomy, requested);
+        if (resolved.ambiguous) {
+            return {
+                requested,
+                category: this.#fallbackCategory(taxonomy),
+                matchedBy: "fallback",
+                fallback: true,
+                fallbackReason: "ambiguous_category",
+            };
+        }
+        if (!resolved.category) {
+            return {
+                requested,
+                category: this.#fallbackCategory(taxonomy),
+                matchedBy: "fallback",
+                fallback: true,
+                fallbackReason: "unknown_category",
+            };
+        }
+        if (!resolved.category.routeable) {
+            return {
+                requested,
+                category: this.#fallbackCategory(taxonomy),
+                matchedBy: "fallback",
+                fallback: true,
+                fallbackReason: "organizational_category",
+            };
+        }
+        return {
+            requested,
+            category: resolved.category,
+            matchedBy: resolved.matchedBy ?? "key",
+            fallback: false,
+        };
     }
     async #getRouter(agentId) {
         const existing = this.#routerPromises.get(agentId);
@@ -133,10 +220,9 @@ export class ResourceRoutingService {
         const auditFile = resolvePerAgentFileTemplate(this.#config.audit.file, input.agentId);
         const started = performance.now();
         try {
-            const preload = this.#preloadPromise;
-            if (preload) {
-                await preload;
-            }
+            // #getRouter is already deduplicated per agent. Do not wait for a global
+            // startup preload covering unrelated agents: an igor cold cache must not
+            // block a main routing request, and vice versa.
             const router = await this.#getRouter(input.agentId);
             const decision = await router.route(semanticInput);
             const category = taxonomy.byKey.get(decision.categoryKey);

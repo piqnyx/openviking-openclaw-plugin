@@ -14,6 +14,7 @@ const DEFAULT_MIN_SCORE = 0.64;
 const DEFAULT_RERANK_BELOW_MARGIN = 0.06;
 const DEFAULT_FALLBACK_CATEGORY = "inbox";
 const DEFAULT_SEMANTIC_INPUT_TEMPLATE = "{{summary}}";
+const DEFAULT_SUMMARY_LANGUAGE = "any";
 const DEFAULT_AUDIT_SUMMARY_PREVIEW_CHARS = 240;
 const SEMANTIC_KEY_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 const TEMPLATE_PLACEHOLDER_RE = /{{\s*([A-Za-z][A-Za-z0-9]*)\s*}}/g;
@@ -149,6 +150,15 @@ function parseSemanticInputTemplate(value) {
     }
     return template;
 }
+function parseSummaryLanguage(value) {
+    if (value === undefined || value === null) {
+        return DEFAULT_SUMMARY_LANGUAGE;
+    }
+    if (value === "any" || value === "ru") {
+        return value;
+    }
+    throw new Error('openviking resourceRouting.summaryLanguage must be "any" or "ru"');
+}
 export function parseResourceRoutingConfig(value) {
     const cfg = toRecord(value, "openviking resourceRouting");
     assertAllowedKeys(cfg, [
@@ -156,6 +166,7 @@ export function parseResourceRoutingConfig(value) {
         "taxonomyFile",
         "cacheFile",
         "semanticInputTemplate",
+        "summaryLanguage",
         "embedding",
         "reranker",
         "retrieval",
@@ -188,6 +199,7 @@ export function parseResourceRoutingConfig(value) {
         taxonomyFile: parseFileTemplate(cfg.taxonomyFile, DEFAULT_TAXONOMY_FILE, "openviking resourceRouting.taxonomyFile"),
         cacheFile: parseFileTemplate(cfg.cacheFile, DEFAULT_CACHE_FILE, "openviking resourceRouting.cacheFile"),
         semanticInputTemplate: parseSemanticInputTemplate(cfg.semanticInputTemplate),
+        summaryLanguage: parseSummaryLanguage(cfg.summaryLanguage),
         embedding: {
             ...embedding,
             dimensions: integerInRange(embeddingRaw.dimensions, DEFAULT_EMBEDDING_DIMENSIONS, 1, 65_536, "openviking resourceRouting.embedding.dimensions"),
@@ -221,6 +233,7 @@ export const RESOURCE_ROUTING_DEFAULTS = {
     rerankBelowMargin: DEFAULT_RERANK_BELOW_MARGIN,
     fallbackCategory: DEFAULT_FALLBACK_CATEGORY,
     semanticInputTemplate: DEFAULT_SEMANTIC_INPUT_TEMPLATE,
+    summaryLanguage: DEFAULT_SUMMARY_LANGUAGE,
     auditFile: DEFAULT_AUDIT_FILE,
     auditSummaryPreviewChars: DEFAULT_AUDIT_SUMMARY_PREVIEW_CHARS,
 };

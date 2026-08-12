@@ -20,10 +20,12 @@ function makeCategory(key: string, path: string) {
     key,
     segment: segments.at(-1) ?? key,
     description,
+    distinguishFrom: [],
     routeable: true,
     uri,
     path,
-    routingText: `description: ${description}\npath: ${path}`,
+    embeddingText: `description: ${description}\npath: ${path}`,
+    rerankText: `description: ${description}\npath: ${path}`,
     parentKey: null,
     depth: segments.length,
   };
@@ -72,8 +74,8 @@ function setup(options: {
         uri: "viking://resources/docs/guides/howtos",
         fallback: false,
         embeddingCandidates: [
-          { key: "docs-guides-howtos", path: "docs/guides/howtos", routingText: "Практические инструкции", score: 0.82 },
-          { key: "docs-guides-tutorials", path: "docs/guides/tutorials", routingText: "Учебные руководства", score: 0.79 },
+          { key: "docs-guides-howtos", path: "docs/guides/howtos", embeddingText: "Практические инструкции", rerankText: "Практические инструкции", score: 0.82 },
+          { key: "docs-guides-tutorials", path: "docs/guides/tutorials", embeddingText: "Учебные руководства", rerankText: "Учебные руководства", score: 0.79 },
         ],
         rerankerUsed: true,
         rerankerScores: [

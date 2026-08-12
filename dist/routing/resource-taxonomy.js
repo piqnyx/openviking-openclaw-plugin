@@ -5,7 +5,7 @@ import { isAbsolute } from "node:path";
 import { parseDocument } from "yaml";
 export const RESOURCE_TAXONOMY_SCHEMA_VERSION = 1;
 export const RESOURCE_TAXONOMY_ROOT_URI = "viking://resources";
-const CATEGORY_KEYS = ["segment", "description", "routeable", "children"];
+const CATEGORY_KEYS = ["segment", "description", "distinguishFrom", "routeable", "children"];
 const TAXONOMY_KEYS = ["schemaVersion", "fallback", "categories"];
 const SEMANTIC_KEY_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 const SEGMENT_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
@@ -34,6 +34,18 @@ function parseNonEmptyString(value, label, maxChars = Number.POSITIVE_INFINITY) 
     }
     return normalized;
 }
+function parseOptionalStringList(value, label) {
+    if (value === undefined) {
+        return [];
+    }
+    if (!Array.isArray(value)) {
+        throw new Error(`${label} must be an array of strings`);
+    }
+    if (value.length > 32) {
+        throw new Error(`${label} must contain at most 32 entries`);
+    }
+    return value.map((entry, index) => parseNonEmptyString(entry, `${label}[${index}]`, 1_000));
+}
 function parseSemanticKey(value, label) {
     if (!SEMANTIC_KEY_RE.test(value)) {
         throw new Error(`${label} must match ${SEMANTIC_KEY_RE.source}; use a stable semantic key without spaces or path separators`);
@@ -47,15 +59,42 @@ function parseSegment(value, label) {
     }
     return segment;
 }
+function categoryPathFromUri(uri) {
+    const prefix = `${RESOURCE_TAXONOMY_ROOT_URI}/`;
+    if (!uri.startsWith(prefix) || uri.length <= prefix.length) {
+        throw new Error(`resource taxonomy category URI is outside ${RESOURCE_TAXONOMY_ROOT_URI}: ${uri}`);
+    }
+    return uri.slice(prefix.length);
+}
+function renderCategoryEmbeddingText(path, description, ancestors) {
+    const lines = [`description: ${description}`];
+    if (ancestors.length > 0) {
+        lines.push(`ancestors: ${ancestors.map((ancestor) => `${ancestor.path}: ${ancestor.description}`).join(" > ")}`);
+    }
+    lines.push(`path: ${path}`);
+    return lines.join("\n");
+}
+function renderCategoryRerankText(embeddingText, distinguishFrom, ancestors) {
+    const inherited = ancestors.flatMap((ancestor) => ancestor.distinguishFrom.map((hint) => `${ancestor.path}: ${hint}`));
+    const hints = [...inherited, ...distinguishFrom];
+    if (hints.length === 0) {
+        return embeddingText;
+    }
+    return `${embeddingText}\ndistinguishFrom: ${hints.join(" | ")}`;
+}
 function canonicalRoutingData(fallbackKey, categories) {
     const canonicalCategories = [...categories]
         .sort((left, right) => left.key.localeCompare(right.key))
-        .map(({ key, segment, description, routeable, uri, parentKey, depth }) => ({
+        .map(({ key, segment, description, distinguishFrom, routeable, uri, path, embeddingText, rerankText, parentKey, depth }) => ({
         key,
         segment,
         description,
+        distinguishFrom,
         routeable,
         uri,
+        path,
+        embeddingText,
+        rerankText,
         parentKey,
         depth,
     }));
@@ -86,9 +125,11 @@ export function compileResourceTaxonomy(value) {
         parentKey: null,
         parentUri: RESOURCE_TAXONOMY_ROOT_URI,
         depth: 1,
+        ancestors: [],
     }));
     const categories = [];
     const byKey = new Map();
+    const byPath = new Map();
     const seenUris = new Map();
     while (pending.length > 0) {
         const current = pending.pop();
@@ -100,6 +141,7 @@ export function compileResourceTaxonomy(value) {
         assertAllowedKeys(current.raw, CATEGORY_KEYS, `resource taxonomy category ${JSON.stringify(key)}`);
         const segment = parseSegment(current.raw.segment, `resource taxonomy category ${JSON.stringify(key)} segment`);
         const description = parseNonEmptyString(current.raw.description, `resource taxonomy category ${JSON.stringify(key)} description`, MAX_DESCRIPTION_CHARS);
+        const distinguishFrom = parseOptionalStringList(current.raw.distinguishFrom, `resource taxonomy category ${JSON.stringify(key)} distinguishFrom`);
         if (current.raw.routeable !== undefined && typeof current.raw.routeable !== "boolean") {
             throw new Error(`resource taxonomy category ${JSON.stringify(key)} routeable must be a boolean`);
         }
@@ -109,21 +151,33 @@ export function compileResourceTaxonomy(value) {
         if (collidingKey) {
             throw new Error(`resource taxonomy categories ${JSON.stringify(collidingKey)} and ${JSON.stringify(key)} resolve to the same URI ${uri}`);
         }
+        const path = categoryPathFromUri(uri);
+        const embeddingText = renderCategoryEmbeddingText(path, description, current.ancestors);
+        const rerankText = renderCategoryRerankText(embeddingText, distinguishFrom, current.ancestors);
         const compiled = {
             key,
             segment,
             description,
+            distinguishFrom,
             routeable,
             uri,
+            path,
+            embeddingText,
+            rerankText,
             parentKey: current.parentKey,
             depth: current.depth,
         };
         categories.push(compiled);
         byKey.set(key, compiled);
+        byPath.set(path, compiled);
         seenUris.set(uri, key);
         if (current.raw.children !== undefined) {
             assertRecord(current.raw.children, `resource taxonomy category ${JSON.stringify(key)} children`);
             const children = Object.entries(current.raw.children);
+            const childAncestors = [
+                ...current.ancestors,
+                { path, description, distinguishFrom },
+            ];
             for (let index = children.length - 1; index >= 0; index -= 1) {
                 const [childKey, childRaw] = children[index];
                 pending.push({
@@ -132,6 +186,7 @@ export function compileResourceTaxonomy(value) {
                     parentKey: key,
                     parentUri: uri,
                     depth: current.depth + 1,
+                    ancestors: childAncestors,
                 });
             }
         }
@@ -147,6 +202,10 @@ export function compileResourceTaxonomy(value) {
     if (routeableCategories.length === 0) {
         throw new Error("resource taxonomy must contain at least one routeable category");
     }
+    const semanticCategories = routeableCategories.filter((category) => category.key !== fallbackKey);
+    if (semanticCategories.length === 0) {
+        throw new Error("resource taxonomy must contain at least one routeable semantic category besides the fallback");
+    }
     const taxonomyHash = createHash("sha256")
         .update(canonicalRoutingData(fallbackKey, categories), "utf8")
         .digest("hex");
@@ -157,7 +216,9 @@ export function compileResourceTaxonomy(value) {
         taxonomyHash,
         categories,
         routeableCategories,
+        semanticCategories,
         byKey,
+        byPath,
     };
 }
 export function parseResourceTaxonomyYaml(text, sourceLabel = "resource taxonomy YAML") {

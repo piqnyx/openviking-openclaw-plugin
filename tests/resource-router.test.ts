@@ -63,8 +63,8 @@ const taxonomy = compileResourceTaxonomy({
   },
 });
 
-function embedded(key: string, path: string, routingText: string, embedding: number[]) {
-  return { key, path, routingText, embedding };
+function embedded(key: string, path: string, embeddingText: string, embedding: number[]) {
+  return { key, path, embeddingText, embedding };
 }
 
 function embeddingClientFor(vector: number[], transportOverride?: HttpTransport) {
@@ -95,7 +95,7 @@ describe("buildResourceRoutingEmbeddingState", () => {
   it("embeds only semantic categories sequentially and never embeds fallback", async () => {
     const config = makeTempConfig();
     const seenInputs: string[] = [];
-    const expectedRoutingTexts = taxonomy.semanticCategories.map((category) => category.routingText);
+    const expectedRoutingTexts = taxonomy.semanticCategories.map((category) => category.embeddingText);
     const firstTransport: HttpTransport = vi.fn(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { input: string[] };
       expect(body.input).toHaveLength(1);
@@ -122,7 +122,7 @@ describe("buildResourceRoutingEmbeddingState", () => {
     expect(first.categories).toHaveLength(taxonomy.semanticCategories.length);
     expect(firstTransport).toHaveBeenCalledTimes(taxonomy.semanticCategories.length);
     expect(seenInputs).toEqual(expectedRoutingTexts);
-    expect(seenInputs).not.toContain(taxonomy.byKey.get("inbox")?.routingText);
+    expect(seenInputs).not.toContain(taxonomy.byKey.get("inbox")?.embeddingText);
 
     const forbiddenTransport: HttpTransport = vi.fn(async () => {
       throw new Error("embedder must not be called on cache hit");
@@ -205,7 +205,7 @@ describe("ResourceRouter", () => {
     expect(rerankTransport).not.toHaveBeenCalled();
   });
 
-  it("reranks close semantic candidates using routingText and can refine to second place", async () => {
+  it("reranks close semantic candidates using embeddingText and can refine to second place", async () => {
     const config = makeTempConfig();
     const rerankTransport: HttpTransport = vi.fn(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { documents: string[] };

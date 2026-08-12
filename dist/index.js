@@ -141,11 +141,6 @@ const contextEnginePlugin = {
         });
         const { searchOpenViking, readOpenVikingContent, multiReadOpenVikingContent, listOpenVikingDirectory, } = queryRuntime;
         const resourceRouting = new ResourceRoutingService(cfg.resourceRouting);
-        if (resourceRouting.enabled) {
-            void resourceRouting.preloadAgents(agentKeys.agentNames, api.logger).catch((error) => {
-                api.logger.error(`openviking: resource routing startup preload failed: ${error instanceof Error ? error.message : String(error)}`);
-            });
-        }
         registerOpenVikingImportTools({
             registerTool: registerOpenVikingTool,
             getClient,
@@ -277,6 +272,9 @@ const contextEnginePlugin = {
             logger: api.logger,
             recallTraceHttpRoutesRegistered,
             registerRecallTraceRoutes,
+            preloadResourceRouting: resourceRouting.enabled
+                ? () => resourceRouting.preloadAgents(agentKeys.agentNames, api.logger)
+                : undefined,
         }));
     },
 };

@@ -164,9 +164,9 @@ describe("cosine retrieval", () => {
 
   it("selects deterministic top-K candidates by cosine score and preserves paths", () => {
     const candidates = selectTopCosineCandidates([1, 0], [
-      { key: "docs", path: "docs", routingText: "Documents", embedding: [0.8, 0.2] },
-      { key: "security-audits", path: "security/audits", routingText: "Security audit reports", embedding: [0.99, 0.01] },
-      { key: "media", path: "media", routingText: "Media", embedding: [0, 1] },
+      { key: "docs", path: "docs", embeddingText: "Documents", embedding: [0.8, 0.2] },
+      { key: "security-audits", path: "security/audits", embeddingText: "Security audit reports", embedding: [0.99, 0.01] },
+      { key: "media", path: "media", embeddingText: "Media", embedding: [0, 1] },
     ], 2);
     expect(candidates.map(({ key }) => key)).toEqual(["security-audits", "docs"]);
     expect(candidates[0]?.path).toBe("security/audits");

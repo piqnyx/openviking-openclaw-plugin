@@ -77,12 +77,12 @@ describe("resource taxonomy", () => {
     expect(projectCode.key).toBe("projects-code");
     expect(docsCode.segment).toBe("code");
     expect(projectCode.segment).toBe("code");
-    expect(docsCode.routingText).toContain("description: Документация о программном коде и API.");
-    expect(docsCode.routingText).toContain("ancestors: docs: Документация и справочные материалы.");
-    expect(docsCode.routingText).toContain("path: docs/code");
-    expect(projectCode.routingText).toContain("ancestors: projects: Материалы по программным проектам.");
-    expect(projectCode.routingText).toContain("path: projects/code");
-    expect(docsCode.routingText).not.toBe(projectCode.routingText);
+    expect(docsCode.embeddingText).toContain("description: Документация о программном коде и API.");
+    expect(docsCode.embeddingText).toContain("ancestors: docs: Документация и справочные материалы.");
+    expect(docsCode.embeddingText).toContain("path: docs/code");
+    expect(projectCode.embeddingText).toContain("ancestors: projects: Материалы по программным проектам.");
+    expect(projectCode.embeddingText).toContain("path: projects/code");
+    expect(docsCode.embeddingText).not.toBe(projectCode.embeddingText);
   });
 
   it("keeps fallback routeable for storage but excludes it from semantic ranking", () => {
@@ -323,4 +323,40 @@ describe("per-agent resource routing paths", () => {
       /absolute path/,
     );
   });
+
+  it("keeps embedding text positive while boundary hints are reranker-only", () => {
+    const taxonomy = compileResourceTaxonomy({
+      schemaVersion: 1,
+      fallback: "inbox",
+      categories: {
+        inbox: {
+          segment: "_INBOX",
+          description: "Uncertain resources",
+        },
+        docs: {
+          segment: "docs",
+          description: "Documentation",
+          distinguishFrom: ["Source code belongs under code"],
+          routeable: false,
+          children: {
+            guide: {
+              segment: "guide",
+              description: "Practical guide",
+              distinguishFrom: ["API reference belongs elsewhere"],
+            },
+          },
+        },
+      },
+    });
+
+    const guide = taxonomy.byKey.get("guide")!;
+    expect(guide.embeddingText).toContain("description: Practical guide");
+    expect(guide.embeddingText).toContain("docs: Documentation");
+    expect(guide.embeddingText).not.toContain("Source code belongs under code");
+    expect(guide.embeddingText).not.toContain("API reference belongs elsewhere");
+    expect(guide.rerankText).toContain("Source code belongs under code");
+    expect(guide.rerankText).toContain("API reference belongs elsewhere");
+    expect(guide.distinguishFrom).toEqual(["API reference belongs elsewhere"]);
+  });
+
 });

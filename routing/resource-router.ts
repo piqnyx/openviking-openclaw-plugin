@@ -123,7 +123,8 @@ function embeddedCategoriesFromCache(
     return {
       key: category.key,
       path: category.path,
-      routingText: category.routingText,
+      embeddingText: category.embeddingText,
+      rerankText: category.rerankText,
       embedding,
     };
   });
@@ -157,7 +158,7 @@ export async function buildResourceRoutingEmbeddingState(
   // semantic category has been embedded successfully.
   const vectors: number[][] = [];
   for (const category of input.taxonomy.semanticCategories) {
-    const [embedding] = await input.embedder.embed([category.routingText]);
+    const [embedding] = await input.embedder.embed([category.embeddingText]);
     if (!embedding) {
       throw new Error(
         `resource routing embedder returned no embedding for category ${JSON.stringify(category.key)}`,
@@ -259,7 +260,7 @@ export class ResourceRouter {
     const rerankerStarted = performance.now();
     const reranked = await this.#reranker.rerank(
       semanticInput,
-      rerankCandidates.map((candidate) => candidate.routingText),
+      rerankCandidates.map((candidate) => candidate.rerankText),
     );
     const rerankerMs = performance.now() - rerankerStarted;
     const rerankerScores = reranked.map((result) => {

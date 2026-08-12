@@ -55,10 +55,10 @@ describe("Russian resource taxonomy", () => {
     for (const category of taxonomy.categories) {
       expect(category.description, category.key).toMatch(/[А-Яа-яЁё]/u);
       expect(category.description.trim().length, category.key).toBeGreaterThanOrEqual(24);
-      expect(category.routingText, category.key).toContain(`description: ${category.description}`);
-      expect(category.routingText, category.key).toContain(`path: ${category.path}`);
+      expect(category.embeddingText, category.key).toContain(`description: ${category.description}`);
+      expect(category.embeddingText, category.key).toContain(`path: ${category.path}`);
       if (category.parentKey) {
-        expect(category.routingText, category.key).toContain("ancestors:");
+        expect(category.embeddingText, category.key).toContain("ancestors:");
       }
     }
   });

@@ -302,7 +302,8 @@ function embeddingStateFromCache(taxonomy, cache) {
       return {
         key: category.key,
         path: category.path,
-        routingText: category.routingText,
+        embeddingText: category.embeddingText,
+        rerankText: category.rerankText,
         embedding,
       };
     }),

@@ -62,8 +62,8 @@ describe("resource routing audit", () => {
         uri: "viking://resources/security/audits",
         fallback: false,
         embeddingCandidates: [
-          { key: "security", path: "security", routingText: "Security", score: 0.8 },
-          { key: "security_audits", path: "security/audits", routingText: "Audits", score: 0.79 },
+          { key: "security", path: "security", embeddingText: "Security", rerankText: "Security", score: 0.8 },
+          { key: "security_audits", path: "security/audits", embeddingText: "Audits", rerankText: "Audits", score: 0.79 },
         ],
         rerankerUsed: true,
         rerankerScores: [
