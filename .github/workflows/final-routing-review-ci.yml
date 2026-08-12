@@ -38,7 +38,7 @@ jobs:
             semanticNonLeaves: report.semanticNonLeaves.length,
             exactDuplicateDescriptions: report.exactDuplicateDescriptions.length,
             shortDescriptions: report.shortDescriptions.length,
-            languageProblems: report.languageProblems.length,
+            languageProblems: report.languageProblems,
             repeatedSegments: report.repeatedSegments.length,
             lexicalNearPairs: report.lexicalNearPairs,
           }, null, 2));
