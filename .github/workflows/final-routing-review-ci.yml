@@ -21,6 +21,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
+      - name: Apply final taxonomy language cleanup
+        run: python3 tools/fix-final-taxonomy-language.py
       - name: Apply reviewed documentation sync
         run: python3 tools/finalize-routing-docs.py
       - name: Build
@@ -29,9 +31,13 @@ jobs:
         run: |
           node tools/routing-taxonomy-audit.mjs --taxonomy "$PWD/examples/resource-taxonomy.ru.yaml" --language ru --top 100 --json > /tmp/final-routing-audit.json
           node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
           import { readFileSync } from 'node:fs';
           const report = JSON.parse(readFileSync('/tmp/final-routing-audit.json', 'utf8'));
+          const taxonomyText = readFileSync('examples/resource-taxonomy.ru.yaml', 'utf8');
+          const crossBranch = report.lexicalNearPairs.filter((pair) => !pair.sameParent).slice(0, 30);
           console.log(JSON.stringify({
+            taxonomySha256: createHash('sha256').update(taxonomyText).digest('hex'),
             counts: report.counts,
             fallback: report.fallback,
             structuralRouteable: report.structuralRouteable.length,
@@ -40,7 +46,7 @@ jobs:
             shortDescriptions: report.shortDescriptions.length,
             languageProblems: report.languageProblems,
             repeatedSegments: report.repeatedSegments.length,
-            lexicalNearPairs: report.lexicalNearPairs,
+            lexicalCrossBranchPairs: crossBranch,
           }, null, 2));
           const goodCounts = report.counts.total === 394 && report.counts.routeable === 310 && report.counts.semantic === 309 && report.counts.structural === 84;
           const clean = !report.fallback.appearsInSemanticRanking && !report.structuralRouteable.length && !report.semanticNonLeaves.length && !report.exactDuplicateDescriptions.length && !report.shortDescriptions.length && !report.languageProblems.length;
@@ -57,10 +63,10 @@ jobs:
           npm run typecheck
           npm run verify
           git diff --check
-      - name: Materialize reviewed docs
+      - name: Materialize reviewed taxonomy and docs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md docs/resource-routing.md dist/
-          git commit -m "docs: align routing docs with final semantic model"
+          git add examples/resource-taxonomy.ru.yaml README.md docs/resource-routing.md dist/
+          git commit -m "docs: finalize Russian routing taxonomy and semantic model"
           git push origin HEAD:agent/russian-routing-taxonomy
