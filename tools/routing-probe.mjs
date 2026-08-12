@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,13 +133,12 @@ export function parseArgs(argv) {
       case "--reranker-base-url": options.rerankerBaseUrl = value; break;
       case "--reranker-model": options.rerankerModel = value; break;
       case "--reranker-timeout-ms": options.rerankerTimeoutMs = parseInteger(value, arg, 100, 300_000); break;
-      case "--details": {
+      case "--details":
         if (!["all", "mismatches", "none"].includes(value)) {
           throw new Error("--details must be all, mismatches, or none");
         }
         options.details = value;
         break;
-      }
       default:
         throw new Error(`Unknown argument: ${arg}`);
     }
@@ -279,12 +278,12 @@ function loadValidatedCache(config, taxonomy, agentId) {
       headers: config.embedding.headers,
     }),
     dimensions: config.embedding.dimensions,
-    categoryKeys: taxonomy.routeableCategories.map((category) => category.key),
+    categoryKeys: taxonomy.semanticCategories.map((category) => category.key),
   };
   const loaded = loadResourceRoutingEmbeddingCache(cacheFile, expected);
   if (!loaded.hit) {
     throw new Error(
-      `Routing probe is read-only and requires a valid existing category cache. Cache miss at ${cacheFile}: ${loaded.reason}. ` +
+      `Routing probe is read-only and requires a valid existing semantic category cache. Cache miss at ${cacheFile}: ${loaded.reason}. ` +
       "Build the cache through gateway startup first; the probe will never rebuild or modify it.",
     );
   }
@@ -295,14 +294,15 @@ function embeddingStateFromCache(taxonomy, cache) {
   const vectors = new Map(cache.categories.map((entry) => [entry.key, entry.embedding]));
   return {
     source: "cache",
-    categories: taxonomy.routeableCategories.map((category) => {
+    categories: taxonomy.semanticCategories.map((category) => {
       const embedding = vectors.get(category.key);
       if (!embedding) {
         throw new Error(`Validated cache unexpectedly lacks category ${JSON.stringify(category.key)}`);
       }
       return {
         key: category.key,
-        description: category.description,
+        path: category.path,
+        routingText: category.routingText,
         embedding,
       };
     }),
@@ -395,12 +395,14 @@ async function runProfile(config, taxonomy, embeddingState, profile, cases) {
     const decision = await router.route(testCase.summary);
     const top1 = decision.embeddingCandidates[0];
     const top2 = decision.embeddingCandidates[1];
+    const selected = taxonomy.byKey.get(decision.categoryKey);
     rows.push({
       id: testCase.id,
       summary: testCase.summary,
       note: testCase.note,
       expected: testCase.expected,
       actual: decision.categoryKey,
+      actualPath: selected?.path,
       correct: expectedMatches(testCase.expected, decision.categoryKey),
       fallback: decision.fallback,
       fallbackReason: decision.fallbackReason,
@@ -410,10 +412,12 @@ async function runProfile(config, taxonomy, embeddingState, profile, cases) {
       top12Gap: top1 && top2 ? round(top1.score - top2.score) : undefined,
       embeddingCandidates: decision.embeddingCandidates.map((candidate) => ({
         key: candidate.key,
+        path: candidate.path,
         score: round(candidate.score),
       })),
       rerankerScores: decision.rerankerScores?.map((entry) => ({
         key: entry.key,
+        path: entry.path,
         score: round(entry.score),
       })),
       timing: {
@@ -442,13 +446,17 @@ function printCaseRows(rows, details) {
     const expected = row.expected?.join("|") ?? "(unlabeled)";
     const mark = row.correct === true ? "OK" : row.correct === false ? "MISS" : "INFO";
     console.log(
-      `${mark} ${row.id}: expected=${expected} actual=${row.actual} ` +
+      `${mark} ${row.id}: expected=${expected} actual=${row.actual} path=${row.actualPath ?? "n/a"} ` +
       `top1=${row.top1Score ?? "n/a"} gap=${row.top12Gap ?? "n/a"} rerank=${row.rerankerUsed ? "yes" : "no"}`,
     );
     if (row.rerankerUsed && row.rerankerScores) {
-      console.log(`  reranker: ${row.rerankerScores.map((entry) => `${entry.key}=${entry.score}`).join(" ")}`);
+      console.log(
+        `  reranker: ${row.rerankerScores.map((entry) => `${entry.key}[${entry.path}]=${entry.score}`).join(" ")}`,
+      );
     }
-    console.log(`  cosine: ${row.embeddingCandidates.map((entry) => `${entry.key}=${entry.score}`).join(" ")}`);
+    console.log(
+      `  cosine: ${row.embeddingCandidates.map((entry) => `${entry.key}[${entry.path}]=${entry.score}`).join(" ")}`,
+    );
   }
 }
 
@@ -457,16 +465,16 @@ function usage() {
   npm run routing:probe -- --agent main --cases /path/cases.json
   npm run routing:probe -- --agent main --summary "semantic summary" [--expected category]
 
-By default the probe reads ~/.openclaw/openclaw.json, uses the configured taxonomy/cache,
-requires a VALID EXISTING cache, calls the real embedding/reranker endpoints, and never
-imports/moves/deletes OpenViking resources.
+The probe is READ-ONLY. It uses the exact production taxonomy compiler, semantic-category
+cache, embedding query and reranker logic. It never rebuilds cache and never imports,
+moves or deletes OpenViking resources.
 
 Threshold overrides:
   --min-score 0.57
   --rerank-margin 0.06
   --top-k 3
 
-Sweep grids (cross-product when both are supplied):
+Sweep grids:
   --min-scores 0.45,0.50,0.55,0.57,0.60,0.65
   --rerank-margins 0.00,0.03,0.06,0.10
 
@@ -474,10 +482,10 @@ Input/output:
   --config /home/openclaw/.openclaw/openclaw.json
   --cases /home/openclaw/routing-cases.json
   --output /home/openclaw/routing-probe-result.json
-  --details all|mismatches|none   (default: mismatches)
-  --verbose                      (same as --details all)
-  --quiet                        (same as --details none)
-  --json                         (full result JSON to stdout)
+  --details all|mismatches|none
+  --verbose
+  --quiet
+  --json
 
 Advanced endpoint/path overrides:
   --taxonomy PATH_TEMPLATE
@@ -519,8 +527,8 @@ export async function runProbe(options) {
   }
   const ranking = rankProfileSummaries(profileResults.map((entry) => entry.summary));
 
-  const result = {
-    schemaVersion: 1,
+  return {
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     readOnly: true,
     config: {
@@ -530,7 +538,9 @@ export async function runProbe(options) {
       taxonomyFile,
       cacheFile,
       taxonomyHash: taxonomy.taxonomyHash,
-      categories: taxonomy.routeableCategories.length,
+      totalCategories: taxonomy.categories.length,
+      routeableCategories: taxonomy.routeableCategories.length,
+      semanticCategories: taxonomy.semanticCategories.length,
       embedding: {
         baseUrl: config.embedding.baseUrl,
         model: config.embedding.model,
@@ -543,6 +553,7 @@ export async function runProbe(options) {
         timeoutMs: config.reranker.timeoutMs,
       },
       fallbackCategory: config.fallbackCategory,
+      fallbackPath: taxonomy.byKey.get(config.fallbackCategory)?.path,
       baseRetrieval: config.retrieval,
     },
     cases: cases.length,
@@ -550,8 +561,6 @@ export async function runProbe(options) {
     ranking,
     best: ranking[0],
   };
-
-  return result;
 }
 
 async function main() {
@@ -573,9 +582,13 @@ async function main() {
 
   console.log(`routing probe: READ-ONLY; agent=${result.config.agentId}`);
   console.log(`taxonomy: ${result.config.taxonomyFile}`);
-  console.log(`cache: ${result.config.cacheFile} (${result.config.categories} categories, valid hit)`);
+  console.log(
+    `cache: ${result.config.cacheFile} (${result.config.semanticCategories} semantic / ` +
+    `${result.config.routeableCategories} routeable / ${result.config.totalCategories} total, valid hit)`,
+  );
   console.log(`embedder: ${result.config.embedding.model} @ ${result.config.embedding.baseUrl}`);
   console.log(`reranker: ${result.config.reranker.model} @ ${result.config.reranker.baseUrl}`);
+  console.log(`fallback: ${result.config.fallbackCategory}[${result.config.fallbackPath ?? "n/a"}]`);
   console.log(`cases=${result.cases} profiles=${result.profiles.length}`);
   if (options.outputFile) console.log(`full JSON: ${options.outputFile}`);
   console.log("");
@@ -587,7 +600,9 @@ async function main() {
 
   if (result.profiles.length > 1) {
     console.log("\n=== ranking ===");
-    result.ranking.forEach((summary, index) => printProfileSummary(summary, index === 0 ? "BEST " : `${index + 1}. `));
+    result.ranking.forEach((summary, index) => {
+      printProfileSummary(summary, index === 0 ? "BEST " : `${index + 1}. `);
+    });
   }
 }
 
