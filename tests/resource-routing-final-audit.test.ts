@@ -9,7 +9,7 @@ import {
 } from "../routing/resource-routing-semantic-input.js";
 
 describe("resource routing final release contracts", () => {
-  it("keeps automatic add_resource language-aware, provenance-aware, deterministic, and fallback-safe", () => {
+  it("keeps automatic add_resource language-aware, provenance-aware, deterministic, and explicit-category-safe", () => {
     const source = readFileSync(
       join(process.cwd(), "plugin", "openviking-import-tools.ts"),
       "utf8",
@@ -19,8 +19,9 @@ describe("resource routing final release contracts", () => {
     expect(source).toContain("exported chat or forum history");
     expect(source).toContain("database dump");
     expect(source).toContain("Automatic resource routing requires `summary`");
-    expect(source).toContain("code/source/javascript");
-    expect(source).toContain("Unknown, ambiguous, or organizational category selectors are routed to the configured fallback inbox");
+    expect(source).toContain("Set category ONLY when the user's current request explicitly names the exact taxonomy destination/path/key");
+    expect(source).toContain("Invalid explicit categories are rejected without importing anything");
+    expect(source).toContain("Do not guess another category");
     expect(source).toContain("resolveCategoryOrFallback");
     expect(source).toContain("wait: false");
   });

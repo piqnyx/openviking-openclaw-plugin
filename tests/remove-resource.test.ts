@@ -126,7 +126,7 @@ describe("remove_resource agent tool", () => {
   it("publishes only deletion intent and keeps wait/timeout away from the agent", () => {
     const { factories } = setupTools({ enableRemoveResourceTool: true });
     const tool = factories.get("remove_resource")!({});
-    expect(Object.keys(tool.parameters.properties ?? {})).toEqual(["uri", "recursive"]);
+    expect(Object.keys(tool.parameters.properties ?? {})).toEqual(["uri"]);
   });
 
   it.each([
@@ -161,7 +161,7 @@ describe("remove_resource agent tool", () => {
     expect(getClient).toHaveBeenCalledWith("main");
     expect(removeResource).toHaveBeenCalledWith({
       uri: "viking://resources/workspace",
-      recursive: true,
+      recursive: false,
       wait: false,
     }, "main_peer");
     expect(result.details).toMatchObject({
@@ -172,6 +172,38 @@ describe("remove_resource agent tool", () => {
       semantic_status: "queued",
     });
     expect(result.content?.[0]?.text).toContain("Removed OpenViking resource");
+  });
+
+  it("retries exactly once with recursive=true only for the directory precondition", async () => {
+    const { factories, removeResource } = setupTools({ enableRemoveResourceTool: true });
+    removeResource
+      .mockRejectedValueOnce(new Error(
+        "OpenViking request failed [FAILED_PRECONDITION]: Cannot remove directory without --recursive: viking://resources/workspace",
+      ))
+      .mockResolvedValueOnce({
+        uri: "viking://resources/workspace",
+        estimated_deleted_count: 3,
+        semantic_status: "queued",
+      });
+
+    await factories.get("remove_resource")!({}).execute("call-1", {
+      uri: "viking://resources/workspace",
+      recursive: true,
+      wait: true,
+      timeout: 900,
+    });
+
+    expect(removeResource).toHaveBeenCalledTimes(2);
+    expect(removeResource).toHaveBeenNthCalledWith(1, {
+      uri: "viking://resources/workspace",
+      recursive: false,
+      wait: false,
+    }, "main_peer");
+    expect(removeResource).toHaveBeenNthCalledWith(2, {
+      uri: "viking://resources/workspace",
+      recursive: true,
+      wait: false,
+    }, "main_peer");
   });
 
   it("treats NOT_FOUND as the desired already-absent state", async () => {

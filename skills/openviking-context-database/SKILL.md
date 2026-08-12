@@ -190,13 +190,15 @@ The agent-facing contract is intentionally minimal:
 |---|---|---|
 | `source` | Yes | Local path, OpenClaw media attachment path, directory path, public URL, or Git URL. |
 | `summary` | Automatic routing only | One short semantic sentence based on known/inspected content: what the resource contains and what it is useful for. Obey the configured `resourceRouting.summaryLanguage`; with `ru`, write a genuinely Russian sentence while preserving technical names and identifiers where useful. |
-| `category` | No | Explicit override using an existing full taxonomy path such as `code/source/javascript`; stable semantic keys remain accepted for compatibility. |
+| `category` | No | Use ONLY when the user's current request explicitly names the exact existing writable taxonomy path/key. Never choose it yourself. |
 
 When `category` is omitted, inspect/read enough of the resource to understand its actual content before writing `summary`. Never infer content from filename/path alone.
 
 When provenance or container form defines the semantic resource type, state it naturally in `summary`. Examples: saved web article/page, batch scraping or crawling result, email/newsletter, exported chat/forum history, spoken transcript, machine log, database dump, backup/archive bundle, or screenshot. Do not copy raw filename, path, MIME type, storage URI, or unrelated metadata into the semantic summary.
 
-Explicit category selection is deterministic and model-free. The plugin accepts only categories from the validated taxonomy. Unknown, ambiguous, or organizational selectors are sent to the configured fallback inbox; they never create a new arbitrary path.
+**NEVER set `category` unless the user's current request explicitly names the exact taxonomy destination/path/key.** If the user merely asks to add/save/import/upload/index a resource, omit `category` and use automatic routing. Never infer, guess, browse for, list, or choose a category from the resource content. Never try alternative categories after a category error.
+
+Explicit category selection is deterministic and model-free. Unknown, ambiguous, or organizational selectors are rejected without importing anything. If the user did not explicitly request that exact category, retry once with `category` omitted so automatic routing can decide. If the user did request it, report that the destination is unavailable or not writable.
 
 Automatic semantic uncertainty below the configured confidence threshold also goes to fallback. Routing infrastructure failures remain fail-closed and the resource is not imported.
 
@@ -224,9 +226,8 @@ Delete imported OpenViking resource content below `viking://resources/`. This de
 | Parameter | Required | Description |
 |---|---|---|
 | `uri` | Yes | Exact descendant of `viking://resources/`. The resources root and non-resource namespaces are refused. |
-| `recursive` | No | Remove an entire non-empty resource subtree; defaults to `false`. |
 
-The agent tool always calls OpenViking with `wait=false`. The filesystem deletion completes before OpenViking returns, while semantic/index refresh may continue with `semantic_status=queued`. `NOT_FOUND` is reported as already absent. If the transport fails without an HTTP response, the mutation outcome is unknown; inspect the URI before any deliberate retry and never repeat the delete automatically.
+The agent tool exposes only `uri` and always calls OpenViking with `wait=false`. Exact taxonomy category/container URIs are protected from agent deletion. For one specific imported document/resource root, the plugin first attempts a non-recursive delete and retries exactly once recursively only when OpenViking returns the specific non-empty-directory `FAILED_PRECONDITION`. The recursive fallback is internal and is never selected by the model. The filesystem deletion completes before OpenViking returns, while semantic/index refresh may continue with `semantic_status=queued`. `NOT_FOUND` is reported as already absent. If the transport fails without an HTTP response, the mutation outcome is unknown; inspect the URI before any deliberate retry and never repeat the delete automatically.
 
 ### `ov_search`
 

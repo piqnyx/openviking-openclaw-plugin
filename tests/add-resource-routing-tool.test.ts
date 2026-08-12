@@ -245,32 +245,25 @@ describe("add_resource routing tool", () => {
     });
   });
 
-  it("imports an unknown explicit category into fallback inbox instead of losing the resource", async () => {
+  it("rejects an invalid explicit category without importing or guessing another destination", async () => {
     const { factories, resolveCategoryOrFallback, routeAutomatic, addResource } = setup({
       explicitFallback: true,
     });
     const result = await factories.get("add_resource")!({}).execute("call", {
       source: "/workspace/unknown.md",
       category: "code/source/javascrpit",
-    }) as { details?: Record<string, unknown> };
+    }) as { details?: Record<string, unknown>; content?: Array<{ text?: string }> };
 
     expect(resolveCategoryOrFallback).toHaveBeenCalledWith("main", "code/source/javascrpit");
     expect(routeAutomatic).not.toHaveBeenCalled();
-    expect(addResource).toHaveBeenCalledWith({
-      pathOrUrl: "/workspace/unknown.md",
-      parent: "viking://resources/_INBOX",
-      createParent: true,
-      wait: false,
-    }, "main_peer");
-    expect(result.details?.routing).toMatchObject({
-      mode: "explicit_category",
-      requestedCategory: "code/source/javascrpit",
-      matchedBy: "fallback",
-      category: "inbox",
-      categoryPath: "_INBOX",
-      fallback: true,
+    expect(addResource).not.toHaveBeenCalled();
+    expect(result.details).toMatchObject({
+      action: "rejected",
+      category: "code/source/javascrpit",
       fallbackReason: "unknown_category",
     });
+    expect(result.content?.[0]?.text).toContain("resource was NOT imported");
+    expect(result.content?.[0]?.text).toContain("Do not guess another category");
   });
 
   it("returns outcome unknown instead of encouraging an automatic retry after transport failure", async () => {
