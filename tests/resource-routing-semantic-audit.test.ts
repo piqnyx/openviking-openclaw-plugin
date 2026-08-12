@@ -42,7 +42,7 @@ describe("resource routing semantic input", () => {
 });
 
 describe("resource routing audit", () => {
-  it("writes compact JSONL with hashes, bounded preview and decision evidence", () => {
+  it("writes compact JSONL with hashes, paths, bounded preview and decision evidence", () => {
     const dir = mkdtempSync(join(tmpdir(), "ov-routing-audit-"));
     tempDirs.push(dir);
     const filePath = join(dir, "nested", "main.jsonl");
@@ -62,13 +62,13 @@ describe("resource routing audit", () => {
         uri: "viking://resources/security/audits",
         fallback: false,
         embeddingCandidates: [
-          { key: "security", description: "Security", score: 0.8 },
-          { key: "security_audits", description: "Audits", score: 0.79 },
+          { key: "security", path: "security", routingText: "Security", score: 0.8 },
+          { key: "security_audits", path: "security/audits", routingText: "Audits", score: 0.79 },
         ],
         rerankerUsed: true,
         rerankerScores: [
-          { key: "security_audits", score: 0.94 },
-          { key: "security", score: 0.71 },
+          { key: "security_audits", path: "security/audits", score: 0.94 },
+          { key: "security", path: "security", score: 0.71 },
         ],
         timing,
       },
@@ -84,6 +84,10 @@ describe("resource routing audit", () => {
     expect(record.summaryPreview).toBe("A security a");
     expect(record.finalCategory).toBe("security_audits");
     expect(record.rerankerUsed).toBe(true);
+    expect(record.embeddingCandidates).toEqual([
+      { key: "security", path: "security", score: 0.8 },
+      { key: "security_audits", path: "security/audits", score: 0.79 },
+    ]);
     expect(record.embeddingMs).toBe(82.123);
     expect(statSync(filePath).mode & 0o777).toBe(0o600);
   });
