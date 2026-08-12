@@ -28,6 +28,7 @@
     "config/feature-gates.json",
     "dist/",
     "docs/",
+    "examples/",
     "install-manifest.json",
     "openclaw.plugin.json",
     "package.json",
