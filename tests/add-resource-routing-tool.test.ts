@@ -7,6 +7,7 @@ import {
 
 type ToolFactory = (ctx: Record<string, unknown>) => {
   name: string;
+  description: string;
   parameters: { properties?: Record<string, unknown> };
   execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
 };
