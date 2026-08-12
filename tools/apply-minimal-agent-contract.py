@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugin/openviking-import-tools.ts"
 SKILL = ROOT / "skills/openviking-context-database/SKILL.md"
 TEST = ROOT / "tests/add-resource-routing-tool.test.ts"
+PROBE = ROOT / "tools/routing-probe.mjs"
 
 
 def replace_once(text: str, pattern: str, replacement: str, label: str, flags: int = 0) -> str:
@@ -19,10 +20,17 @@ plugin = PLUGIN.read_text(encoding="utf-8")
 
 plugin = replace_once(
     plugin,
+    r'resourceRouting\?: Pick<ResourceRoutingService, "enabled" \| "resolveCategory" \| "routeAutomatic">;',
+    'resourceRouting?: Pick<ResourceRoutingService, "enabled" | "resolveCategoryOrFallback" | "routeAutomatic">;',
+    "resource routing dependency surface",
+)
+
+plugin = replace_once(
+    plugin,
     r'          "When automatic resource routing is enabled and neither to, parent, nor category is supplied, you MUST provide summary in Russian:.*?" \+\n'
     r'          "Use category only for an existing semantic category key from the configured taxonomy; never invent category keys or resource URIs\. Explicit to/parent/category bypass automatic classification\. " \+\n',
     '          "When automatic resource routing is enabled and category is not supplied, you MUST provide summary in Russian: one short sentence describing what the resource is about and what it is useful for. Write the summary in Russian even when the source material is in another language; preserve product names, commands, code identifiers, protocols, and other technical terms when useful. Before writing that summary, inspect or read enough of the resource to understand its actual content unless the content is already established in the conversation; never guess from its filename or path. Describe semantic content and purpose. When provenance is part of the semantic resource type, state it naturally, for example веб-статья, email-переписка, расшифровка встречи или скриншот терминала. Do not copy raw filename, path, MIME type, or storage location into the summary. " +\n'
-    '          "Use category only as an explicit override with an existing semantic category key from the configured taxonomy; never invent category keys or resource URIs. The agent tool does not expose arbitrary target URIs or semantic-extraction instructions. " +\n',
+    '          "For an explicit destination, set category to an existing full taxonomy path such as code/source/javascript; a semantic key is also accepted for compatibility. Never invent a path. Unknown, ambiguous, or organizational-only category selectors are stored in the configured fallback category instead of creating new taxonomy folders. " +\n',
     "tool description",
     re.S,
 )
@@ -33,7 +41,7 @@ plugin = replace_once(
     '''        parameters: Type.Object({
           source: Type.String({ description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL" }),
           summary: Type.Optional(Type.String({ description: "Required for automatic routing: one short sentence in Russian based on known or inspected resource content, describing its semantic content and purpose. Write it in Russian even for foreign-language sources; technical names and identifiers may remain in their original form. State semantically important provenance naturally, but never guess from or copy raw filename/path/MIME/storage metadata." })),
-          category: Type.Optional(Type.String({ description: "Optional explicit override: an existing semantic category key from this agent's taxonomy. The plugin resolves it to a trusted URI; do not provide or invent a URI here." })),
+          category: Type.Optional(Type.String({ description: "Optional explicit existing taxonomy destination. Prefer the full taxonomy path, for example code/source/javascript. A semantic key is also accepted for compatibility. Unknown, ambiguous, or organizational-only selectors fall back to the configured inbox instead of creating a new path." })),
         }),
         async execute''',
     "minimal parameter schema",
@@ -48,6 +56,7 @@ plugin = replace_once(
           const session = deps.resolvePluginSessionRouting(ctx);
           let targetParent: string | undefined;
           let createParent: boolean | undefined;
+          let routingNotice: string | undefined;
           let routingDetails: Record<string, unknown> = {
             mode: deps.resourceRouting?.enabled ? "automatic" : "legacy_default",
           };''',
@@ -55,13 +64,53 @@ plugin = replace_once(
     re.S,
 )
 
-plugin = plugin.replace(
-    '"Semantic category routing is disabled. Use an explicit to/parent destination or enable resourceRouting.",',
-    '"Semantic category routing is disabled. Enable resourceRouting before using an explicit category override.",',
-)
-plugin = plugin.replace(
-    '} else if (!explicitTo && !explicitParent && deps.resourceRouting?.enabled) {',
-    '} else if (deps.resourceRouting?.enabled) {',
+plugin = replace_once(
+    plugin,
+    r'''          if \(explicitCategory\) \{\n            if \(!deps\.resourceRouting\?\.enabled\) \{.*?\n          \} else if \(!explicitTo && !explicitParent && deps\.resourceRouting\?\.enabled\) \{''',
+    '''          if (explicitCategory) {
+            if (!deps.resourceRouting?.enabled) {
+              return rejectedResourceImport(
+                "Semantic category routing is disabled. Enable resourceRouting before using an explicit category destination.",
+                { category: explicitCategory },
+              );
+            }
+            try {
+              const resolved = deps.resourceRouting.resolveCategoryOrFallback(session.agentId, explicitCategory);
+              targetParent = resolved.category.uri;
+              createParent = true;
+              routingDetails = {
+                mode: "explicit_category",
+                requestedCategory: resolved.requested,
+                matchedBy: resolved.matchedBy,
+                category: resolved.category.key,
+                categoryPath: resolved.category.path,
+                parent: resolved.category.uri,
+                fallback: resolved.fallback,
+                fallbackReason: resolved.fallbackReason,
+              };
+              if (resolved.fallback) {
+                routingNotice =
+                  `Requested category ${JSON.stringify(explicitCategory)} was not a valid routeable taxonomy destination ` +
+                  `(${resolved.fallbackReason ?? "fallback"}); stored under fallback ${resolved.category.path}.`;
+              }
+            } catch (error) {
+              return {
+                content: [{
+                  type: "text" as const,
+                  text:
+                    `OpenViking explicit category resolution failed; the resource was NOT imported. ${error instanceof Error ? error.message : String(error)}`,
+                }],
+                details: {
+                  action: "routing_failed",
+                  source,
+                  requestedCategory: explicitCategory,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              };
+            }
+          } else if (deps.resourceRouting?.enabled) {''',
+    "explicit category fallback routing",
+    re.S,
 )
 
 plugin = re.sub(r'\n\s+reason: typeof params\.reason === "string" \? params\.reason : undefined,', '', plugin)
@@ -73,8 +122,17 @@ plugin = re.sub(r'\n\s+exclude: typeof params\.exclude === "string".*?: undefine
 plugin = re.sub(r'\n\s+preserveStructure: typeof params\.preserve_structure === "boolean".*?: undefined,', '', plugin)
 plugin = plugin.replace('              to: targetTo,\n', '')
 
+plugin = replace_once(
+    plugin,
+    r'content: \[\{ type: "text" as const, text: formatResourceImportText\(result\) \}\],',
+    'content: [{ type: "text" as const, text: `${formatResourceImportText(result)}${routingNotice ? ` ${routingNotice}` : ""}` }],',
+    "routing fallback notice",
+)
+
 if re.search(r'params\.(?:to|parent|create_parent|reason|instruction|strict|ignore_dirs|include|exclude|preserve_structure)', plugin):
     raise SystemExit("plugin still references a removed agent parameter")
+if "resolveCategory(session.agentId" in plugin:
+    raise SystemExit("plugin still uses strict resolveCategory for agent explicit destinations")
 
 PLUGIN.write_text(plugin, encoding="utf-8")
 
@@ -93,13 +151,15 @@ The agent-facing contract is intentionally minimal and deterministic:
 |---|---|---|
 | `source` | Yes | Local path, OpenClaw media attachment path, directory path, public URL, or Git URL. |
 | `summary` | Automatic routing only | One short sentence **in Russian** based on known/inspected content: what the resource is about and what it is useful for. Preserve technical product names, commands, protocols and identifiers when useful. |
-| `category` | No | Optional explicit override using an **existing** semantic taxonomy key. The plugin validates the key and resolves the trusted `viking://resources/...` parent URI. |
+| `category` | No | Optional explicit existing taxonomy destination. Prefer the full path such as `code/source/javascript`; a semantic key is also accepted for compatibility. |
 
 When `resourceRouting.enabled=true` and `category` is omitted, inspect/read enough of the resource to understand its actual content, then write `summary` in Russian even when the source itself is in another language. Do not infer content from filename/path alone and do not copy raw filename/path/MIME/storage metadata into the summary.
 
+When the user explicitly names a destination path, copy that existing taxonomy path into `category`. The plugin validates it against the loaded taxonomy. It never treats `category` as an arbitrary URI: an unknown, ambiguous, or organizational-only selector is redirected to the configured fallback (normally `_INBOX`) and reported as a fallback instead of creating a new taxonomy path.
+
 The agent tool deliberately does **not** expose arbitrary `to`/`parent` URIs, `create_parent`, `reason`, `instruction`, parser filters, strictness switches, structure switches, watch controls, tags, or low-level connector arguments. Those remain available only through lower-level/manual interfaces where a human can choose them deliberately.
 
-Automatic routing selects only routeable taxonomy categories. If similarity is below the configured confidence threshold, the configured fallback category (normally `_INBOX`) is used. Routing infrastructure failures fail closed and the resource is not imported.
+Automatic routing selects only routeable taxonomy categories. Category embeddings and reranker documents include the full taxonomy path plus the category description. If cosine similarity is below the configured confidence threshold, the configured fallback category is used. Routing infrastructure failures still fail closed and the resource is not imported.
 
 The agent tool always submits the import with `wait=false`. OpenViking continues parsing, semantic extraction and indexing asynchronously. If a mutating request loses its HTTP response, inspect OpenViking state before any deliberate retry; never repeat the same import automatically after an outcome-unknown result.
 
@@ -117,16 +177,20 @@ type ToolFactory = (ctx: Record<string, unknown>) => {
   execute: (id: string, params: Record<string, unknown>) => Promise<unknown>;
 };
 
-function makeCategory(key: string, uri: string) {
-  const segments = uri.split("/");
+function makeCategory(key: string, path: string) {
+  const uri = `viking://resources/${path}`;
+  const segments = path.split("/");
+  const description = `${key} category`;
   return {
     key,
     segment: segments.at(-1) ?? key,
-    description: `${key} category`,
+    description,
     routeable: true,
     uri,
+    path,
+    routingText: `path: ${path}\ndescription: ${description}`,
     parentKey: null,
-    depth: 1,
+    depth: segments.length,
   };
 }
 
@@ -138,20 +202,43 @@ function setup(options: { routingEnabled?: boolean; routeFailure?: Error } = {})
     task_id: "task-resource-1",
   }));
   const getClient = vi.fn(async () => ({ addResource, removeResource: vi.fn(), addSkill: vi.fn() }));
-  const resolveCategory = vi.fn((_agentId: string, key: string) =>
-    makeCategory(key, `viking://resources/${key}`));
+  const resolveCategoryOrFallback = vi.fn((_agentId: string, selector: string) => {
+    if (selector === "code/source/javascript") {
+      return {
+        requested: selector,
+        category: makeCategory("code-source-javascript", "code/source/javascript"),
+        matchedBy: "path" as const,
+        fallback: false,
+      };
+    }
+    if (selector === "code-source-javascript") {
+      return {
+        requested: selector,
+        category: makeCategory("code-source-javascript", "code/source/javascript"),
+        matchedBy: "key" as const,
+        fallback: false,
+      };
+    }
+    return {
+      requested: selector,
+      category: makeCategory("inbox", "__INBOX__"),
+      matchedBy: "fallback" as const,
+      fallback: true,
+      fallbackReason: "unknown_category" as const,
+    };
+  });
   const routeAutomatic = options.routeFailure
     ? vi.fn(async () => { throw options.routeFailure; })
     : vi.fn(async () => ({
-      category: makeCategory("docs-guides-howtos", "viking://resources/docs/guides/howtos"),
+      category: makeCategory("docs-guides-howtos", "docs/guides/howtos"),
       semanticInput: "Практическое руководство по настройке OpenClaw.",
       decision: {
         categoryKey: "docs-guides-howtos",
         uri: "viking://resources/docs/guides/howtos",
         fallback: false,
         embeddingCandidates: [
-          { key: "docs-guides-howtos", description: "Практические инструкции", score: 0.82 },
-          { key: "docs-guides-tutorials", description: "Учебные руководства", score: 0.79 },
+          { key: "docs-guides-howtos", description: "path: docs/guides/howtos\ndescription: Практические инструкции", score: 0.82 },
+          { key: "docs-guides-tutorials", description: "path: docs/guides/tutorials\ndescription: Учебные руководства", score: 0.79 },
         ],
         rerankerUsed: true,
         rerankerScores: [
@@ -172,16 +259,16 @@ function setup(options: { routingEnabled?: boolean; routeFailure?: Error } = {})
     enableRemoveResourceTool: false,
     resourceRouting: {
       enabled: options.routingEnabled ?? true,
-      resolveCategory,
+      resolveCategoryOrFallback,
       routeAutomatic,
     },
   });
 
-  return { factories, addResource, getClient, resolveCategory, routeAutomatic };
+  return { factories, addResource, getClient, resolveCategoryOrFallback, routeAutomatic };
 }
 
 describe("add_resource routing tool", () => {
-  it("publishes only the minimal deterministic agent contract", () => {
+  it("publishes only source, summary and explicit taxonomy category", () => {
     const tool = setup().factories.get("add_resource")!({});
     expect(Object.keys(tool.parameters.properties ?? {})).toEqual(["source", "summary", "category"]);
   });
@@ -227,13 +314,13 @@ describe("add_resource routing tool", () => {
     }, "main_peer");
   });
 
-  it("resolves an explicit category key without invoking automatic models", async () => {
-    const { factories, resolveCategory, routeAutomatic, addResource } = setup();
+  it("accepts an explicit full taxonomy path without invoking automatic models", async () => {
+    const { factories, resolveCategoryOrFallback, routeAutomatic, addResource } = setup();
     await factories.get("add_resource")!({}).execute("call", {
       source: "/workspace/main.js",
-      category: "code-source-javascript",
+      category: "code/source/javascript",
     });
-    expect(resolveCategory).toHaveBeenCalledWith("main", "code-source-javascript");
+    expect(resolveCategoryOrFallback).toHaveBeenCalledWith("main", "code/source/javascript");
     expect(routeAutomatic).not.toHaveBeenCalled();
     expect(addResource).toHaveBeenCalledWith({
       pathOrUrl: "/workspace/main.js",
@@ -241,6 +328,42 @@ describe("add_resource routing tool", () => {
       createParent: true,
       wait: false,
     }, "main_peer");
+  });
+
+  it("keeps semantic-key compatibility for explicit category destinations", async () => {
+    const { factories, resolveCategoryOrFallback, addResource } = setup();
+    await factories.get("add_resource")!({}).execute("call", {
+      source: "/workspace/main.js",
+      category: "code-source-javascript",
+    });
+    expect(resolveCategoryOrFallback).toHaveBeenCalledWith("main", "code-source-javascript");
+    expect(addResource).toHaveBeenCalledWith(expect.objectContaining({
+      parent: "viking://resources/code/source/javascript",
+    }), "main_peer");
+  });
+
+  it("imports into inbox instead of inventing an unknown explicit category", async () => {
+    const { factories, routeAutomatic, addResource } = setup();
+    const result = await factories.get("add_resource")!({}).execute("call", {
+      source: "/workspace/mystery.md",
+      category: "code/source/does-not-exist",
+    }) as { details?: Record<string, any>; content?: Array<{ text?: string }> };
+    expect(routeAutomatic).not.toHaveBeenCalled();
+    expect(addResource).toHaveBeenCalledWith({
+      pathOrUrl: "/workspace/mystery.md",
+      parent: "viking://resources/__INBOX__",
+      createParent: true,
+      wait: false,
+    }, "main_peer");
+    expect(result.details?.routing).toMatchObject({
+      mode: "explicit_category",
+      requestedCategory: "code/source/does-not-exist",
+      category: "inbox",
+      categoryPath: "__INBOX__",
+      fallback: true,
+      fallbackReason: "unknown_category",
+    });
+    expect(result.content?.[0]?.text).toContain("stored under fallback __INBOX__");
   });
 
   it("does not import when automatic-routing infrastructure fails", async () => {
@@ -267,4 +390,44 @@ describe("add_resource routing tool", () => {
 });
 ''', encoding="utf-8")
 
-print("Applied minimal agent add_resource contract: source + summary + category")
+probe = PROBE.read_text(encoding="utf-8")
+probe = replace_once(
+    probe,
+    r'description: category\.description,',
+    'description: category.routingText,',
+    "probe production routing text",
+)
+probe = replace_once(
+    probe,
+    r'      actual: decision\.categoryKey,',
+    '      actual: decision.categoryKey,\n      actualPath: taxonomy.byKey.get(decision.categoryKey)?.path,',
+    "probe selected path",
+)
+probe = replace_once(
+    probe,
+    r'        key: candidate\.key,\n        score: round\(candidate\.score\),',
+    '        key: candidate.key,\n        path: taxonomy.byKey.get(candidate.key)?.path,\n        score: round(candidate.score),',
+    "probe cosine paths",
+)
+probe = replace_once(
+    probe,
+    r'        key: entry\.key,\n        score: round\(entry\.score\),',
+    '        key: entry.key,\n        path: taxonomy.byKey.get(entry.key)?.path,\n        score: round(entry.score),',
+    "probe reranker paths",
+)
+probe = probe.replace(
+    '`${mark} ${row.id}: expected=${expected} actual=${row.actual} ` +',
+    '`${mark} ${row.id}: expected=${expected} actual=${row.actualPath ?? row.actual} ` +',
+    1,
+)
+probe = probe.replace(
+    '`${entry.key}=${entry.score}`',
+    '`${entry.path ?? entry.key}=${entry.score}`',
+)
+PROBE.write_text(probe, encoding="utf-8")
+
+print("Applied final deterministic agent contract:")
+print("  source + Russian summary + explicit taxonomy path/key")
+print("  unknown/ambiguous/organizational explicit category -> fallback inbox")
+print("  arbitrary agent to/parent/create_parent and extraction controls removed")
+print("  routing probe now uses production path+description routing text")
