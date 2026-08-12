@@ -46,8 +46,14 @@ export type CompiledResourceTaxonomy = {
   taxonomyHash: string;
   categories: readonly CompiledResourceCategory[];
   routeableCategories: readonly CompiledResourceCategory[];
+  semanticCategories: readonly CompiledResourceCategory[];
   byKey: ReadonlyMap<string, CompiledResourceCategory>;
   byPath: ReadonlyMap<string, CompiledResourceCategory>;
+};
+
+type RoutingAncestor = {
+  path: string;
+  description: string;
 };
 
 type PendingCategory = {
@@ -56,6 +62,7 @@ type PendingCategory = {
   parentKey: string | null;
   parentUri: string;
   depth: number;
+  ancestors: readonly RoutingAncestor[];
 };
 
 function assertRecord(value: unknown, label: string): asserts value is Record<string, unknown> {
@@ -112,8 +119,19 @@ function categoryPathFromUri(uri: string): string {
   return uri.slice(prefix.length);
 }
 
-function renderCategoryRoutingText(path: string, description: string): string {
-  return `path: ${path}\ndescription: ${description}`;
+function renderCategoryRoutingText(
+  path: string,
+  description: string,
+  ancestors: readonly RoutingAncestor[],
+): string {
+  const lines = [`description: ${description}`];
+  if (ancestors.length > 0) {
+    lines.push(
+      `ancestors: ${ancestors.map((ancestor) => `${ancestor.path}: ${ancestor.description}`).join(" > ")}`,
+    );
+  }
+  lines.push(`path: ${path}`);
+  return lines.join("\n");
 }
 
 function canonicalRoutingData(
@@ -171,6 +189,7 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
       parentKey: null,
       parentUri: RESOURCE_TAXONOMY_ROOT_URI,
       depth: 1,
+      ancestors: [],
     }));
 
   const categories: CompiledResourceCategory[] = [];
@@ -213,7 +232,7 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
       );
     }
     const path = categoryPathFromUri(uri);
-    const routingText = renderCategoryRoutingText(path, description);
+    const routingText = renderCategoryRoutingText(path, description, current.ancestors);
 
     const compiled: CompiledResourceCategory = {
       key,
@@ -237,6 +256,10 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
         `resource taxonomy category ${JSON.stringify(key)} children`,
       );
       const children = Object.entries(current.raw.children);
+      const childAncestors = [
+        ...current.ancestors,
+        { path, description },
+      ];
       for (let index = children.length - 1; index >= 0; index -= 1) {
         const [childKey, childRaw] = children[index];
         pending.push({
@@ -245,6 +268,7 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
           parentKey: key,
           parentUri: uri,
           depth: current.depth + 1,
+          ancestors: childAncestors,
         });
       }
     }
@@ -266,6 +290,12 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
   if (routeableCategories.length === 0) {
     throw new Error("resource taxonomy must contain at least one routeable category");
   }
+  const semanticCategories = routeableCategories.filter((category) => category.key !== fallbackKey);
+  if (semanticCategories.length === 0) {
+    throw new Error(
+      "resource taxonomy must contain at least one routeable semantic category besides the fallback",
+    );
+  }
 
   const taxonomyHash = createHash("sha256")
     .update(canonicalRoutingData(fallbackKey, categories), "utf8")
@@ -278,6 +308,7 @@ export function compileResourceTaxonomy(value: unknown): CompiledResourceTaxonom
     taxonomyHash,
     categories,
     routeableCategories,
+    semanticCategories,
     byKey,
     byPath,
   };
