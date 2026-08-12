@@ -42,6 +42,7 @@ export type ResourceRoutingDecision = {
   rerankerUsed: boolean;
   rerankerScores?: readonly {
     key: string;
+    path: string;
     score: number;
   }[];
   timing: ResourceRoutingDecisionTiming;
@@ -91,9 +92,9 @@ function cacheFromVectors(
   config: ParsedResourceRoutingConfig,
   vectors: readonly number[][],
 ): ResourceRoutingEmbeddingCache {
-  if (vectors.length !== taxonomy.routeableCategories.length) {
+  if (vectors.length !== taxonomy.semanticCategories.length) {
     throw new Error(
-      `resource routing embedder returned ${vectors.length} category embeddings for ${taxonomy.routeableCategories.length} routeable categories`,
+      `resource routing embedder returned ${vectors.length} category embeddings for ${taxonomy.semanticCategories.length} semantic categories`,
     );
   }
   return {
@@ -102,7 +103,7 @@ function cacheFromVectors(
     embeddingModel: config.embedding.model,
     embeddingIdentity: embeddingIdentity(config),
     dimensions: config.embedding.dimensions,
-    categories: taxonomy.routeableCategories.map((category, index) => ({
+    categories: taxonomy.semanticCategories.map((category, index) => ({
       key: category.key,
       embedding: [...vectors[index]],
     })),
@@ -114,14 +115,15 @@ function embeddedCategoriesFromCache(
   cache: ResourceRoutingEmbeddingCache,
 ): ResourceRoutingEmbeddedCategory[] {
   const vectors = new Map(cache.categories.map((entry) => [entry.key, entry.embedding]));
-  return taxonomy.routeableCategories.map((category) => {
+  return taxonomy.semanticCategories.map((category) => {
     const embedding = vectors.get(category.key);
     if (!embedding) {
       throw new Error(`resource routing cache is missing category ${JSON.stringify(category.key)}`);
     }
     return {
       key: category.key,
-      description: category.routingText,
+      path: category.path,
+      routingText: category.routingText,
       embedding,
     };
   });
@@ -137,7 +139,7 @@ export async function buildResourceRoutingEmbeddingState(
     embeddingModel: input.config.embedding.model,
     embeddingIdentity: embeddingIdentity(input.config),
     dimensions: input.config.embedding.dimensions,
-    categoryKeys: input.taxonomy.routeableCategories.map((category) => category.key),
+    categoryKeys: input.taxonomy.semanticCategories.map((category) => category.key),
   };
   const cached = loadResourceRoutingEmbeddingCache(cacheFile, expected);
   if (cached.hit) {
@@ -150,9 +152,11 @@ export async function buildResourceRoutingEmbeddingState(
   // Cold-cache construction is intentionally sequential. Local CPU embedders can
   // process a large taxonomy reliably one category at a time while keeping the
   // normal per-request timeout useful for ordinary single-summary routing calls.
-  // Nothing is persisted until every category has been embedded successfully.
+  // The fallback category is deliberately excluded: it is a destination for low
+  // confidence, never a semantic candidate. Nothing is persisted until every
+  // semantic category has been embedded successfully.
   const vectors: number[][] = [];
-  for (const category of input.taxonomy.routeableCategories) {
+  for (const category of input.taxonomy.semanticCategories) {
     const [embedding] = await input.embedder.embed([category.routingText]);
     if (!embedding) {
       throw new Error(
@@ -235,8 +239,8 @@ export class ResourceRouter {
     );
     if (!shouldRerank || !second) {
       const selected = this.#taxonomy.byKey.get(top.key);
-      if (!selected || !selected.routeable) {
-        throw new Error(`resource routing selected unknown category ${JSON.stringify(top.key)}`);
+      if (!selected || !selected.routeable || selected.key === this.#taxonomy.fallbackKey) {
+        throw new Error(`resource routing selected invalid semantic category ${JSON.stringify(top.key)}`);
       }
       return {
         categoryKey: selected.key,
@@ -255,7 +259,7 @@ export class ResourceRouter {
     const rerankerStarted = performance.now();
     const reranked = await this.#reranker.rerank(
       semanticInput,
-      rerankCandidates.map((candidate) => candidate.description),
+      rerankCandidates.map((candidate) => candidate.routingText),
     );
     const rerankerMs = performance.now() - rerankerStarted;
     const rerankerScores = reranked.map((result) => {
@@ -263,15 +267,15 @@ export class ResourceRouter {
       if (!candidate) {
         throw new Error(`resource routing reranker selected invalid candidate index ${result.index}`);
       }
-      return { key: candidate.key, score: result.score };
+      return { key: candidate.key, path: candidate.path, score: result.score };
     });
     const selectedKey = rerankerScores[0]?.key;
     if (!selectedKey) {
       throw new Error("resource routing reranker returned no selected category");
     }
     const selected = this.#taxonomy.byKey.get(selectedKey);
-    if (!selected || !selected.routeable) {
-      throw new Error(`resource routing reranker selected unknown category ${JSON.stringify(selectedKey)}`);
+    if (!selected || !selected.routeable || selected.key === this.#taxonomy.fallbackKey) {
+      throw new Error(`resource routing reranker selected invalid semantic category ${JSON.stringify(selectedKey)}`);
     }
     return {
       categoryKey: selected.key,
