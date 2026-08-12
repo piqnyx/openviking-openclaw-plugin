@@ -162,12 +162,14 @@ describe("cosine retrieval", () => {
     expect(cosineSimilarity([1, 0], [-4, 0])).toBeCloseTo(-1);
   });
 
-  it("selects deterministic top-K candidates by cosine score", () => {
-    expect(selectTopCosineCandidates([1, 0], [
-      { key: "docs", description: "Documents", embedding: [0.8, 0.2] },
-      { key: "security-audits", description: "Security audit reports", embedding: [0.99, 0.01] },
-      { key: "media", description: "Media", embedding: [0, 1] },
-    ], 2).map(({ key }) => key)).toEqual(["security-audits", "docs"]);
+  it("selects deterministic top-K candidates by cosine score and preserves paths", () => {
+    const candidates = selectTopCosineCandidates([1, 0], [
+      { key: "docs", path: "docs", routingText: "Documents", embedding: [0.8, 0.2] },
+      { key: "security-audits", path: "security/audits", routingText: "Security audit reports", embedding: [0.99, 0.01] },
+      { key: "media", path: "media", routingText: "Media", embedding: [0, 1] },
+    ], 2);
+    expect(candidates.map(({ key }) => key)).toEqual(["security-audits", "docs"]);
+    expect(candidates[0]?.path).toBe("security/audits");
   });
 
   it("rejects zero vectors and dimension mismatches", () => {
