@@ -15,6 +15,7 @@ const DEFAULT_MIN_SCORE = 0.64;
 const DEFAULT_RERANK_BELOW_MARGIN = 0.06;
 const DEFAULT_FALLBACK_CATEGORY = "inbox";
 const DEFAULT_SEMANTIC_INPUT_TEMPLATE = "{{summary}}";
+const DEFAULT_SUMMARY_LANGUAGE = "any" as const;
 const DEFAULT_AUDIT_SUMMARY_PREVIEW_CHARS = 240;
 const SEMANTIC_KEY_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 const TEMPLATE_PLACEHOLDER_RE = /{{\s*([A-Za-z][A-Za-z0-9]*)\s*}}/g;
@@ -29,6 +30,8 @@ const ALLOWED_SEMANTIC_INPUT_FIELDS = new Set([
   "instruction",
   "agentId",
 ]);
+
+export type ResourceRoutingSummaryLanguage = "any" | "ru";
 
 export type ResourceRoutingEndpointConfig = {
   baseUrl?: string;
@@ -47,6 +50,7 @@ export type ResourceRoutingConfig = {
   taxonomyFile?: string;
   cacheFile?: string;
   semanticInputTemplate?: string;
+  summaryLanguage?: ResourceRoutingSummaryLanguage;
   embedding?: ResourceRoutingEmbeddingConfig;
   reranker?: ResourceRoutingEndpointConfig;
   retrieval?: {
@@ -76,6 +80,7 @@ export type ParsedResourceRoutingConfig = {
   taxonomyFile: string;
   cacheFile: string;
   semanticInputTemplate: string;
+  summaryLanguage: ResourceRoutingSummaryLanguage;
   embedding: ParsedResourceRoutingEndpointConfig & {
     dimensions: number;
   };
@@ -242,6 +247,16 @@ function parseSemanticInputTemplate(value: unknown): string {
   return template;
 }
 
+function parseSummaryLanguage(value: unknown): ResourceRoutingSummaryLanguage {
+  if (value === undefined || value === null) {
+    return DEFAULT_SUMMARY_LANGUAGE;
+  }
+  if (value === "any" || value === "ru") {
+    return value;
+  }
+  throw new Error('openviking resourceRouting.summaryLanguage must be "any" or "ru"');
+}
+
 export function parseResourceRoutingConfig(value: unknown): ParsedResourceRoutingConfig {
   const cfg = toRecord(value, "openviking resourceRouting");
   assertAllowedKeys(
@@ -251,6 +266,7 @@ export function parseResourceRoutingConfig(value: unknown): ParsedResourceRoutin
       "taxonomyFile",
       "cacheFile",
       "semanticInputTemplate",
+      "summaryLanguage",
       "embedding",
       "reranker",
       "retrieval",
@@ -322,6 +338,7 @@ export function parseResourceRoutingConfig(value: unknown): ParsedResourceRoutin
       "openviking resourceRouting.cacheFile",
     ),
     semanticInputTemplate: parseSemanticInputTemplate(cfg.semanticInputTemplate),
+    summaryLanguage: parseSummaryLanguage(cfg.summaryLanguage),
     embedding: {
       ...embedding,
       dimensions: integerInRange(
@@ -390,6 +407,7 @@ export const RESOURCE_ROUTING_DEFAULTS = {
   rerankBelowMargin: DEFAULT_RERANK_BELOW_MARGIN,
   fallbackCategory: DEFAULT_FALLBACK_CATEGORY,
   semanticInputTemplate: DEFAULT_SEMANTIC_INPUT_TEMPLATE,
+  summaryLanguage: DEFAULT_SUMMARY_LANGUAGE,
   auditFile: DEFAULT_AUDIT_FILE,
   auditSummaryPreviewChars: DEFAULT_AUDIT_SUMMARY_PREVIEW_CHARS,
 } as const;
