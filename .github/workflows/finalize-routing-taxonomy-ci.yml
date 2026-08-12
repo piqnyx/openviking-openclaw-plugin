@@ -108,6 +108,19 @@ jobs:
       - name: Apply deep taxonomy architecture
         run: node tools/apply-expanded-russian-taxonomy.mjs examples/resource-taxonomy.ru.yaml examples/routing-cases.ru.json
 
+      - name: Limit one-shot finalizer to source, schema, skill and tests
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply-routing-contract-finalization.py')
+          text = path.read_text(encoding='utf-8')
+          start = text.index('# 7. Tighten README routing prose')
+          end = text.index('print("Applied final routing contract synchronization")', start)
+          text = text[:start] + text[end:]
+          path.write_text(text, encoding='utf-8')
+          print('stale README-specific migration block excluded; README will be reviewed separately')
+          PY
+
       - name: Apply final agent/config/docs contract
         run: python3 tools/apply-routing-contract-finalization.py
 
@@ -128,14 +141,15 @@ jobs:
           import { parseResourceTaxonomyYaml } from './dist/routing/resource-taxonomy.js';
           const text = readFileSync('examples/resource-taxonomy.ru.yaml', 'utf8');
           const taxonomy = parseResourceTaxonomyYaml(text, 'final Russian taxonomy');
-          const cases = JSON.parse(readFileSync('examples/routing-cases.ru.json', 'utf8'));
+          const casesText = readFileSync('examples/routing-cases.ru.json', 'utf8');
+          const cases = JSON.parse(casesText);
           const parents = new Set(taxonomy.categories.map((c) => c.parentKey).filter(Boolean));
           const structural = taxonomy.categories.filter((c) => parents.has(c.key));
           const badStructural = structural.filter((c) => c.routeable);
           const badSemantic = taxonomy.semanticCategories.filter((c) => parents.has(c.key));
           console.log(JSON.stringify({
             sha256: createHash('sha256').update(text).digest('hex'),
-            casesSha256: createHash('sha256').update(JSON.stringify(cases)).digest('hex'),
+            casesSha256: createHash('sha256').update(casesText).digest('hex'),
             total: taxonomy.categories.length,
             routeable: taxonomy.routeableCategories.length,
             semantic: taxonomy.semanticCategories.length,
@@ -170,7 +184,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add examples/ routing/ plugin/ skills/ docs/ README.md openclaw.plugin.json install-manifest.json package.json tests/ dist/
+          git add examples/ routing/ plugin/ skills/ docs/ openclaw.plugin.json install-manifest.json package.json tests/ dist/
           if git diff --cached --quiet; then
             echo "No finalization changes to materialize"
           else
