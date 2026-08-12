@@ -1,12 +1,14 @@
 export type ResourceRoutingEmbeddedCategory = {
   key: string;
-  description: string;
+  path: string;
+  routingText: string;
   embedding: readonly number[];
 };
 
 export type ResourceRoutingCandidate = {
   key: string;
-  description: string;
+  path: string;
+  routingText: string;
   score: number;
 };
 
@@ -73,12 +75,16 @@ export function selectTopCosineCandidates(
       throw new Error(`resource routing embedded category key ${JSON.stringify(category.key)} is duplicated`);
     }
     seen.add(category.key);
-    if (typeof category.description !== "string" || !category.description.trim()) {
-      throw new Error(`resource routing category ${JSON.stringify(category.key)} description must be non-empty`);
+    if (typeof category.path !== "string" || !category.path.trim()) {
+      throw new Error(`resource routing category ${JSON.stringify(category.key)} path must be non-empty`);
+    }
+    if (typeof category.routingText !== "string" || !category.routingText.trim()) {
+      throw new Error(`resource routing category ${JSON.stringify(category.key)} routingText must be non-empty`);
     }
     return {
       key: category.key,
-      description: category.description,
+      path: category.path,
+      routingText: category.routingText,
       score: cosineSimilarity(queryEmbedding, category.embedding),
     };
   });
