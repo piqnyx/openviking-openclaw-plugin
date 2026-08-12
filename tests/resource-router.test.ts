@@ -88,17 +88,17 @@ function rerankerClient(transport: HttpTransport) {
 }
 
 describe("buildResourceRoutingEmbeddingState", () => {
-  it("embeds category descriptions sequentially, writes cache, and reuses it on the next startup", async () => {
+  it("embeds category path and description sequentially, writes cache, and reuses it on the next startup", async () => {
     const config = makeTempConfig();
     const seenInputs: string[] = [];
-    const expectedDescriptions = taxonomy.routeableCategories.map((category) => category.description);
+    const expectedRoutingTexts = taxonomy.routeableCategories.map((category) => category.routingText);
     const firstTransport: HttpTransport = vi.fn(async (_url, init) => {
       const body = JSON.parse(String(init.body)) as { input: string[] };
       expect(body.input).toHaveLength(1);
       const text = body.input[0];
       expect(text).toBeDefined();
       seenInputs.push(text!);
-      const categoryIndex = expectedDescriptions.indexOf(text!);
+      const categoryIndex = expectedRoutingTexts.indexOf(text!);
       expect(categoryIndex).toBeGreaterThanOrEqual(0);
       return new Response(JSON.stringify({
         data: [{
@@ -117,7 +117,7 @@ describe("buildResourceRoutingEmbeddingState", () => {
     expect(first.cacheMissReason).toBe("missing");
     expect(first.categories).toHaveLength(taxonomy.routeableCategories.length);
     expect(firstTransport).toHaveBeenCalledTimes(taxonomy.routeableCategories.length);
-    expect(seenInputs).toEqual(expectedDescriptions);
+    expect(seenInputs).toEqual(expectedRoutingTexts);
 
     const forbiddenTransport: HttpTransport = vi.fn(async () => {
       throw new Error("embedder must not be called on cache hit");
