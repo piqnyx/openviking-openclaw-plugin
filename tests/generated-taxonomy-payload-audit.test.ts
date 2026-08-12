@@ -33,24 +33,45 @@ function jaccard(left: Set<string>, right: Set<string>): number {
   return intersection / (left.size + right.size - intersection || 1);
 }
 
+type Refinements = {
+  descriptionReplacements: Array<{ old: string; new: string }>;
+  additionalCases: Array<{
+    id: string;
+    summary: string;
+    expected: string | string[];
+    note?: string;
+  }>;
+};
+
 describe("embedded Russian taxonomy payload audit", () => {
-  it("decodes exact generator payloads and prints the semantic catalog plus routing cases", () => {
+  it("validates the exact payload after all reviewed refinements", () => {
     const generator = readFileSync("tools/apply-russian-routing-taxonomy.py", "utf8");
-    const expectedSha = extractString(generator, "TAXONOMY_SHA256");
+    const expectedSourceSha = extractString(generator, "TAXONOMY_SHA256");
     const payload = extractString(generator, "TAXONOMY_GZIP_B64").replace(/\\s+/g, "");
-    const yaml = gunzipSync(Buffer.from(payload, "base64")).toString("utf8");
-    const actualSha = createHash("sha256").update(yaml, "utf8").digest("hex");
-    expect(actualSha).toBe(expectedSha);
+    const sourceYaml = gunzipSync(Buffer.from(payload, "base64")).toString("utf8");
+    const sourceSha = createHash("sha256").update(sourceYaml, "utf8").digest("hex");
+    expect(sourceSha).toBe(expectedSourceSha);
 
     const casesPayload = extractString(generator, "CASES_GZIP_B64").replace(/\\s+/g, "");
-    const cases = JSON.parse(gunzipSync(Buffer.from(casesPayload, "base64")).toString("utf8")) as Array<{
-      id: string;
-      summary: string;
-      expected: string | string[];
-      note?: string;
-    }>;
+    const cases = JSON.parse(gunzipSync(Buffer.from(casesPayload, "base64")).toString("utf8")) as Refinements["additionalCases"];
+    const refinements = JSON.parse(
+      readFileSync("tools/russian-taxonomy-refinements.json", "utf8"),
+    ) as Refinements;
 
-    const taxonomy = parseResourceTaxonomyYaml(yaml, "embedded Russian resource taxonomy");
+    let yaml = sourceYaml;
+    for (const replacement of refinements.descriptionReplacements) {
+      expect(yaml.split(replacement.old).length - 1, replacement.old).toBe(1);
+      yaml = yaml.replace(replacement.old, replacement.new);
+    }
+    const existingIds = new Set(cases.map((entry) => entry.id));
+    for (const testCase of refinements.additionalCases) {
+      expect(existingIds.has(testCase.id), testCase.id).toBe(false);
+      existingIds.add(testCase.id);
+      cases.push(testCase);
+    }
+
+    const finalSha = createHash("sha256").update(yaml, "utf8").digest("hex");
+    const taxonomy = parseResourceTaxonomyYaml(yaml, "refined Russian resource taxonomy");
     const parentKeys = new Set(
       taxonomy.categories.map((category) => category.parentKey).filter(Boolean),
     );
@@ -95,43 +116,44 @@ describe("embedded Russian taxonomy payload audit", () => {
     nearPairs.sort((a, b) =>
       b.score - a.score || Number(b.sameParent) - Number(a.sameParent) || a.left.localeCompare(b.left));
 
-    const short = taxonomy.categories
-      .filter((category) => normalize(category.description).length < 32)
+    const tooShort = taxonomy.categories
+      .filter((category) => category.description.trim().length < 24)
       .map((category) => `${category.path} :: ${category.description}`);
     const structuralRouteable = taxonomy.categories
       .filter((category) => parentKeys.has(category.key) && category.routeable)
       .map((category) => category.path);
+    const badExpected = cases.flatMap((testCase) => {
+      const expected = Array.isArray(testCase.expected) ? testCase.expected : [testCase.expected];
+      return expected
+        .filter((key) => !taxonomy.byKey.get(key)?.routeable)
+        .map((key) => `${testCase.id}:${key}`);
+    });
 
-    console.log("=== EMBEDDED TAXONOMY AUDIT ===");
-    console.log(`sha256=${actualSha}`);
+    console.log("=== REFINED TAXONOMY AUDIT ===");
+    console.log(`sourceSha256=${sourceSha}`);
+    console.log(`finalSha256=${finalSha}`);
+    console.log(`replacements=${refinements.descriptionReplacements.length} addedCases=${refinements.additionalCases.length}`);
     console.log(`total=${taxonomy.categories.length} routeable=${taxonomy.routeableCategories.length} semantic=${taxonomy.semanticCategories.length} cases=${cases.length}`);
-    console.log(`structuralRouteable=${structuralRouteable.length} exactDuplicates=${exactDuplicates.length} shortDescriptions=${short.length}`);
-    console.log("=== ALL CATEGORIES path | key | routeable | description ===");
-    for (const category of taxonomy.categories) {
-      console.log(`${category.path} | ${category.key} | ${category.routeable ? "R" : "S"} | ${category.description}`);
-    }
-    console.log("=== EXACT DUPLICATE DESCRIPTIONS ===");
-    for (const duplicate of exactDuplicates) {
-      console.log(`${duplicate.paths.join(" <-> ")} :: ${duplicate.description}`);
-    }
-    console.log("=== SHORT DESCRIPTIONS ===");
-    for (const entry of short) console.log(entry);
-    console.log("=== TOP LEXICAL NEAR PAIRS ===");
+    console.log(`structuralRouteable=${structuralRouteable.length} exactDuplicates=${exactDuplicates.length} descriptionsUnder24=${tooShort.length} badExpected=${badExpected.length}`);
+    console.log("=== REMAINING TOP LEXICAL NEAR PAIRS ===");
     for (const pair of nearPairs.slice(0, 80)) {
       console.log(`${pair.score.toFixed(3)}${pair.sameParent ? " sibling" : ""} ${pair.left} <-> ${pair.right}`);
       console.log(`  L: ${pair.leftDescription}`);
       console.log(`  R: ${pair.rightDescription}`);
     }
-    console.log("=== ROUTING CASES id | expected | summary ===");
-    for (const testCase of cases) {
+    console.log("=== ADDED ADVERSARIAL CASES ===");
+    for (const testCase of refinements.additionalCases) {
       const expected = Array.isArray(testCase.expected) ? testCase.expected.join("|") : testCase.expected;
-      console.log(`${testCase.id} | ${expected} | ${testCase.summary}${testCase.note ? ` | note=${testCase.note}` : ""}`);
+      console.log(`${testCase.id} | ${expected} | ${testCase.summary}`);
     }
 
     expect(taxonomy.categories).toHaveLength(275);
     expect(taxonomy.routeableCategories).toHaveLength(224);
     expect(taxonomy.semanticCategories).toHaveLength(223);
     expect(structuralRouteable).toEqual([]);
-    expect(cases.length).toBeGreaterThanOrEqual(70);
+    expect(exactDuplicates).toEqual([]);
+    expect(tooShort).toEqual([]);
+    expect(badExpected).toEqual([]);
+    expect(cases.length).toBeGreaterThanOrEqual(100);
   });
 });
