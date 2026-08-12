@@ -9,14 +9,17 @@ import {
 } from "../routing/resource-routing-semantic-input.js";
 
 describe("resource routing final release contracts", () => {
-  it("keeps automatic add_resource summary guidance explicit and retryable", () => {
+  it("keeps automatic add_resource guidance Russian, deterministic, and fallback-safe", () => {
     const source = readFileSync(
       join(process.cwd(), "plugin", "openviking-import-tools.ts"),
       "utf8",
     );
-    expect(source).toContain("MUST provide summary");
+    expect(source).toContain("MUST provide summary in Russian");
     expect(source).toContain("Automatic resource routing requires `summary`");
-    expect(source).toContain("Then retry add_resource with that summary");
+    expect(source).toContain("code/source/javascript");
+    expect(source).toContain("Unknown, ambiguous, or organizational category selectors are routed to the configured fallback inbox");
+    expect(source).toContain("resolveCategoryOrFallback");
+    expect(source).toContain("wait: false");
   });
 
   it("ships the detailed resource-routing documentation in packaged releases", () => {
