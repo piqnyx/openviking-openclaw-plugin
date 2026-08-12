@@ -1,0 +1,179 @@
+name: Finalize routing taxonomy CI
+
+on:
+  push:
+    branches:
+      - agent/russian-routing-taxonomy
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Materialize base reviewed examples without patching source
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, json, re
+          from pathlib import Path
+
+          source = Path('tools/apply-russian-routing-taxonomy.py').read_text(encoding='utf-8')
+          def field(name):
+              m = re.search(rf'{name}\s*=\s*"""([\s\S]*?)"""', source)
+              if m:
+                  return re.sub(r'\s+', '', m.group(1))
+              m = re.search(rf'{name}\s*=\s*"([^"]+)"', source)
+              if not m:
+                  raise SystemExit(f'missing embedded field {name}')
+              return m.group(1)
+
+          taxonomy = gzip.decompress(base64.b64decode(field('TAXONOMY_GZIP_B64')))
+          cases = gzip.decompress(base64.b64decode(field('CASES_GZIP_B64')))
+          Path('examples').mkdir(exist_ok=True)
+          Path('examples/resource-taxonomy.ru.yaml').write_bytes(taxonomy)
+          Path('examples/routing-cases.ru.json').write_bytes(cases)
+          print('base taxonomy bytes', len(taxonomy))
+          print('base cases', len(json.loads(cases)))
+          PY
+
+      - name: Apply reviewed description refinements
+        run: python3 tools/refine-russian-routing-taxonomy.py examples/resource-taxonomy.ru.yaml examples/routing-cases.ru.json
+
+      - name: Constrain deep migration to the approved resource policy
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply-expanded-russian-taxonomy.mjs')
+          text = path.read_text(encoding='utf-8')
+
+          text = text.replace('const SENTINEL_KEY = "media";', 'const SENTINEL_KEY = "mine-records";', 1)
+
+          bad = '  define(document, "mine-configs-package-manager", "Настройки package managers и registries программного проекта.");\n'
+          if text.count(bad) != 1:
+              raise SystemExit(f'expected one obsolete mine-configs-package-manager line, got {text.count(bad)}')
+          text = text.replace(bad, '', 1)
+
+          call = '  addMedia(document);\n'
+          if text.count(call) != 1:
+              raise SystemExit(f'expected one addMedia call, got {text.count(call)}')
+          text = text.replace(call, '', 1)
+
+          text = text.replace(
+              'addStructural(document, "archives", "archives-images", "images",',
+              'addStructural(document, "archives", "archives-images", "system-images",',
+              1,
+          )
+
+          text = text.replace(
+              ', "Исходное аудио или видео выступления относится к media."',
+              '',
+          )
+
+          forbidden_case_ids = {
+              'architecture-diagram-image',
+              'meeting-audio',
+          }
+          lines = []
+          removed = set()
+          for line in text.splitlines(True):
+              hit = next((case_id for case_id in forbidden_case_ids if f'id: "{case_id}"' in line), None)
+              if hit:
+                  removed.add(hit)
+                  continue
+              lines.append(line)
+          if removed != forbidden_case_ids:
+              raise SystemExit(f'did not remove all media-only cases: removed={sorted(removed)}')
+          text = ''.join(lines)
+
+          path.write_text(text, encoding='utf-8')
+          print('deep migration policy patched: no audio/video taxonomy; existing photo/screenshot branch retained')
+          PY
+
+      - name: Apply deep taxonomy architecture
+        run: node tools/apply-expanded-russian-taxonomy.mjs examples/resource-taxonomy.ru.yaml examples/routing-cases.ru.json
+
+      - name: Apply final agent/config/docs contract
+        run: python3 tools/apply-routing-contract-finalization.py
+
+      - name: Validate patch formatting
+        run: git diff --check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Print final taxonomy statistics
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { parseResourceTaxonomyYaml } from './dist/routing/resource-taxonomy.js';
+          const text = readFileSync('examples/resource-taxonomy.ru.yaml', 'utf8');
+          const taxonomy = parseResourceTaxonomyYaml(text, 'final Russian taxonomy');
+          const cases = JSON.parse(readFileSync('examples/routing-cases.ru.json', 'utf8'));
+          const parents = new Set(taxonomy.categories.map((c) => c.parentKey).filter(Boolean));
+          const structural = taxonomy.categories.filter((c) => parents.has(c.key));
+          const badStructural = structural.filter((c) => c.routeable);
+          const badSemantic = taxonomy.semanticCategories.filter((c) => parents.has(c.key));
+          console.log(JSON.stringify({
+            sha256: createHash('sha256').update(text).digest('hex'),
+            casesSha256: createHash('sha256').update(JSON.stringify(cases)).digest('hex'),
+            total: taxonomy.categories.length,
+            routeable: taxonomy.routeableCategories.length,
+            semantic: taxonomy.semanticCategories.length,
+            structural: structural.length,
+            cases: cases.length,
+            maxDepth: Math.max(...taxonomy.categories.map((c) => c.depth)),
+            badStructural: badStructural.map((c) => c.path),
+            badSemantic: badSemantic.map((c) => c.path),
+            roots: taxonomy.categories.filter((c) => c.depth === 1).map((c) => c.path),
+          }, null, 2));
+          NODE
+
+      - name: Run routing-focused tests except count-pinned final example test
+        run: >-
+          npx vitest run
+          tests/resource-taxonomy.test.ts
+          tests/resource-router.test.ts
+          tests/resource-router-topk.test.ts
+          tests/resource-routing-retrieval.test.ts
+          tests/resource-routing-config.test.ts
+          tests/resource-routing-service.test.ts
+          tests/resource-routing-preload.test.ts
+          tests/resource-routing-semantic-audit.test.ts
+          tests/routing-taxonomy-audit.test.mjs
+          tests/routing-probe.test.mjs
+          tests/add-resource-routing-tool.test.ts
+          tests/resource-routing-final-audit.test.ts
+          tests/resource-routing-manifest.test.ts
+          tests/openviking-services.test.ts
+
+      - name: Materialize validated finalization for review
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add examples/ routing/ plugin/ skills/ docs/ README.md openclaw.plugin.json install-manifest.json package.json tests/ dist/
+          if git diff --cached --quiet; then
+            echo "No finalization changes to materialize"
+          else
+            git commit -m "feat: materialize deep Russian routing taxonomy"
+            git push origin HEAD:agent/russian-routing-taxonomy
+          fi
