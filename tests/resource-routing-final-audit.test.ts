@@ -9,12 +9,15 @@ import {
 } from "../routing/resource-routing-semantic-input.js";
 
 describe("resource routing final release contracts", () => {
-  it("keeps automatic add_resource guidance Russian, deterministic, and fallback-safe", () => {
+  it("keeps automatic add_resource language-aware, provenance-aware, deterministic, and fallback-safe", () => {
     const source = readFileSync(
       join(process.cwd(), "plugin", "openviking-import-tools.ts"),
       "utf8",
     );
-    expect(source).toContain("MUST provide summary in Russian");
+    expect(source).toContain("summaryLanguage");
+    expect(source).toContain("batch scraping or crawling result");
+    expect(source).toContain("exported chat or forum history");
+    expect(source).toContain("database dump");
     expect(source).toContain("Automatic resource routing requires `summary`");
     expect(source).toContain("code/source/javascript");
     expect(source).toContain("Unknown, ambiguous, or organizational category selectors are routed to the configured fallback inbox");
@@ -22,18 +25,25 @@ describe("resource routing final release contracts", () => {
     expect(source).toContain("wait: false");
   });
 
-  it("ships the detailed resource-routing documentation in packaged releases", () => {
+  it("ships docs, reviewed examples and operational routing tools with version parity", () => {
     const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as {
+      version?: string;
       files?: string[];
     };
     const installManifest = JSON.parse(
       readFileSync(join(process.cwd(), "install-manifest.json"), "utf8"),
     ) as {
+      pluginVersion?: string;
       files?: { required?: string[] };
     };
 
+    expect(installManifest.pluginVersion).toBe(pkg.version);
     expect(pkg.files).toContain("docs/");
+    expect(pkg.files).toContain("examples/");
+    expect(pkg.files).toContain("tools/");
     expect(installManifest.files?.required).toContain("docs/resource-routing.md");
+    expect(installManifest.files?.required).toContain("examples/");
+    expect(installManifest.files?.required).toContain("tools/");
   });
 
   it("makes documented mimeType template metadata useful without changing summary-only defaults", () => {
