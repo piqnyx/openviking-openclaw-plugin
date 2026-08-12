@@ -50,7 +50,10 @@ export type OpenVikingImportToolsDeps = {
   makeBypassedToolResult: (toolName: string) => unknown;
   enableAddResourceTool: boolean;
   enableRemoveResourceTool: boolean;
-  resourceRouting?: Pick<ResourceRoutingService, "enabled" | "resolveCategory" | "routeAutomatic">;
+  resourceRouting?: Pick<
+    ResourceRoutingService,
+    "enabled" | "resolveCategoryOrFallback" | "routeAutomatic"
+  >;
 };
 
 function formatResourceImportText(result: AsyncAddResourceResult): string {
@@ -178,6 +181,28 @@ function inferResourceSourceMetadata(source: string): {
   };
 }
 
+/**
+ * Automatic routing is calibrated against a Russian taxonomy. Technical names
+ * and identifiers may remain Latin, but a token Cyrillic character must not be
+ * enough to smuggle an English summary into that embedding space.
+ */
+export function isRussianSemanticSummary(summary: string): boolean {
+  if (typeof summary !== "string" || !summary.trim()) {
+    return false;
+  }
+  let letters = 0;
+  let cyrillic = 0;
+  for (const char of summary.normalize("NFC")) {
+    if (/\p{L}/u.test(char)) {
+      letters += 1;
+      if (/[А-Яа-яЁё]/u.test(char)) {
+        cyrillic += 1;
+      }
+    }
+  }
+  return cyrillic >= 4 && letters > 0 && cyrillic / letters >= 0.25;
+}
+
 export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): void {
   if (deps.enableAddResourceTool) {
     deps.registerTool(
@@ -188,18 +213,19 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
           "Use only when the user explicitly asks to import, add, upload, save, or index a document, directory, URL, Git repository, or OpenClaw media attachment into OpenViking resources. " +
           "Never use this during search, retrieval, URI reading, or search-result optimization; use ov_search and ov_read for those flows. " +
           "For a '[media attached: /path ...]' document, set source to that exact local media path. Do not invent OpenViking upload REST endpoints. " +
-          "When automatic resource routing is enabled and neither to, parent, nor category is supplied, you MUST provide summary: one short sentence describing what the resource is about and what it is useful for. Before writing that summary, inspect or read enough of the resource to understand its actual content unless the content is already established in the conversation; never guess from its filename or path. Describe semantic content and purpose. When provenance is part of the semantic resource type, state it naturally, for example online article, email thread, meeting transcript, or terminal screenshot. Do not copy raw filename, path, MIME type, or storage location into the summary. " +
-          "Use category only for an existing semantic category key from the configured taxonomy; never invent category keys or resource URIs. Explicit to/parent/category bypass automatic classification. " +
-          "This agent tool always submits imports asynchronously and returns after OpenViking accepts the job. Never retry the same import automatically after an outcome-unknown transport failure; inspect OpenViking state first.",
+          "When automatic resource routing is enabled and category is omitted, you MUST provide summary in Russian: one short sentence describing the actual semantic content and purpose of the resource. Write the summary in Russian even when the source material is in another language; preserve product names, commands, code identifiers, protocols, and other technical terms when useful. Inspect or read enough of the resource to understand it unless its contents are already established in the conversation; never guess from its filename or path. " +
+          "Use category only as an explicit override with an existing full taxonomy path such as code/source/javascript, or a stable semantic key for compatibility. Never invent category paths, keys, or resource URIs. Unknown, ambiguous, or organizational category selectors are routed to the configured fallback inbox rather than creating new paths. " +
+          "The agent-facing tool deliberately does not expose arbitrary target URIs, extraction instructions, parser controls, or watch settings. This tool always submits imports asynchronously and returns after OpenViking accepts the job. Never retry the same import automatically after an outcome-unknown transport failure; inspect OpenViking state first.",
         parameters: Type.Object({
-          source: Type.String({ description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL" }),
-          summary: Type.Optional(Type.String({ description: "Required for automatic routing: one short sentence based on known or inspected resource content, describing its semantic content and purpose. State semantically important provenance naturally (for example online article, email thread, transcript, screenshot), but never guess from or copy raw filename/path/MIME/storage metadata." })),
-          to: Type.Optional(Type.String({ description: "Explicit exact target URI. Bypasses automatic routing. Mutually exclusive with parent and category." })),
-          parent: Type.Optional(Type.String({ description: "Explicit parent URI under viking://resources. Bypasses automatic routing. Mutually exclusive with to and category." })),
-          category: Type.Optional(Type.String({ description: "Explicit existing semantic category key from this agent's taxonomy. The plugin resolves it to a trusted URI; do not provide a URI here." })),
-          create_parent: Type.Optional(Type.Boolean({ description: "Create an explicitly supplied parent URI if it does not exist. Used only with parent. Automatic/category routing forces this to true." })),
-          reason: Type.Optional(Type.String({ description: "Reason or note for adding this resource" })),
-          instruction: Type.Optional(Type.String({ description: "Processing instruction for OpenViking semantic extraction" })),
+          source: Type.String({
+            description: "Local path, OpenClaw media attachment path, directory path, public URL, or Git URL",
+          }),
+          summary: Type.Optional(Type.String({
+            description: "Required for automatic routing: one short Russian sentence based on known or inspected content, describing what the resource is about and what it is useful for. Technical product names, commands, protocols and code identifiers may remain in their natural form.",
+          })),
+          category: Type.Optional(Type.String({
+            description: "Optional explicit override using an existing full taxonomy path such as code/source/javascript. A stable semantic key is also accepted for compatibility. The plugin resolves the selector to a trusted URI; never invent a path/key or provide an arbitrary URI.",
+          })),
         }),
         async execute(_toolCallId: string, params: Record<string, unknown>) {
           if (deps.isBypassedSession(ctx)) {
@@ -210,60 +236,52 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
           if (!source) {
             return rejectedResourceImport("add_resource requires a non-empty source.");
           }
-          const explicitTo = typeof params.to === "string" && params.to.trim() ? params.to.trim() : undefined;
-          const explicitParent = typeof params.parent === "string" && params.parent.trim() ? params.parent.trim() : undefined;
-          const explicitCategory = typeof params.category === "string" && params.category.trim() ? params.category.trim() : undefined;
-          const explicitCount = [explicitTo, explicitParent, explicitCategory].filter(Boolean).length;
-          if (explicitCount > 1) {
-            return rejectedResourceImport(
-              "Choose exactly one explicit resource destination: to, parent, or category. Do not combine them.",
-            );
-          }
-          if (explicitTo && params.create_parent !== undefined) {
-            return rejectedResourceImport("create_parent is valid only with parent; it cannot be combined with to.");
-          }
-          if (explicitCategory && params.create_parent !== undefined) {
-            return rejectedResourceImport("create_parent is managed by the plugin for category routing; omit it when category is used.");
-          }
+          const explicitCategory = typeof params.category === "string" && params.category.trim()
+            ? params.category.trim()
+            : undefined;
 
           const session = deps.resolvePluginSessionRouting(ctx);
-          let targetTo = explicitTo;
-          let targetParent = explicitParent;
-          let createParent = explicitParent && typeof params.create_parent === "boolean"
-            ? params.create_parent
-            : undefined;
+          let targetParent: string | undefined;
+          let createParent: boolean | undefined;
           let routingDetails: Record<string, unknown> = {
-            mode: explicitTo ? "explicit_to" : explicitParent ? "explicit_parent" : "legacy_default",
+            mode: deps.resourceRouting?.enabled ? "automatic" : "legacy_default",
           };
 
           if (explicitCategory) {
             if (!deps.resourceRouting?.enabled) {
               return rejectedResourceImport(
-                "Semantic category routing is disabled. Use an explicit to/parent destination or enable resourceRouting.",
+                "Semantic category routing is disabled. Enable resourceRouting before using a category override.",
                 { category: explicitCategory },
               );
             }
-            try {
-              const category = deps.resourceRouting.resolveCategory(session.agentId, explicitCategory);
-              targetParent = category.uri;
-              createParent = true;
-              routingDetails = {
-                mode: "explicit_category",
-                category: category.key,
-                parent: category.uri,
-              };
-            } catch (error) {
-              return rejectedResourceImport(
-                error instanceof Error ? error.message : String(error),
-                { category: explicitCategory },
-              );
-            }
-          } else if (!explicitTo && !explicitParent && deps.resourceRouting?.enabled) {
+            const resolved = deps.resourceRouting.resolveCategoryOrFallback(
+              session.agentId,
+              explicitCategory,
+            );
+            targetParent = resolved.category.uri;
+            createParent = true;
+            routingDetails = {
+              mode: "explicit_category",
+              requestedCategory: resolved.requested,
+              matchedBy: resolved.matchedBy,
+              category: resolved.category.key,
+              categoryPath: resolved.category.path,
+              parent: resolved.category.uri,
+              fallback: resolved.fallback,
+              fallbackReason: resolved.fallbackReason,
+            };
+          } else if (deps.resourceRouting?.enabled) {
             const summary = typeof params.summary === "string" ? params.summary.trim() : "";
             if (!summary) {
               return rejectedResourceImport(
-                "Automatic resource routing requires `summary`. Inspect or read enough of the resource to understand its actual content, then describe in one short sentence what it is about and what it is useful for. When provenance defines the semantic type, state it naturally, for example online article, email thread, meeting transcript, or terminal screenshot. Do not guess from or merely repeat its filename, path, MIME type, or storage location. Then retry add_resource with that summary.",
+                "Automatic resource routing requires `summary`. Inspect or read enough of the resource to understand its actual content, then describe in one short Russian sentence what it is about and what it is useful for. Do not guess from or merely repeat its filename, path, MIME type, or storage location.",
                 { routing: "automatic", source },
+              );
+            }
+            if (!isRussianSemanticSummary(summary)) {
+              return rejectedResourceImport(
+                "Automatic resource routing requires a genuinely Russian semantic `summary`, not an English sentence with a token Cyrillic character. Rewrite the content-and-purpose summary in Russian; technical product names, commands, protocols and code identifiers may remain in their original form.",
+                { routing: "automatic", source, summaryLanguage: "ru" },
               );
             }
             const metadata = inferResourceSourceMetadata(source);
@@ -275,19 +293,22 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
                 filename: metadata.filename,
                 extension: metadata.extension,
                 summary,
-                reason: typeof params.reason === "string" ? params.reason : undefined,
-                instruction: typeof params.instruction === "string" ? params.instruction : undefined,
               });
               targetParent = routed.category.uri;
               createParent = true;
               routingDetails = {
                 mode: "automatic",
                 category: routed.category.key,
+                categoryPath: routed.category.path,
                 parent: routed.category.uri,
                 fallback: routed.decision.fallback,
                 fallbackReason: routed.decision.fallbackReason,
                 rerankerUsed: routed.decision.rerankerUsed,
-                embeddingCandidates: routed.decision.embeddingCandidates.map(({ key, score }) => ({ key, score })),
+                embeddingCandidates: routed.decision.embeddingCandidates.map(({ key, path, score }) => ({
+                  key,
+                  path,
+                  score,
+                })),
               };
             } catch (error) {
               return {
@@ -311,11 +332,8 @@ export function registerOpenVikingImportTools(deps: OpenVikingImportToolsDeps): 
           try {
             result = await client.addResource({
               pathOrUrl: source,
-              to: targetTo,
               parent: targetParent,
               createParent,
-              reason: typeof params.reason === "string" ? params.reason : undefined,
-              instruction: typeof params.instruction === "string" ? params.instruction : undefined,
               wait: false,
             }, session.actorPeerId);
           } catch (error) {
