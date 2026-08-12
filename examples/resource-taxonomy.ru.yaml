@@ -806,7 +806,7 @@ categories:
         children:
           code-build-ci-cd:
             segment: ci-cd
-            description: CI/CD pipelines для GitHub Actions, GitLab CI, Jenkins и аналогов.
+            description: Конфигурации и определения конвейеров непрерывной интеграции и доставки (CI/CD) для GitHub Actions, GitLab CI, Jenkins и аналогичных систем.
           code-build-containers:
             segment: containers
             description: Проектные файлы контейнерной сборки и локального многоконтейнерного запуска.
@@ -833,7 +833,7 @@ categories:
                 description: Makefile, CMake и другие классические файлы систем сборки.
               code-build-packages:
                 segment: package-manifests
-                description: "Package manifests и lock-файлы: package.json, pyproject, Cargo.toml, go.mod и аналоги."
+                description: "Манифесты пакетов и файлы фиксации зависимостей для менеджеров пакетов и систем сборки, включая package.json, pyproject, Cargo.toml, go.mod и аналоги."
               code-build-bazel-meson:
                 segment: bazel-meson
                 description: Bazel, Meson и другие декларации систем сборки, не относящиеся к Make или CMake.
@@ -872,7 +872,7 @@ categories:
             description: Terraform/OpenTofu конфигурация инфраструктуры как кода.
           code-build-ansible:
             segment: ansible
-            description: Ansible playbooks, roles и inventory-файлы.
+            description: Конфигурации автоматизации Ansible с playbook-файлами, ролями и описаниями inventory для управления узлами и развёртывания.
           code-infrastructure-kubernetes:
             segment: kubernetes
             description: Kubernetes manifests и Kustomize-конфигурации, являющиеся частью infrastructure-as-code или программного репозитория.

@@ -82,7 +82,8 @@ The compiler maintains both `byKey` and `byPath` indexes. Two categories cannot 
 | --- | --- | --- |
 | mapping key | yes | Globally unique stable semantic key. |
 | `segment` | yes | One safe `viking://resources` path segment. |
-| `description` | yes | Semantic meaning of this taxonomy node. |
+| `description` | yes | Positive semantic meaning of this taxonomy node. |
+| `distinguishFrom` | no | Boundary hints used by the reranker, never by the category embedding. |
 | `routeable` | no | Whether the node can receive resources. Schema v1 defaults to `true`. |
 | `children` | no | Nested child category mapping. |
 
@@ -101,14 +102,16 @@ This distinction is important. `_INBOX` is not a semantic topic and must never w
 
 A taxonomy therefore needs at least one semantic category in addition to its fallback.
 
-## Ancestry-aware routing text
+## Ancestry-aware embedding and reranker texts
 
-Category embeddings are not generated from a leaf description alone.
+A category embedding is not generated from the leaf description alone. The compiler builds two deterministic semantic documents for every category.
 
-For each category the compiler creates deterministic `routingText` containing:
+### `embeddingText`
 
-1. the leaf description;
-2. the semantic descriptions of its ancestors;
+`embeddingText` contains only positive semantic evidence:
+
+1. the leaf `description`;
+2. positive descriptions of all ancestors;
 3. the exact full taxonomy path.
 
 Conceptually:
@@ -119,9 +122,27 @@ ancestors: code: Исходный код и связанные с разрабо
 path: code/source/javascript
 ```
 
-The same `routingText` is used for the cached category embedding and for conditional reranking. This gives identical leaf names under different branches distinct semantic context without copying parent prose into every YAML leaf.
+The cached category vector is generated from `embeddingText`.
 
-Any taxonomy change that changes descriptions, ancestry, paths, routeability, or fallback changes the taxonomy identity and invalidates an incompatible cache.
+### `distinguishFrom` and `rerankText`
+
+Categories that are easy to confuse may declare boundary guidance separately:
+
+```yaml
+code-source-go:
+  segment: go
+  description: Исходный код программных проектов, сервисов и библиотек на Go.
+  distinguishFrom:
+    - Учебные и справочные материалы о языке относятся к docs/languages.
+```
+
+`distinguishFrom` is deliberately excluded from `embeddingText`. Contrastive phrases such as “not documentation” would otherwise add the competing topic to the bi-encoder vector and can make neighboring classes more similar.
+
+For conditional reranking the compiler builds `rerankText` from `embeddingText` plus boundary hints. Boundary hints from structural ancestors are inherited, so a leaf receives relevant branch-level disambiguation without duplicating that prose into every leaf description.
+
+The reranker therefore sees richer discrimination instructions only when cosine retrieval is ambiguous, while category embeddings remain positive and stable.
+
+Changes to descriptions, `distinguishFrom`, ancestry, paths, routeability, or fallback change canonical taxonomy identity. A cache built for an incompatible taxonomy is rejected.
 
 ## Flat semantic candidate set
 
@@ -129,7 +150,7 @@ The YAML remains a tree for humans and for the OpenViking directory layout, but 
 
 The query embedding is compared directly with every compiled `semanticCategory`. The router does not make an irreversible top-level branch decision and then descend the tree.
 
-The ancestry-aware routing text supplies branch context while preserving the ability for a globally better leaf to beat a superficially similar leaf in another branch.
+The ancestry-aware `embeddingText` supplies branch context while preserving the ability for a globally better leaf to beat a superficially similar leaf in another branch.
 
 A hierarchical multi-stage classifier may be evaluated later if measurements justify its additional model calls and failure modes; it is not part of the current routing contract.
 
@@ -260,7 +281,7 @@ For automatic routing:
 4. retain configured `topK` candidates;
 5. if top-1 score is below `minScore`, choose fallback immediately;
 6. otherwise compare top-1 and top-2 cosine scores;
-7. if their gap is below `rerankBelowMargin`, rerank the entire retained candidate set using the same ancestry-aware `routingText` documents;
+7. if their gap is below `rerankBelowMargin`, rerank the entire retained candidate set using boundary-aware `rerankText` documents;
 8. otherwise accept top-1;
 9. resolve the selected key through the validated taxonomy;
 10. import asynchronously under its trusted parent URI.
