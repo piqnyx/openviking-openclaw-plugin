@@ -310,10 +310,9 @@ export class ResourceRoutingService {
     const auditFile = resolvePerAgentFileTemplate(this.#config.audit.file, input.agentId);
     const started = performance.now();
     try {
-      const preload = this.#preloadPromise;
-      if (preload) {
-        await preload;
-      }
+      // #getRouter is already deduplicated per agent. Do not wait for a global
+      // startup preload covering unrelated agents: an igor cold cache must not
+      // block a main routing request, and vice versa.
       const router = await this.#getRouter(input.agentId);
       const decision = await router.route(semanticInput);
       const category = taxonomy.byKey.get(decision.categoryKey);
