@@ -10,12 +10,16 @@ type ToolFactory = (ctx: Record<string, unknown>) => {
 
 function makeCategory(key: string, uri: string) {
   const segments = uri.split("/");
+  const path = uri.replace(/^viking:\/\/resources\/?/, "");
+  const description = `${key} category`;
   return {
     key,
     segment: segments.at(-1) ?? key,
-    description: `${key} category`,
+    description,
     routeable: true,
     uri,
+    path,
+    routingText: `path: ${path}\ndescription: ${description}`,
     parentKey: null,
     depth: 1,
   };
