@@ -131,14 +131,26 @@ describe("ResourceRoutingService", () => {
     expect(embeddingTransport).not.toHaveBeenCalled();
   });
 
-  it("embeds full category path context and routes from summary-only semantic input", async () => {
+  it("embeds ancestry-aware category context and routes from summary-only semantic input", async () => {
     const { config } = setup();
     const summary = "Исходный код собственного приложения на JavaScript и TypeScript.";
     const embeddingByInput = new Map<string, number[]>([
-      ["path: __INBOX__\ndescription: Ресурсы, которые нельзя уверенно классифицировать.", [0, 1]],
-      ["path: docs/code\ndescription: Документация, объясняющая программный код и его устройство.", [0.6, 0.4]],
-      ["path: code/source/javascript\ndescription: Исходный код программ на JavaScript и TypeScript.", [1, 0]],
-      ["path: security\ndescription: Отчёты по безопасности и материалы по защите систем.", [0.2, 0.8]],
+      [
+        "description: Документация, объясняющая программный код и его устройство.\n" +
+        "ancestors: docs: Структурный раздел документации.\n" +
+        "path: docs/code",
+        [0.6, 0.4],
+      ],
+      [
+        "description: Исходный код программ на JavaScript и TypeScript.\n" +
+        "ancestors: code: Структурный раздел исходного кода. > code/source: Структурный раздел исходников по языкам.\n" +
+        "path: code/source/javascript",
+        [1, 0],
+      ],
+      [
+        "description: Отчёты по безопасности и материалы по защите систем.\npath: security",
+        [0.2, 0.8],
+      ],
       [summary, [1, 0]],
     ]);
     const embeddingTransport: HttpTransport = vi.fn(async (_url, init) => {
@@ -169,7 +181,8 @@ describe("ResourceRoutingService", () => {
     expect(result.category.path).toBe("code/source/javascript");
     expect(result.category.uri).toBe("viking://resources/code/source/javascript");
     expect(result.decision.fallback).toBe(false);
-    expect(embeddingTransport).toHaveBeenCalledTimes(5);
+    expect(result.decision.embeddingCandidates.every((candidate) => candidate.key !== "inbox")).toBe(true);
+    expect(embeddingTransport).toHaveBeenCalledTimes(4);
     expect(rerankerTransport).not.toHaveBeenCalled();
   });
 
