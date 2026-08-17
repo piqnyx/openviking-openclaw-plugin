@@ -14,7 +14,8 @@ export function registerOpenVikingMemoryRecallTools(deps) {
     deps.registerTool((ctx) => ({
         name: "memory_recall",
         label: "Memory Recall (OpenViking)",
-        description: "Search long-term memories from OpenViking. Use when you need past user preferences, facts, or decisions.",
+        description: "Search long-term memories from OpenViking. Use when you need past user preferences, facts, or decisions. " +
+            "If nothing relevant is found here, try the Graphiti search tools before concluding that it is not remembered.",
         parameters: Type.Object({
             query: Type.String({ description: "Search query" }),
             limit: Type.Optional(Type.Number({ description: "Max results (default: plugin config)" })),

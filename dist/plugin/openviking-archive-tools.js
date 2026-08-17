@@ -14,7 +14,8 @@ export function registerOpenVikingArchiveTools(deps) {
             "Use this whenever the [Session History Summary] does not contain the specific detail " +
             "the user is asking about. Extract 2-3 concrete entity words from the question " +
             "(names, places, objects, dates) and search each separately. " +
-            "Only conclude information is unavailable after trying at least 2 different keyword variations.",
+            "Only conclude information is unavailable after trying at least 2 different keyword variations, " +
+            "and after trying the Graphiti search tools, which cover earlier sessions this archive does not.",
         parameters: Type.Object({
             query: Type.String({
                 description: "A single keyword or short phrase to grep. Use concrete nouns, names, dates, " +
