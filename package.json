@@ -1,6 +1,6 @@
 {
   "name": "openviking-openclaw-plugin",
-  "version": "2026.7.15-isolation.9",
+  "version": "2026.7.15-isolation.10",
   "displayName": "OpenViking (per-agent isolation)",
   "description": "OpenClaw context-engine plugin — OpenViking memory with one OpenViking account per OpenClaw agent (fork of @openviking/openclaw-plugin 2026.7.15)",
   "type": "module",
