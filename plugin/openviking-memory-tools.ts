@@ -75,7 +75,7 @@ export function registerOpenVikingMemoryTools(deps: OpenVikingMemoryToolsDeps): 
       name: "memory_store",
       label: "Memory Store (OpenViking)",
       description:
-        "Store text in OpenViking memory pipeline by writing to a session and running memory extraction. Use when the user explicitly asks to remember, save, or store an important long-term fact, preference, project, or decision; automatic capture is threshold/commit dependent.",
+        "Store text in OpenViking long-term memory. Call this ONLY when the user gives a direct instruction to remember something — 'запомни', 'запиши', 'сохрани', 'не забудь', 'remember this', 'save this', 'store this', 'take a note'. The instruction must come from the user in this conversation. Do NOT call it on your own initiative: not because a fact seems important, not to be safe, not at the end of a task, not to summarise what was discussed, and not because you inferred the user would want it kept. Ordinary conversation is already captured automatically, so calling this without being asked only creates duplicates. If you think something is worth storing but were not asked, say so and let the user decide instead of calling this tool.",
       parameters: Type.Object({
         text: Type.String({ description: "Information to store as memory source text" }),
         role: Type.Optional(Type.String({ description: "Session role, default user" })),
