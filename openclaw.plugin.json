@@ -375,6 +375,19 @@
       "recallScoreThreshold": {
         "type": "number"
       },
+      "recallRerank": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "baseUrl": { "type": "string" },
+          "model": { "type": "string" },
+          "timeoutMs": { "type": "number" },
+          "keep": { "type": "number" },
+          "floor": { "type": "number" },
+          "candidates": { "type": "number" }
+        }
+      },
       "recallMaxInjectedChars": {
         "type": "number"
       },
