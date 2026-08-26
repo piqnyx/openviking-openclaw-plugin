@@ -437,76 +437,95 @@ function resolveDefaultBaseUrl(): string {
   return DEFAULT_BASE_URL;
 }
 
+/**
+ * Every key this plugin accepts, in one place.
+ *
+ * The name of an option has to be written down three times over -- in the type,
+ * in the manifest OpenClaw validates against, and in the list below that the
+ * parser checks. Nothing tied the three together, so `recallRerank` was added to
+ * the first two and forgotten in the third, and the plugin refused to load at
+ * all. A test now holds the manifest and this list to each other; the type is
+ * the compiler's business.
+ */
+export const OPENVIKING_CONFIG_KEYS = [
+  "mode",
+  "baseUrl",
+  "peer_role",
+  "peer_prefix",
+  "serverAuthMode",
+  "apiKey",
+  "agentKeysFile",
+  "headers",
+  "accountId",
+  "userId",
+  "targetUri",
+  "timeoutMs",
+  "autoCapture",
+  "captureMode",
+  "captureMaxLength",
+  "autoRecall",
+  "autoRecallTimeoutMs",
+  "recallResources",
+  "recallLimit",
+  "recallScoreThreshold",
+  "recallMaxInjectedChars",
+  "recallMaxContentChars",
+  "recallPreferAbstract",
+  "recallTokenBudget",
+  "commitTokenThreshold",
+  "commitTokenThresholdRatio",
+  "commitKeepRecentCount",
+  "bypassSessionPatterns",
+  "ingestReplyAssist",
+  "ingestReplyAssistMinSpeakerTurns",
+  "ingestReplyAssistMinChars",
+  "ingestReplyAssistIgnoreSessionPatterns",
+  "emitStandardDiagnostics",
+  "logFindRequests",
+  "traceRecall",
+  "traceRecallPersist",
+  "traceRecallDir",
+  "traceRecallRetentionDays",
+  "traceRecallLoadRecentDays",
+  "traceRecallMaxEntries",
+  "traceRecallMaxResultsPerSearch",
+  "traceRecallPreviewChars",
+  "traceRecallQueryMaxChars",
+  "traceRecallQueryMaxDays",
+  "traceRecallIncludeContentByDefault",
+  "traceRecallIncludeRawUserPreview",
+  "recallTargetTypes",
+  "enableAddResourceTool",
+  "enableRemoveResourceTool",
+  "enabledTools",
+  "disabledTools",
+  "runtimeQueryConfigPath",
+  "agentExperience",
+  "recallRerank",
+] as const;
+
+/** The same, for the reranker's own block. */
+export const OPENVIKING_RERANK_KEYS = [
+  "enabled", "baseUrl", "model", "timeoutMs", "keep", "floor", "candidates",
+] as const;
+
 export const memoryOpenVikingConfigSchema = {
   parse(value: unknown): ParsedMemoryOpenVikingConfig {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       value = {};
     }
     const cfg = value as Record<string, unknown>;
-    assertAllowedKeys(
-      cfg,
-      [
-        "mode",
-        "baseUrl",
-        "peer_role",
-        "peer_prefix",
-        "serverAuthMode",
-        "apiKey",
-        "agentKeysFile",
-        "headers",
-        "accountId",
-        "userId",
-        "targetUri",
-        "timeoutMs",
-        "autoCapture",
-        "captureMode",
-        "captureMaxLength",
-        "autoRecall",
-        "autoRecallTimeoutMs",
-        "recallResources",
-        "recallLimit",
-        "recallScoreThreshold",
-        "recallMaxInjectedChars",
-        "recallMaxContentChars",
-        "recallPreferAbstract",
-        "recallTokenBudget",
-        "commitTokenThreshold",
-        "commitTokenThresholdRatio",
-        "commitKeepRecentCount",
-        "bypassSessionPatterns",
-        "ingestReplyAssist",
-        "ingestReplyAssistMinSpeakerTurns",
-        "ingestReplyAssistMinChars",
-        "ingestReplyAssistIgnoreSessionPatterns",
-        "emitStandardDiagnostics",
-        "logFindRequests",
-        "traceRecall",
-        "traceRecallPersist",
-        "traceRecallDir",
-        "traceRecallRetentionDays",
-        "traceRecallLoadRecentDays",
-        "traceRecallMaxEntries",
-        "traceRecallMaxResultsPerSearch",
-        "traceRecallPreviewChars",
-        "traceRecallQueryMaxChars",
-        "traceRecallQueryMaxDays",
-        "traceRecallIncludeContentByDefault",
-        "traceRecallIncludeRawUserPreview",
-        "recallTargetTypes",
-        "enableAddResourceTool",
-        "enableRemoveResourceTool",
-        "enabledTools",
-        "disabledTools",
-        "runtimeQueryConfigPath",
-        "agentExperience",
-      ],
-      "openviking config",
-    );
+    assertAllowedKeys(cfg, [...OPENVIKING_CONFIG_KEYS], "openviking config");
     const agentExperienceRaw = toRecord(cfg.agentExperience);
     assertAllowedKeys(
       agentExperienceRaw,
       ["enabled", "recallLimit", "scoreThreshold", "maxInjectedChars", "minQueryChars"],
       "openviking config agentExperience",
+    );
+    assertAllowedKeys(
+      toRecord(cfg.recallRerank),
+      [...OPENVIKING_RERANK_KEYS],
+      "openviking config recallRerank",
     );
 
     const mode = "remote" as const;
