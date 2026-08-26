@@ -457,8 +457,11 @@ export async function buildAutoRecallContext(params: {
       if (rerankCfg?.enabled) {
         const outcome = await rerankMemories(queryText, processed, rerankCfg);
         memories = outcome.kept as FindResultItem[];
+        // The prefix by hand, as everywhere else in this file: the logger does not
+        // add one, and a line without it falls outside the filter anyone watching
+        // this plugin is using.
         logger.info?.(
-          `recall rerank: ${outcome.reason}` +
+          `openviking: recall rerank: ${outcome.reason}` +
           (outcome.best === undefined ? "" : ` best=${outcome.best.toFixed(3)}`) +
           ` candidates=${processed.length} kept=${memories.length}` +
           (outcome.ms === undefined ? "" : ` ${outcome.ms}ms`),
