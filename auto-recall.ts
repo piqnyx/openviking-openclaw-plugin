@@ -1,5 +1,6 @@
+import { rerankMemories } from "./recall-rerank.js";
 import type { FindResult, FindResultItem, OpenVikingClient } from "./client.js";
-import type { MemoryOpenVikingConfig } from "./config.js";
+import type { MemoryOpenVikingConfig, ParsedMemoryOpenVikingConfig } from "./config.js";
 import type { EffectiveQueryConfig } from "./query-config.js";
 import {
   pickMemoriesForInjection,
@@ -310,7 +311,7 @@ export function shouldRecallAgentExperience(input: {
 }
 
 export async function buildAutoRecallContext(params: {
-  cfg: Required<MemoryOpenVikingConfig>;
+  cfg: ParsedMemoryOpenVikingConfig;
   queryConfig?: EffectiveQueryConfig;
   client: OpenVikingClient;
   agentId: string;
@@ -341,8 +342,20 @@ export async function buildAutoRecallContext(params: {
 
   return withTimeout(
     (async () => {
-      const candidateLimit = queryConfig?.candidateLimit ?? Math.max(cfg.recallLimit * 4, 20);
-      const scoreThreshold = queryConfig?.scoreThreshold ?? cfg.recallScoreThreshold;
+      const rerankCfg = cfg.recallRerank;
+      // A wider net when something will reorder it afterwards: the right answer
+      // may be well down the list, and one that never arrives cannot be lifted.
+      const candidateLimit = rerankCfg?.enabled
+        ? rerankCfg.candidates
+        : queryConfig?.candidateLimit ?? Math.max(cfg.recallLimit * 4, 20);
+      // And no threshold in that case. Measured on live memory: fifty candidates
+      // spanned 0.521 to 0.303, the answer sixth, three unrelated notes above it.
+      // At that spread a cut-off separates nothing -- it only decides how much
+      // noise comes through. The reranker decides instead, and its floor decides
+      // whether anything comes through at all.
+      const scoreThreshold = rerankCfg?.enabled
+        ? 0
+        : queryConfig?.scoreThreshold ?? cfg.recallScoreThreshold;
       const recallLimit = queryConfig?.recallLimit ?? cfg.recallLimit;
       const maxInjectedChars = queryConfig?.maxInjectedChars ?? cfg.recallMaxInjectedChars;
       const recallPreferAbstract = queryConfig?.recallPreferAbstract ?? cfg.recallPreferAbstract;
@@ -440,11 +453,23 @@ export async function buildAutoRecallContext(params: {
         limit: candidateLimit,
         scoreThreshold,
       });
-      const memories = pickMemoriesForInjection(processed, recallLimit, queryText, scoreThreshold, queryConfig ? {
-        weights: queryConfig.rankingWeights,
-        categoryWeights: queryConfig.categoryWeights,
-        resourceTypeWeights: queryConfig.resourceTypeWeights,
-      } : undefined);
+      let memories: FindResultItem[];
+      if (rerankCfg?.enabled) {
+        const outcome = await rerankMemories(queryText, processed, rerankCfg);
+        memories = outcome.kept as FindResultItem[];
+        logger.info?.(
+          `recall rerank: ${outcome.reason}` +
+          (outcome.best === undefined ? "" : ` best=${outcome.best.toFixed(3)}`) +
+          ` candidates=${processed.length} kept=${memories.length}` +
+          (outcome.ms === undefined ? "" : ` ${outcome.ms}ms`),
+        );
+      } else {
+        memories = pickMemoriesForInjection(processed, recallLimit, queryText, scoreThreshold, queryConfig ? {
+          weights: queryConfig.rankingWeights,
+          categoryWeights: queryConfig.categoryWeights,
+          resourceTypeWeights: queryConfig.resourceTypeWeights,
+        } : undefined);
+      }
 
       const recordTrace = async (injectedMemories: FindResultItem[], injectedCount: number, estimatedTokens?: number) => {
         const entry: RecallTraceEntry = {
