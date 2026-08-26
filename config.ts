@@ -1,3 +1,4 @@
+import { DEFAULT_RERANK } from "./recall-rerank.js";
 import { homedir } from "node:os";
 
 import { getEnv } from "./runtime-utils.js";
@@ -37,6 +38,30 @@ export type MemoryOpenVikingConfig = {
   /** @deprecated Auto-recall no longer truncates individual memories. */
   recallMaxContentChars?: number;
   recallPreferAbstract?: boolean;
+  /**
+   * Reordering the candidates once, by reading them, before anything is injected.
+   *
+   * The vector search does not discriminate well enough on its own: fifty
+   * candidates for one ordinary question came back spanning 0.521 to 0.303, with
+   * the answer sixth and three unrelated notes above it. At that spread a
+   * threshold cuts through noise. A cross-encoder reads the question and the
+   * document together and can tell them apart.
+   *
+   * `floor` is a verdict on the whole answer rather than a filter on the list:
+   * below it nothing is injected at all.
+   */
+  recallRerank?: {
+    enabled?: boolean;
+    baseUrl?: string;
+    model?: string;
+    timeoutMs?: number;
+    /** How many to keep after reordering. */
+    keep?: number;
+    /** Below this, inject nothing. */
+    floor?: number;
+    /** How many candidates to ask the search for. Wider is better here. */
+    candidates?: number;
+  };
   /** @deprecated Use recallMaxInjectedChars. */
   recallTokenBudget?: number;
   /**
@@ -110,10 +135,13 @@ export type MemoryOpenVikingConfig = {
 
 /** Runtime config after memoryOpenVikingConfigSchema.parse() has applied defaults. */
 export type ParsedMemoryOpenVikingConfig = Required<
-  Omit<MemoryOpenVikingConfig, "agentExperience" | "recallTargetTypes">
+  Omit<MemoryOpenVikingConfig, "agentExperience" | "recallTargetTypes" | "recallRerank">
 > & {
   agentExperience: Required<NonNullable<MemoryOpenVikingConfig["agentExperience"]>>;
   recallTargetTypes: Array<"resource" | "user" | "agent">;
+  // Every field filled by the parser, so the recall path never has to ask
+  // whether a setting is there before using it.
+  recallRerank: Required<NonNullable<MemoryOpenVikingConfig["recallRerank"]>>;
 };
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:1933";
@@ -557,6 +585,24 @@ export const memoryOpenVikingConfigSchema = {
         1,
         Math.max(0, toNumber(cfg.recallScoreThreshold, DEFAULT_RECALL_SCORE_THRESHOLD)),
       ),
+      recallRerank: (() => {
+        const raw = (cfg.recallRerank ?? {}) as Record<string, unknown>;
+        return {
+          enabled: raw.enabled === true,
+          baseUrl: typeof raw.baseUrl === "string" && raw.baseUrl.trim()
+            ? raw.baseUrl.trim() : DEFAULT_RERANK.baseUrl,
+          model: typeof raw.model === "string" && raw.model.trim()
+            ? raw.model.trim() : DEFAULT_RERANK.model,
+          timeoutMs: Math.max(1000, toNumber(raw.timeoutMs, DEFAULT_RERANK.timeoutMs)),
+          keep: Math.max(1, Math.floor(toNumber(raw.keep, DEFAULT_RERANK.keep))),
+          floor: Math.min(1, Math.max(0, toNumber(raw.floor, DEFAULT_RERANK.floor))),
+          // A wider net than the search would otherwise be asked for: the whole
+          // point is that the right answer may be well down the list, and one
+          // that never arrives cannot be lifted. Measured: the second document
+          // naming the subject sat twenty-fourth.
+          candidates: Math.max(1, Math.floor(toNumber(raw.candidates, 50))),
+        };
+      })(),
       recallMaxContentChars: Math.max(
         50,
         Math.min(10000, Math.floor(toNumber(cfg.recallMaxContentChars, DEFAULT_RECALL_MAX_CONTENT_CHARS))),
