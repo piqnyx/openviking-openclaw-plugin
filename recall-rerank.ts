@@ -97,9 +97,13 @@ export async function rerankMemories(
     scored = body.results ?? [];
     if (!scored.length) throw new Error("rerank returned nothing");
   } catch {
-    // Unreachable or unhappy: the search order is worse than a reranked one but
-    // better than nothing, and a recall must not fail for want of a nicety.
-    return { kept: candidates.slice(0, settings.keep), reason: "unavailable", ms: Date.now() - started };
+    // Nothing was ranked, so nothing is known to answer the query. Handing back
+    // the search order passes unranked memories off as ranked ones, and that is
+    // not a lesser good. Measured live on one greeting: unranked put a friend's
+    // holiday and a video about a morning routine at the top, where ranking put
+    // the two notes that actually answered it. So the same rule as below-floor:
+    // say nothing.
+    return { kept: [], reason: "unavailable", ms: Date.now() - started };
   } finally {
     clearTimeout(timer);
   }
