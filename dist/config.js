@@ -1,3 +1,4 @@
+import { DEFAULT_RERANK } from "./recall-rerank.js";
 import { homedir } from "node:os";
 import { getEnv } from "./runtime-utils.js";
 const DEFAULT_BASE_URL = "http://127.0.0.1:1933";
@@ -265,69 +266,86 @@ function resolveDefaultBaseUrl() {
     }
     return DEFAULT_BASE_URL;
 }
+/**
+ * Every key this plugin accepts, in one place.
+ *
+ * The name of an option has to be written down three times over -- in the type,
+ * in the manifest OpenClaw validates against, and in the list below that the
+ * parser checks. Nothing tied the three together, so `recallRerank` was added to
+ * the first two and forgotten in the third, and the plugin refused to load at
+ * all. A test now holds the manifest and this list to each other; the type is
+ * the compiler's business.
+ */
+export const OPENVIKING_CONFIG_KEYS = [
+    "mode",
+    "baseUrl",
+    "peer_role",
+    "peer_prefix",
+    "serverAuthMode",
+    "apiKey",
+    "agentKeysFile",
+    "headers",
+    "accountId",
+    "userId",
+    "targetUri",
+    "timeoutMs",
+    "autoCapture",
+    "captureMode",
+    "captureMaxLength",
+    "autoRecall",
+    "autoRecallTimeoutMs",
+    "recallResources",
+    "recallLimit",
+    "recallScoreThreshold",
+    "recallMaxInjectedChars",
+    "recallMaxContentChars",
+    "recallPreferAbstract",
+    "recallTokenBudget",
+    "commitTokenThreshold",
+    "commitTokenThresholdRatio",
+    "commitKeepRecentCount",
+    "bypassSessionPatterns",
+    "ingestReplyAssist",
+    "ingestReplyAssistMinSpeakerTurns",
+    "ingestReplyAssistMinChars",
+    "ingestReplyAssistIgnoreSessionPatterns",
+    "emitStandardDiagnostics",
+    "logFindRequests",
+    "traceRecall",
+    "traceRecallPersist",
+    "traceRecallDir",
+    "traceRecallRetentionDays",
+    "traceRecallLoadRecentDays",
+    "traceRecallMaxEntries",
+    "traceRecallMaxResultsPerSearch",
+    "traceRecallPreviewChars",
+    "traceRecallQueryMaxChars",
+    "traceRecallQueryMaxDays",
+    "traceRecallIncludeContentByDefault",
+    "traceRecallIncludeRawUserPreview",
+    "recallTargetTypes",
+    "enableAddResourceTool",
+    "enableRemoveResourceTool",
+    "enabledTools",
+    "disabledTools",
+    "runtimeQueryConfigPath",
+    "agentExperience",
+    "recallRerank",
+];
+/** The same, for the reranker's own block. */
+export const OPENVIKING_RERANK_KEYS = [
+    "enabled", "baseUrl", "model", "timeoutMs", "keep", "floor", "candidates",
+];
 export const memoryOpenVikingConfigSchema = {
     parse(value) {
         if (!value || typeof value !== "object" || Array.isArray(value)) {
             value = {};
         }
         const cfg = value;
-        assertAllowedKeys(cfg, [
-            "mode",
-            "baseUrl",
-            "peer_role",
-            "peer_prefix",
-            "serverAuthMode",
-            "apiKey",
-            "agentKeysFile",
-            "headers",
-            "accountId",
-            "userId",
-            "targetUri",
-            "timeoutMs",
-            "autoCapture",
-            "captureMode",
-            "captureMaxLength",
-            "autoRecall",
-            "autoRecallTimeoutMs",
-            "recallResources",
-            "recallLimit",
-            "recallScoreThreshold",
-            "recallMaxInjectedChars",
-            "recallMaxContentChars",
-            "recallPreferAbstract",
-            "recallTokenBudget",
-            "commitTokenThreshold",
-            "commitTokenThresholdRatio",
-            "commitKeepRecentCount",
-            "bypassSessionPatterns",
-            "ingestReplyAssist",
-            "ingestReplyAssistMinSpeakerTurns",
-            "ingestReplyAssistMinChars",
-            "ingestReplyAssistIgnoreSessionPatterns",
-            "emitStandardDiagnostics",
-            "logFindRequests",
-            "traceRecall",
-            "traceRecallPersist",
-            "traceRecallDir",
-            "traceRecallRetentionDays",
-            "traceRecallLoadRecentDays",
-            "traceRecallMaxEntries",
-            "traceRecallMaxResultsPerSearch",
-            "traceRecallPreviewChars",
-            "traceRecallQueryMaxChars",
-            "traceRecallQueryMaxDays",
-            "traceRecallIncludeContentByDefault",
-            "traceRecallIncludeRawUserPreview",
-            "recallTargetTypes",
-            "enableAddResourceTool",
-            "enableRemoveResourceTool",
-            "enabledTools",
-            "disabledTools",
-            "runtimeQueryConfigPath",
-            "agentExperience",
-        ], "openviking config");
+        assertAllowedKeys(cfg, [...OPENVIKING_CONFIG_KEYS], "openviking config");
         const agentExperienceRaw = toRecord(cfg.agentExperience);
         assertAllowedKeys(agentExperienceRaw, ["enabled", "recallLimit", "scoreThreshold", "maxInjectedChars", "minQueryChars"], "openviking config agentExperience");
+        assertAllowedKeys(toRecord(cfg.recallRerank), [...OPENVIKING_RERANK_KEYS], "openviking config recallRerank");
         const mode = "remote";
         const peerRole = resolvePeerRole(cfg.peer_role);
         const peerPrefix = resolvePeerPrefix(cfg.peer_prefix);
@@ -372,6 +390,24 @@ export const memoryOpenVikingConfigSchema = {
             recallResources,
             recallLimit: Math.max(1, Math.floor(toNumber(cfg.recallLimit, DEFAULT_RECALL_LIMIT))),
             recallScoreThreshold: Math.min(1, Math.max(0, toNumber(cfg.recallScoreThreshold, DEFAULT_RECALL_SCORE_THRESHOLD))),
+            recallRerank: (() => {
+                const raw = (cfg.recallRerank ?? {});
+                return {
+                    enabled: raw.enabled === true,
+                    baseUrl: typeof raw.baseUrl === "string" && raw.baseUrl.trim()
+                        ? raw.baseUrl.trim() : DEFAULT_RERANK.baseUrl,
+                    model: typeof raw.model === "string" && raw.model.trim()
+                        ? raw.model.trim() : DEFAULT_RERANK.model,
+                    timeoutMs: Math.max(1000, toNumber(raw.timeoutMs, DEFAULT_RERANK.timeoutMs)),
+                    keep: Math.max(1, Math.floor(toNumber(raw.keep, DEFAULT_RERANK.keep))),
+                    floor: Math.min(1, Math.max(0, toNumber(raw.floor, DEFAULT_RERANK.floor))),
+                    // A wider net than the search would otherwise be asked for: the whole
+                    // point is that the right answer may be well down the list, and one
+                    // that never arrives cannot be lifted. Measured: the second document
+                    // naming the subject sat twenty-fourth.
+                    candidates: Math.max(1, Math.floor(toNumber(raw.candidates, 50))),
+                };
+            })(),
             recallMaxContentChars: Math.max(50, Math.min(10000, Math.floor(toNumber(cfg.recallMaxContentChars, DEFAULT_RECALL_MAX_CONTENT_CHARS)))),
             recallPreferAbstract: typeof cfg.recallPreferAbstract === "boolean"
                 ? cfg.recallPreferAbstract

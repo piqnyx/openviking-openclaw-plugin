@@ -42,18 +42,38 @@ describe("reordering by reading", () => {
     expect(out.best).toBeCloseTo(0.05);
   });
 
-  it("falls back to the search order when the reranker is unreachable", async () => {
+  it("says nothing when the reranker is unreachable, rather than guess", async () => {
+    // It used to hand back the search order here, on the grounds that it beats
+    // nothing. Measured live on one greeting, it does not: unranked put a
+    // friend's holiday and a video about a morning routine at the top, where
+    // ranking put the two notes that answered the question. Unranked memories
+    // passed off as ranked ones are the same defect as below-floor ones.
     const dead = vi.fn(async () => { throw new Error("refused"); }) as unknown as typeof fetch;
     const out = await rerankMemories("q", CANDIDATES, settings, dead);
     expect(out.reason).toBe("unavailable");
-    expect(out.kept.map((k: RerankCandidate) => k.uri)).toEqual(CANDIDATES.slice(0, 3).map((c: RerankCandidate) => c.uri));
+    expect(out.kept).toEqual([]);
   });
 
-  it("falls back on a refusal and on an empty answer too", async () => {
+  it("says nothing on a refusal and on an empty answer too", async () => {
     const refusing = vi.fn(async () => ({ ok: false, status: 400, json: async () => ({}) })) as unknown as typeof fetch;
-    expect((await rerankMemories("q", CANDIDATES, settings, refusing)).reason).toBe("unavailable");
+    const refused = await rerankMemories("q", CANDIDATES, settings, refusing);
+    expect(refused.reason).toBe("unavailable");
+    expect(refused.kept).toEqual([]);
     const empty = vi.fn(async () => ({ ok: true, json: async () => ({ results: [] }) })) as unknown as typeof fetch;
-    expect((await rerankMemories("q", CANDIDATES, settings, empty)).reason).toBe("unavailable");
+    const nothing = await rerankMemories("q", CANDIDATES, settings, empty);
+    expect(nothing.reason).toBe("unavailable");
+    expect(nothing.kept).toEqual([]);
+  });
+
+  it("still hands back the search order when reranking is switched off", async () => {
+    // Off is not a failure: nobody promised a ranking, so the search order is
+    // the honest thing to return. Only a ranking that was attempted and did not
+    // arrive returns nothing.
+    const never = vi.fn() as unknown as typeof fetch;
+    const out = await rerankMemories("q", CANDIDATES, DEFAULT_RERANK, never);
+    expect(out.reason).toBe("disabled");
+    expect(out.kept.map((k: RerankCandidate) => k.uri))
+      .toEqual(CANDIDATES.slice(0, DEFAULT_RERANK.keep).map((c: RerankCandidate) => c.uri));
   });
 
   it("sends the text of a memory, not its address", async () => {
