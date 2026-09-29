@@ -229,6 +229,16 @@ describe("сборка, когда свежего пересказа нет", ()
       passthrough: false, recovered: true, reason: "ov_msgs_fewer_than_input",
       archiveId: "archive_002", boundaryFound: true, tailMessages: 22, droppedMessages: 0,
     });
+    expect(outcome.boundary).toEqual({
+      archiveTurns: 3,
+      lookedFor: new Date(START + 37 * 60_000).toISOString(),
+      liveMessages: 60,
+      liveWithTime: 60,
+      timeKinds: { number: 60 },
+      nearestMs: 0,
+      nearestIndex: 37,
+      nearestRole: "assistant",
+    });
     expect(warned.join("\n")).toContain("no fresh summary");
   });
 
@@ -338,6 +348,32 @@ describe("сборка, когда свежего пересказа нет", ()
     expect(kept.length).toBeGreaterThan(20);        // граница неизвестна -- берём больше, а не меньше
     expect(value.estimatedTokens).toBeLessThanOrEqual(budget);
     expect(outcome).toMatchObject({ recovered: true, archiveId: "archive_002", boundaryFound: false });
+    expect(outcome.boundary).toEqual({
+      archiveTurns: 3,
+      lookedFor: new Date(START + 37 * 60_000).toISOString(),
+      liveMessages: 60,
+      liveWithTime: 0,
+      timeKinds: { undefined: 60 },
+      nearestMs: null,
+      nearestIndex: null,
+      nearestRole: null,
+    });
+  });
+
+  it("время в живой переписке чуть другое: говорит, на сколько и у какого сообщения", async () => {
+    const live = liveTranscript(60).map((m, i) => ({ ...m, timestamp: START + i * 60_000 + 7 }));
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39 } },
+    });
+    const { outcome, warned } = await assemble(live, 12_000, client);
+
+    expect(outcome).toMatchObject({ recovered: true, boundaryFound: false });
+    expect(outcome.boundary).toMatchObject({
+      liveWithTime: 60, timeKinds: { number: 60 }, nearestMs: 7, nearestIndex: 37, nearestRole: "assistant",
+    });
+    expect(JSON.stringify(outcome.boundary)).not.toContain("[m");
+    expect(warned.join("\n")).toContain("nearest live message is 7 ms off");
   });
 
   it("хвост не начинается с ответа инструмента, у которого отрезан вызов", async () => {
