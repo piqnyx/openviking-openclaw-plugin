@@ -278,6 +278,20 @@ describe("сборка, когда свежего пересказа нет", ()
     expect(warned.join("\n")).not.toContain("could not be told");
   });
 
+  it("два сообщения с одним временем: режет по первому, следующий ход цел", async () => {
+    const live = liveTranscript(60);
+    // Сообщение 38 открывает следующий ход и создано в ту же миллисекунду, что ответ 37.
+    live[38] = { ...live[38], timestamp: START + 37 * 60_000 };
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39 } },
+    });
+    const { value, outcome } = await assemble(live, 12_000, client);
+
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
+    expect(outcome.boundary).toMatchObject({ matchedIndex: 37 });
+  });
+
   it("пара есть только у последнего хода архива: его не берёт, границы нет", async () => {
     const live = liveTranscript(60);
     const { client } = server({
