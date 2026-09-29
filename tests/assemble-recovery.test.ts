@@ -21,6 +21,13 @@ import { estimateAgentMessagesTokens } from "../token-estimator.js";
  *
  * Сервер здесь -- настоящий клиент плагина над транспортом, который отвечает так, как отвечает
  * сервер 0.4.12: конверт {status, result, error}, 404 и NOT_FOUND на сорванный архив.
+ *
+ * Время. В живой переписке у каждого сообщения своё. На сервер плагин шлёт сообщения хода с
+ * ОДНИМ временем -- временем последнего сообщения хода (`pickLatestCreatedAt`), и сервер отдаёт
+ * его как получил. Ход здесь -- пара: сообщение пользователя 2k и ответ 2k+1. Архив режется по
+ * числу сообщений (`keep_recent_count`), а не по ходам, и может кончиться посреди хода. Поэтому
+ * хвост начинается с начала того хода, на котором кончился архив: лишний ход в ответе стоит
+ * токенов, пропущенное сообщение стоит нити разговора.
  */
 
 const START = Date.UTC(2026, 8, 28, 8, 0, 0);
@@ -39,12 +46,14 @@ function liveTranscript(count: number): AgentMessage[] {
   }));
 }
 
-function ovMessage(i: number, role = "user"): OVMessage {
+/** Сообщение, как оно лежит на сервере: время -- не своё, а последнего сообщения своего хода. */
+function ovMessage(i: number, role = i % 2 === 0 ? "user" : "assistant"): OVMessage {
+  const lastOfTurn = i - (i % 2) + 1;
   return {
     id: `ov-${i}`,
     role,
     parts: [{ type: "text", text: `${mark(i)} на сервере` }],
-    created_at: new Date(START + i * 60_000).toISOString(),
+    created_at: new Date(START + lastOfTurn * 60_000).toISOString(),
   };
 }
 
@@ -100,7 +109,10 @@ function server(shelf: Shelf) {
           archive_id: archive[1],
           abstract: "кратко",
           overview: found.overview,
-          messages: [ovMessage(found.lastMessageIndex - 1, "user"), ovMessage(found.lastMessageIndex, "assistant")],
+          // Шесть последних сообщений архива, по порядку, до lastMessageIndex включительно.
+          messages: Array.from({ length: 6 }, (_, k) => found.lastMessageIndex - 5 + k)
+            .filter((i) => i >= 0)
+            .map((i) => ovMessage(i)),
         },
       });
     }
@@ -203,18 +215,61 @@ describe("сборка, когда свежего пересказа нет", ()
     const { value, outcome, warned } = await assemble(live, budget, client);
 
     expect(JSON.stringify(value.messages[0])).toContain("[Session History Summary]\\nПЕРЕСКАЗ-ДО-39");
-    expect(marksOf(value.messages)).toEqual(Array.from({ length: 20 }, (_, k) => mark(40 + k)));
+    // С начала хода, на котором кончился архив (38 и 39), и до конца.
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
     expect(JSON.stringify(value.messages)).not.toContain("на сервере");
     expect(value.estimatedTokens).toBeLessThanOrEqual(budget);
-    expect(value.estimatedTokens).toBe(estimateAgentMessagesTokens(value.messages) + outcome.instructionTokens);
+    expect(value.estimatedTokens).toBe(
+      estimateAgentMessagesTokens(value.messages) + Number(outcome.instructionTokens),
+    );
     expect(value.systemPromptAddition).toContain("Session Context Guide");
     expect(asked.filter((p) => p.includes("/archives/")).map((p) => p.split("/").at(-1)))
       .toEqual(["archive_003", "archive_002"]);
     expect(outcome).toMatchObject({
       passthrough: false, recovered: true, reason: "ov_msgs_fewer_than_input",
-      archiveId: "archive_002", boundaryFound: true, tailMessages: 20, droppedMessages: 0,
+      archiveId: "archive_002", boundaryFound: true, tailMessages: 22, droppedMessages: 0,
     });
     expect(warned.join("\n")).toContain("no fresh summary");
+  });
+
+  it("архив кончился посреди хода: ответ, который в архив не попал, не теряется", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+      // Сообщение пользователя 38 в архиве, ответ 39 остался снаружи; время у обоих -- хода.
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-38", lastMessageIndex: 38 } },
+    });
+    const { value, outcome } = await assemble(live, 12_000, client);
+
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
+    expect(outcome).toMatchObject({ recovered: true, boundaryFound: true, tailMessages: 22 });
+  });
+
+  it("сообщение, написанное пока модель ещё отвечала, не теряется, хотя время у него раньше", async () => {
+    const live = liveTranscript(60);
+    // Пользователь отправил сообщение 40, пока шёл ответ 39: в переписке оно позже, по времени раньше.
+    live[40] = { ...live[40], timestamp: START + 38 * 60_000 + 5_000 };
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39 } },
+    });
+    const { value } = await assemble(live, 12_000, client);
+
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
+  });
+
+  it("в архиве виден один ход: границу не угадывает, берёт по бюджету", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ОДИН-ХОД", lastMessageIndex: 1 } },
+    });
+    const { value, outcome } = await assemble(live, 12_000, client);
+
+    expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ОДИН-ХОД");
+    expect(marksOf(value.messages).at(-1)).toBe(mark(59));
+    expect(value.estimatedTokens).toBeLessThanOrEqual(12_000);
+    expect(outcome).toMatchObject({ recovered: true, boundaryFound: false, tailMessages: 60 });
   });
 
   it("то, что не влезает в бюджет, режет со старого конца и говорит, сколько срезал", async () => {
@@ -233,8 +288,8 @@ describe("сборка, когда свежего пересказа нет", ()
     expect(kept).toEqual(Array.from({ length: kept.length }, (_, k) => mark(60 - kept.length + k)));
     expect(value.estimatedTokens).toBeLessThanOrEqual(budget);
     expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ДО-9");
-    expect(outcome).toMatchObject({ recovered: true, tailMessages: 50, droppedMessages: 50 - kept.length });
-    expect(warned.join("\n")).toContain(`dropped ${50 - kept.length}`);
+    expect(outcome).toMatchObject({ recovered: true, tailMessages: 52, droppedMessages: 52 - kept.length });
+    expect(warned.join("\n")).toContain(`dropped ${52 - kept.length}`);
   });
 
   it("закрытого архива нет: хвост в пределах бюджета, начинается с сообщения пользователя", async () => {
@@ -287,17 +342,19 @@ describe("сборка, когда свежего пересказа нет", ()
 
   it("хвост не начинается с ответа инструмента, у которого отрезан вызов", async () => {
     const live = liveTranscript(60);
-    live[39] = {
+    // Вызов -- последнее сообщение хода перед тем, на котором кончился архив; ответ инструмента
+    // открывает хвост.
+    live[37] = {
       role: "assistant",
       content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.md" } }],
-      timestamp: START + 39 * 60_000,
+      timestamp: START + 37 * 60_000,
     };
-    live[40] = {
+    live[38] = {
       role: "toolResult",
       toolCallId: "call-1",
       toolName: "read",
-      content: [{ type: "text", text: `${mark(40)} ответ инструмента` }],
-      timestamp: START + 40 * 60_000,
+      content: [{ type: "text", text: `${mark(38)} ответ инструмента` }],
+      timestamp: START + 38 * 60_000,
     } as AgentMessage;
     const { client } = server({
       context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
@@ -306,7 +363,7 @@ describe("сборка, когда свежего пересказа нет", ()
     const { value } = await assemble(live, 12_000, client);
 
     expect(value.messages.some((m) => m.role === "toolResult")).toBe(false);
-    expect(marksOf(value.messages)).toEqual(Array.from({ length: 19 }, (_, k) => mark(41 + k)));
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 21 }, (_, k) => mark(39 + k)));
   });
 
   it("живую переписку не меняет", async () => {
@@ -393,7 +450,7 @@ describe("то же через движок, как его зовёт шлюз",
     } as never);
 
     expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ДО-39");
-    expect(marksOf(value.messages as AgentMessage[])).toEqual(Array.from({ length: 20 }, (_, k) => mark(40 + k)));
+    expect(marksOf(value.messages as AgentMessage[])).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
     expect(value.estimatedTokens).toBeLessThanOrEqual(12_000);
   });
 });

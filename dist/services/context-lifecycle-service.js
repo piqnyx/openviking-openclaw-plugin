@@ -193,6 +193,211 @@ function isSessionNotFoundError(err) {
     const errorMessage = String(err);
     return errorMessage.includes("[NOT_FOUND]") && errorMessage.includes("Session not found");
 }
+/**
+ * How many archives back the last closed one is looked for. A server that has
+ * just failed an extraction has its newest archive failed, and a storm may fail
+ * several in a row; beyond this many the summary is given up on and the live
+ * tail alone is assembled.
+ */
+const RECOVERY_ARCHIVE_PROBES = 8;
+function isNotFoundError(err) {
+    return String(err).includes("[NOT_FOUND]");
+}
+/** A moment as milliseconds: a number (seconds or milliseconds) or a date in text. */
+function momentMs(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return Math.abs(value) < 100_000_000_000 ? value * 1000 : value;
+    }
+    if (typeof value === "string" && value.trim()) {
+        const parsed = Date.parse(value);
+        return Number.isNaN(parsed) ? undefined : parsed;
+    }
+    return undefined;
+}
+/**
+ * The newest archive the server will hand out -- a closed one with a summary --
+ * looking back from the newest. A failed or pending archive answers NOT_FOUND
+ * and the next older one is asked; any other trouble ends the search, because a
+ * server that cannot answer will not answer the next request either.
+ */
+async function findLastClosedArchive(client, ovSessionId, totalArchives, logger) {
+    const newest = Math.floor(totalArchives);
+    const oldest = Math.max(1, newest - RECOVERY_ARCHIVE_PROBES + 1);
+    for (let index = newest; index >= oldest; index -= 1) {
+        const archiveId = `archive_${String(index).padStart(3, "0")}`;
+        try {
+            const archive = await client.getSessionArchive(ovSessionId, archiveId);
+            const overview = typeof archive?.overview === "string" ? archive.overview.trim() : "";
+            if (!overview) {
+                continue;
+            }
+            const moments = (archive.messages ?? [])
+                .map((message) => momentMs(message?.created_at))
+                .filter((moment) => moment !== undefined);
+            return {
+                archiveId,
+                overview,
+                turnStamps: [...new Set(moments)].sort((left, right) => left - right),
+            };
+        }
+        catch (err) {
+            if (isNotFoundError(err)) {
+                continue;
+            }
+            logger.warn?.(`openviking: looking for the last closed archive of session=${ovSessionId} ` +
+                `stopped at ${archiveId}: ${String(err)}`);
+            return null;
+        }
+    }
+    return null;
+}
+/**
+ * Where in the live transcript the tail begins: the index of the last message
+ * of the turn BEFORE the one the archive ends in, or -1 when that cannot be told.
+ *
+ * The plugin stamps every message of a turn with one moment, that of the turn's
+ * last message (`pickLatestCreatedAt`), and the server hands it back as it got
+ * it. The archive is cut by a count of messages (`keep_recent_count`), not by
+ * turns, so it may end in the middle of a turn -- and the stamp of its last
+ * message then names a live message that comes AFTER the archive's end. Cutting
+ * there would leave out what the archive never took. So the turn the archive
+ * ends in is given whole, and the cut is made where the turn before it ended.
+ *
+ * The moment is matched exactly and the cut is made by place, not by time: a
+ * message sent while the model was still answering stands later in the
+ * transcript with an earlier time, and "everything older than" would take it
+ * for archived. No exact match -- a lone turn in the archive, a transcript
+ * without times, a moment the server did not keep -- is no boundary at all, and
+ * the caller then takes more rather than less.
+ */
+function boundaryBeforeArchiveEnd(liveMessages, turnStamps) {
+    if (turnStamps.length < 2) {
+        return -1;
+    }
+    const endOfTurnBefore = turnStamps[turnStamps.length - 2];
+    for (let index = liveMessages.length - 1; index >= 0; index -= 1) {
+        if (momentMs(liveMessages[index]?.timestamp) === endOfTurnBefore) {
+            return index;
+        }
+    }
+    return -1;
+}
+/**
+ * The longest run of messages at the end of `messages` that fits `budget`.
+ * Counted message by message from the newest, then checked as a whole, because
+ * the estimate of a list is a little more than the sum of its parts.
+ */
+function newestWithinBudget(messages, budget, roughEstimate) {
+    let start = messages.length;
+    let spent = 0;
+    while (start > 0) {
+        const cost = roughEstimate([messages[start - 1]]);
+        if (spent + cost > budget) {
+            break;
+        }
+        spent += cost;
+        start -= 1;
+    }
+    let kept = messages.slice(start);
+    while (kept.length > 0 && roughEstimate(kept) > budget) {
+        kept = kept.slice(1);
+    }
+    return kept;
+}
+/**
+ * Assembly without a fresh summary (28.09.2026).
+ *
+ * The server could not be used as it answered: its newest archive is failed and
+ * it gives no summary while that is so, or it has nothing, or it did not answer
+ * at all. A live transcript that fits the budget goes out as it is, as it always
+ * did. One that does not fit never goes out whole -- no key would serve it, and
+ * the chat would stand still until somebody mended the session by hand. It is
+ * assembled instead from the summary of the last closed archive and everything
+ * said after that archive ended, in order and without a gap; what still does not
+ * fit is cut from the old end and counted.
+ *
+ * The messages after the archive are taken from the live transcript, not from
+ * the server: the server will not hand out the messages of a failed archive, and
+ * the live transcript has them all. Where the tail begins is told by
+ * `boundaryBeforeArchiveEnd`; a boundary that cannot be told means more is
+ * taken, never less: an overlap with the summary costs tokens, a gap costs the
+ * thread of the conversation.
+ *
+ * Trouble with the server does not stop it: the archive not found, not
+ * answered for, or unreadable still leaves the live tail within the budget.
+ */
+async function assembleWithoutFreshSummary(params) {
+    const { diag, logger, roughEstimate, ovSessionId, reason, liveMessages, originalTokens, tokenBudget, extra } = params;
+    if (originalTokens <= tokenBudget) {
+        return assemblePassthrough({ diag, ovSessionId, reason, liveMessages, originalTokens, extra });
+    }
+    let archive = null;
+    if (params.client && typeof params.totalArchives === "number" && params.totalArchives >= 1) {
+        try {
+            archive = await findLastClosedArchive(params.client, ovSessionId, params.totalArchives, logger);
+        }
+        catch (err) {
+            logger.warn?.(`openviking: looking for the last closed archive of session=${ovSessionId} broke: ${String(err)}`);
+        }
+    }
+    const instruction = archive ? buildInstructionPrompt() : { text: "", tokens: 0 };
+    const budgets = allocateContextBudget(tokenBudget, instruction.tokens);
+    const summary = buildArchiveMemory(archive?.overview, [], budgets.archiveMemory, roughEstimate);
+    const sessionBudget = Math.max(tokenBudget - budgets.reserved - instruction.tokens - summary.tokens, 0);
+    const boundary = archive ? boundaryBeforeArchiveEnd(liveMessages, archive.turnStamps) : -1;
+    const boundaryFound = boundary >= 0;
+    const tail = boundaryFound ? liveMessages.slice(boundary + 1) : liveMessages.slice();
+    let kept = newestWithinBudget(tail, sessionBudget, roughEstimate);
+    if (!archive) {
+        // Nothing stands before the tail, so it has to open with the user's turn.
+        const firstUser = kept.findIndex((message) => message?.role === "user");
+        kept = firstUser >= 0 ? kept.slice(firstUser) : [];
+    }
+    const droppedMessages = tail.length - kept.length;
+    let messages;
+    try {
+        messages = sanitizeAgentMessagesForProvider([...summary.messages, ...kept]);
+    }
+    catch (err) {
+        logger.warn?.(`openviking: the recovered context of session=${ovSessionId} could not be put in order, ` +
+            `handing it over as it is: ${String(err)}`);
+        messages = [...summary.messages, ...kept];
+    }
+    const estimatedTokens = roughEstimate(messages) + instruction.tokens;
+    const tokensSaved = originalTokens - estimatedTokens;
+    logger.warn?.(`openviking: no fresh summary for session=${ovSessionId} (${reason}): the transcript is ` +
+        `${originalTokens} tokens against a budget of ${tokenBudget}, so it was assembled from ` +
+        `${archive ? `the summary of ${archive.archiveId}` : "no summary (no closed archive in reach)"} ` +
+        `and ${kept.length} live messages` +
+        (boundaryFound
+            ? " from the turn the archive ends in"
+            : " by budget, where the archive ends could not be told") +
+        (droppedMessages > 0 ? `; dropped ${droppedMessages} oldest that did not fit` : ""));
+    diag("assemble_result", ovSessionId, {
+        passthrough: false,
+        recovered: true,
+        reason,
+        archiveId: archive?.archiveId ?? null,
+        boundaryFound,
+        tailMessages: tail.length,
+        droppedMessages,
+        outputMessagesCount: messages.length,
+        inputTokenEstimate: originalTokens,
+        estimatedTokens,
+        tokensSaved,
+        savingPct: originalTokens > 0 ? Math.round((tokensSaved / originalTokens) * 100) : 0,
+        archiveTokens: summary.tokens,
+        instructionTokens: instruction.tokens,
+        sessionBudget,
+        tokenBudget,
+        ...extra,
+    });
+    return {
+        messages,
+        estimatedTokens,
+        ...(instruction.text ? { systemPromptAddition: instruction.text } : {}),
+    };
+}
 export async function assembleOpenVikingSession({ sessionId, sessionKey, messages, tokenBudget, runtimeContext, isMainAssemble, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, queryConfigStore, traceRecorder, diag, roughEstimate, messageDigest, extractAgentMessageText, hasAutoRecallBlock, prependRecallToLatestUserMessage, }) {
     const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
     const sender = extractRuntimeSenderId(runtimeContext);
@@ -316,33 +521,48 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
         const hasArchives = !!ctx?.latest_archive_overview || preAbstracts.length > 0;
         const activeCount = ctx?.messages?.length ?? 0;
         if (!ctx || (!hasArchives && activeCount === 0)) {
-            return assemblePassthrough({
+            return await assembleWithoutFreshSummary({
                 diag,
+                logger,
+                roughEstimate,
                 ovSessionId,
                 reason: "no_ov_data",
                 liveMessages: messages,
                 originalTokens,
+                tokenBudget,
+                client,
+                totalArchives: ctx?.stats?.totalArchives,
                 extra: { archiveCount: 0, activeCount: 0 },
             });
         }
         if (!hasArchives && ctx.messages.length < messages.length) {
-            return assemblePassthrough({
+            return await assembleWithoutFreshSummary({
                 diag,
+                logger,
+                roughEstimate,
                 ovSessionId,
                 reason: "ov_msgs_fewer_than_input",
                 liveMessages: messages,
                 originalTokens,
+                tokenBudget,
+                client,
+                totalArchives: ctx.stats?.totalArchives,
                 extra: { archiveCount: 0, activeCount },
             });
         }
         const { sanitized, archive, session, budgets, instruction } = buildAssembledContext(ctx.latest_archive_overview, preAbstracts, ctx.messages, tokenBudget, ovSessionId, logger, roughEstimate);
         if (sanitized.length === 0 && messages.length > 0) {
-            return assemblePassthrough({
+            return await assembleWithoutFreshSummary({
                 diag,
+                logger,
+                roughEstimate,
                 ovSessionId,
                 reason: "sanitized_empty",
                 liveMessages: messages,
                 originalTokens,
+                tokenBudget,
+                client,
+                totalArchives: ctx.stats?.totalArchives,
                 extra: { archiveCount: preAbstracts.length, activeCount },
             });
         }
@@ -378,12 +598,15 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
             const errorMessage = String(err);
             logger.info(`openviking: assemble skipped because OV session does not exist ` +
                 `(session=${ovSessionId}, tokenBudget=${tokenBudget}, agentId=${resolveAgentId(ovSessionId)})`);
-            return assemblePassthrough({
+            return await assembleWithoutFreshSummary({
                 diag,
+                logger,
+                roughEstimate,
                 ovSessionId,
                 reason: "session_not_found",
                 liveMessages: messages,
                 originalTokens,
+                tokenBudget,
                 extra: {
                     error: errorMessage,
                     tokenBudget,
@@ -402,7 +625,20 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
             senderIdFound: sender.found,
             senderId: sender.senderId ?? null,
         });
-        return { messages, estimatedTokens: roughEstimate(messages) };
+        if (originalTokens <= tokenBudget) {
+            return { messages, estimatedTokens: originalTokens };
+        }
+        return await assembleWithoutFreshSummary({
+            diag,
+            logger,
+            roughEstimate,
+            ovSessionId,
+            reason: "assemble_error",
+            liveMessages: messages,
+            originalTokens,
+            tokenBudget,
+            extra: { error: String(err) },
+        });
     }
 }
 function normalizeTimestamp(value) {
