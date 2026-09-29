@@ -491,7 +491,8 @@ async function findLastClosedArchive(
 
 /**
  * Where in the live transcript the tail begins: the index of the last message
- * of the turn BEFORE the one the archive ends in, or -1 when that cannot be told.
+ * of a turn BEFORE the one the archive ends in -- the latest such turn the live
+ * transcript knows -- or -1 when that cannot be told.
  *
  * The plugin stamps every message of a turn with one moment, that of the turn's
  * last message (`pickLatestCreatedAt`), and the server hands it back as it got
@@ -504,71 +505,101 @@ async function findLastClosedArchive(
  * The moment is matched exactly and the cut is made by place, not by time: a
  * message sent while the model was still answering stands later in the
  * transcript with an earlier time, and "everything older than" would take it
- * for archived. No exact match -- a lone turn in the archive, a transcript
- * without times, a moment the server did not keep -- is no boundary at all, and
- * the caller then takes more rather than less.
+ * for archived.
+ *
+ * Not every turn of an archive has a counterpart in the transcript the gateway
+ * hands over (29.09.2026, the live server: the moment looked for stood nowhere,
+ * the nearest live message was the archive's last turn, 5838 ms on). Such a
+ * turn is stepped over and the one before it is tried, back to the archive's
+ * oldest. That only moves the cut earlier: more of what the summary already
+ * covers is given again, nothing is left out. No match at all -- a lone turn in
+ * the archive, a transcript without times -- is no boundary, and the caller
+ * then takes more rather than less.
  */
 function boundaryBeforeArchiveEnd(liveMessages: AgentMessage[], turnStamps: number[]): number {
   if (turnStamps.length < 2) {
     return -1;
   }
-  const endOfTurnBefore = turnStamps[turnStamps.length - 2];
-  for (let index = liveMessages.length - 1; index >= 0; index -= 1) {
-    if (momentMs(liveMessages[index]?.timestamp) === endOfTurnBefore) {
-      return index;
+  // The FIRST place each moment stands at. Two messages may carry one moment, and
+  // the later of them may open the next turn: cutting at the first gives a
+  // message of this turn again, cutting at the last would leave that one out.
+  const placeOf = new Map<number, number>();
+  for (let index = 0; index < liveMessages.length; index += 1) {
+    const moment = momentMs(liveMessages[index]?.timestamp);
+    if (moment !== undefined && !placeOf.has(moment)) {
+      placeOf.set(moment, index);
+    }
+  }
+  for (let turn = turnStamps.length - 2; turn >= 0; turn -= 1) {
+    const place = placeOf.get(turnStamps[turn]);
+    if (place !== undefined) {
+      return place;
     }
   }
   return -1;
 }
 
+/** How many of the archive's last turns the diagnostics show. */
+const BOUNDARY_TURNS_SHOWN = 6;
+
 /**
  * What the search for the boundary had to go on, in numbers alone -- no text of
  * the conversation. Written into the diagnostics of every recovery, so that a
  * boundary not found on a live server explains itself: how many live messages
- * carry a time at all and of what kind, which moment was looked for, and how
- * far off the nearest live message stands.
+ * carry a time at all and of what kind, which turn the cut was made at, and for
+ * the archive's last turns, oldest first, how far off the nearest live message
+ * stands. The archive's very last turn takes no part in the search but is shown.
  */
 function describeBoundarySearch(
   liveMessages: AgentMessage[],
   turnStamps: number[],
+  boundary: number,
 ): Record<string, unknown> {
   const timeKinds: Record<string, number> = {};
-  let liveWithTime = 0;
+  const moments: number[] = [];
   for (const message of liveMessages) {
     const raw = message?.timestamp;
     const kind = raw === null ? "null" : typeof raw;
     timeKinds[kind] = (timeKinds[kind] ?? 0) + 1;
-    if (momentMs(raw) !== undefined) {
-      liveWithTime += 1;
+    const moment = momentMs(raw);
+    if (moment !== undefined) {
+      moments.push(moment);
     }
   }
-  const lookedFor = turnStamps.length >= 2 ? turnStamps[turnStamps.length - 2] : undefined;
-  let nearestMs: number | null = null;
-  let nearestIndex: number | null = null;
-  if (lookedFor !== undefined) {
-    for (let index = 0; index < liveMessages.length; index += 1) {
-      const moment = momentMs(liveMessages[index]?.timestamp);
-      if (moment === undefined) {
-        continue;
-      }
-      const off = moment - lookedFor;
-      if (nearestMs === null || Math.abs(off) <= Math.abs(nearestMs)) {
-        nearestMs = off;
-        nearestIndex = index;
+  const lastTurns = turnStamps.slice(-BOUNDARY_TURNS_SHOWN).map((stamp) => {
+    let offMs: number | null = null;
+    for (const moment of moments) {
+      const off = moment - stamp;
+      if (offMs === null || Math.abs(off) < Math.abs(offMs)) {
+        offMs = off;
       }
     }
-  }
-  const nearestRole = nearestIndex === null ? null : liveMessages[nearestIndex]?.role;
+    return { at: new Date(stamp).toISOString(), offMs };
+  });
+  const matchedAt = boundary >= 0 ? momentMs(liveMessages[boundary]?.timestamp) : undefined;
+  const matchedRole = boundary >= 0 ? liveMessages[boundary]?.role : null;
   return {
     archiveTurns: turnStamps.length,
-    lookedFor: lookedFor === undefined ? null : new Date(lookedFor).toISOString(),
     liveMessages: liveMessages.length,
-    liveWithTime,
+    liveWithTime: moments.length,
     timeKinds,
-    nearestMs,
-    nearestIndex,
-    nearestRole: typeof nearestRole === "string" ? nearestRole : null,
+    matched: matchedAt === undefined ? null : new Date(matchedAt).toISOString(),
+    matchedIndex: boundary >= 0 ? boundary : null,
+    matchedRole: typeof matchedRole === "string" ? matchedRole : null,
+    lastTurns,
   };
+}
+
+function boundarySearchInWords(search: Record<string, unknown>): string {
+  const turns = Array.isArray(search.lastTurns) ? (search.lastTurns as Array<{ offMs: number | null }>) : [];
+  const offs = turns.map((turn) => turn.offMs).filter((off): off is number => off !== null);
+  return (
+    `looked for ${String(search.archiveTurns)} turns of the archive among ` +
+    `${String(search.liveWithTime)} live messages with a time, ` +
+    (offs.length > 0
+      ? `for its last ${offs.length} the nearest live messages stand ${offs.join(", ")} ms off`
+      : "none of them has one")
+  );
 }
 
 /**
@@ -660,7 +691,7 @@ async function assembleWithoutFreshSummary(params: {
 
   const boundary = archive ? boundaryBeforeArchiveEnd(liveMessages, archive.turnStamps) : -1;
   const boundaryFound = boundary >= 0;
-  const search = archive ? describeBoundarySearch(liveMessages, archive.turnStamps) : null;
+  const search = archive ? describeBoundarySearch(liveMessages, archive.turnStamps, boundary) : null;
   const tail = boundaryFound ? liveMessages.slice(boundary + 1) : liveMessages.slice();
 
   let kept = newestWithinBudget(tail, sessionBudget, roughEstimate);
@@ -693,13 +724,7 @@ async function assembleWithoutFreshSummary(params: {
         ? " from the turn the archive ends in"
         : " by budget, where the archive ends could not be told") +
       (droppedMessages > 0 ? `; dropped ${droppedMessages} oldest that did not fit` : "") +
-      (search && !boundaryFound
-        ? `; looked for ${String(search.lookedFor)} among ${String(search.liveWithTime)} live messages ` +
-          `with a time, ` +
-          (search.nearestMs === null
-            ? "none of them has one"
-            : `the nearest live message is ${String(search.nearestMs)} ms off`)
-        : ""),
+      (search && !boundaryFound ? `; ${boundarySearchInWords(search)}` : ""),
   );
   diag("assemble_result", ovSessionId, {
     passthrough: false,
