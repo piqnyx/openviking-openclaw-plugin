@@ -522,6 +522,56 @@ function boundaryBeforeArchiveEnd(liveMessages: AgentMessage[], turnStamps: numb
 }
 
 /**
+ * What the search for the boundary had to go on, in numbers alone -- no text of
+ * the conversation. Written into the diagnostics of every recovery, so that a
+ * boundary not found on a live server explains itself: how many live messages
+ * carry a time at all and of what kind, which moment was looked for, and how
+ * far off the nearest live message stands.
+ */
+function describeBoundarySearch(
+  liveMessages: AgentMessage[],
+  turnStamps: number[],
+): Record<string, unknown> {
+  const timeKinds: Record<string, number> = {};
+  let liveWithTime = 0;
+  for (const message of liveMessages) {
+    const raw = message?.timestamp;
+    const kind = raw === null ? "null" : typeof raw;
+    timeKinds[kind] = (timeKinds[kind] ?? 0) + 1;
+    if (momentMs(raw) !== undefined) {
+      liveWithTime += 1;
+    }
+  }
+  const lookedFor = turnStamps.length >= 2 ? turnStamps[turnStamps.length - 2] : undefined;
+  let nearestMs: number | null = null;
+  let nearestIndex: number | null = null;
+  if (lookedFor !== undefined) {
+    for (let index = 0; index < liveMessages.length; index += 1) {
+      const moment = momentMs(liveMessages[index]?.timestamp);
+      if (moment === undefined) {
+        continue;
+      }
+      const off = moment - lookedFor;
+      if (nearestMs === null || Math.abs(off) <= Math.abs(nearestMs)) {
+        nearestMs = off;
+        nearestIndex = index;
+      }
+    }
+  }
+  const nearestRole = nearestIndex === null ? null : liveMessages[nearestIndex]?.role;
+  return {
+    archiveTurns: turnStamps.length,
+    lookedFor: lookedFor === undefined ? null : new Date(lookedFor).toISOString(),
+    liveMessages: liveMessages.length,
+    liveWithTime,
+    timeKinds,
+    nearestMs,
+    nearestIndex,
+    nearestRole: typeof nearestRole === "string" ? nearestRole : null,
+  };
+}
+
+/**
  * The longest run of messages at the end of `messages` that fits `budget`.
  * Counted message by message from the newest, then checked as a whole, because
  * the estimate of a list is a little more than the sum of its parts.
@@ -610,6 +660,7 @@ async function assembleWithoutFreshSummary(params: {
 
   const boundary = archive ? boundaryBeforeArchiveEnd(liveMessages, archive.turnStamps) : -1;
   const boundaryFound = boundary >= 0;
+  const search = archive ? describeBoundarySearch(liveMessages, archive.turnStamps) : null;
   const tail = boundaryFound ? liveMessages.slice(boundary + 1) : liveMessages.slice();
 
   let kept = newestWithinBudget(tail, sessionBudget, roughEstimate);
@@ -641,7 +692,14 @@ async function assembleWithoutFreshSummary(params: {
       (boundaryFound
         ? " from the turn the archive ends in"
         : " by budget, where the archive ends could not be told") +
-      (droppedMessages > 0 ? `; dropped ${droppedMessages} oldest that did not fit` : ""),
+      (droppedMessages > 0 ? `; dropped ${droppedMessages} oldest that did not fit` : "") +
+      (search && !boundaryFound
+        ? `; looked for ${String(search.lookedFor)} among ${String(search.liveWithTime)} live messages ` +
+          `with a time, ` +
+          (search.nearestMs === null
+            ? "none of them has one"
+            : `the nearest live message is ${String(search.nearestMs)} ms off`)
+        : ""),
   );
   diag("assemble_result", ovSessionId, {
     passthrough: false,
@@ -649,6 +707,7 @@ async function assembleWithoutFreshSummary(params: {
     reason,
     archiveId: archive?.archiveId ?? null,
     boundaryFound,
+    ...(search ? { boundary: search } : {}),
     tailMessages: tail.length,
     droppedMessages,
     outputMessagesCount: messages.length,
