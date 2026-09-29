@@ -61,7 +61,8 @@ type Shelf = {
   context?: Partial<SessionContextResult>;
   contextError?: { status: number; code: string; message: string };
   down?: boolean;
-  archives?: Record<string, { overview: string; lastMessageIndex: number }>;
+  /** `strayTurns`: ходы (по номеру последнего сообщения), чьё время на сервере не совпадает ни с чем. */
+  archives?: Record<string, { overview: string; lastMessageIndex: number; strayTurns?: number[] }>;
 };
 
 function server(shelf: Shelf) {
@@ -112,7 +113,13 @@ function server(shelf: Shelf) {
           // Шесть последних сообщений архива, по порядку, до lastMessageIndex включительно.
           messages: Array.from({ length: 6 }, (_, k) => found.lastMessageIndex - 5 + k)
             .filter((i) => i >= 0)
-            .map((i) => ovMessage(i)),
+            .map((i) => {
+              const message = ovMessage(i);
+              const lastOfTurn = i - (i % 2) + 1;
+              return found.strayTurns?.includes(lastOfTurn)
+                ? { ...message, created_at: new Date(START + lastOfTurn * 60_000 - 5_838).toISOString() }
+                : message;
+            }),
         },
       });
     }
@@ -231,15 +238,61 @@ describe("сборка, когда свежего пересказа нет", ()
     });
     expect(outcome.boundary).toEqual({
       archiveTurns: 3,
-      lookedFor: new Date(START + 37 * 60_000).toISOString(),
       liveMessages: 60,
       liveWithTime: 60,
       timeKinds: { number: 60 },
-      nearestMs: 0,
-      nearestIndex: 37,
-      nearestRole: "assistant",
+      matched: new Date(START + 37 * 60_000).toISOString(),
+      matchedIndex: 37,
+      matchedRole: "assistant",
+      // От старого к новому; последний ход архива в поиске не участвует, но виден.
+      lastTurns: [
+        { at: new Date(START + 35 * 60_000).toISOString(), offMs: 0 },
+        { at: new Date(START + 37 * 60_000).toISOString(), offMs: 0 },
+        { at: new Date(START + 39 * 60_000).toISOString(), offMs: 0 },
+      ],
     });
     expect(warned.join("\n")).toContain("no fresh summary");
+  });
+
+  it("у хода перед последним нет пары в переписке: берёт ход ещё раньше, у которого она есть", async () => {
+    // Случай 29.09 на сервере: искали 11:26:26.108, ближайшее сообщение стояло в 5838 мс.
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39, strayTurns: [37] } },
+    });
+    const { value, outcome, warned } = await assemble(live, 12_000, client);
+
+    // Ход 36–37 без пары, ход 34–35 с парой: хвост с 36-го, без пропуска.
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 24 }, (_, k) => mark(36 + k)));
+    expect(outcome).toMatchObject({ recovered: true, boundaryFound: true, tailMessages: 24 });
+    expect(outcome.boundary).toMatchObject({
+      matched: new Date(START + 35 * 60_000).toISOString(),
+      matchedIndex: 35,
+      lastTurns: [
+        { at: new Date(START + 35 * 60_000).toISOString(), offMs: 0 },
+        { at: new Date(START + 37 * 60_000 - 5_838).toISOString(), offMs: 5_838 },
+        { at: new Date(START + 39 * 60_000).toISOString(), offMs: 0 },
+      ],
+    });
+    expect(warned.join("\n")).not.toContain("could not be told");
+  });
+
+  it("пара есть только у последнего хода архива: его не берёт, границы нет", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+      archives: {
+        archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39, strayTurns: [35, 37] },
+      },
+    });
+    const { value, outcome } = await assemble(live, 12_000, client);
+
+    // Архив мог кончиться посреди последнего хода, поэтому по нему не режем.
+    expect(marksOf(value.messages).at(-1)).toBe(mark(59));
+    expect(marksOf(value.messages).length).toBeGreaterThan(22);
+    expect(outcome).toMatchObject({ recovered: true, boundaryFound: false, tailMessages: 60 });
+    expect(outcome.boundary).toMatchObject({ matched: null, matchedIndex: null });
   });
 
   it("архив кончился посреди хода: ответ, который в архив не попал, не теряется", async () => {
@@ -350,13 +403,17 @@ describe("сборка, когда свежего пересказа нет", ()
     expect(outcome).toMatchObject({ recovered: true, archiveId: "archive_002", boundaryFound: false });
     expect(outcome.boundary).toEqual({
       archiveTurns: 3,
-      lookedFor: new Date(START + 37 * 60_000).toISOString(),
       liveMessages: 60,
       liveWithTime: 0,
       timeKinds: { undefined: 60 },
-      nearestMs: null,
-      nearestIndex: null,
-      nearestRole: null,
+      matched: null,
+      matchedIndex: null,
+      matchedRole: null,
+      lastTurns: [
+        { at: new Date(START + 35 * 60_000).toISOString(), offMs: null },
+        { at: new Date(START + 37 * 60_000).toISOString(), offMs: null },
+        { at: new Date(START + 39 * 60_000).toISOString(), offMs: null },
+      ],
     });
   });
 
@@ -370,10 +427,11 @@ describe("сборка, когда свежего пересказа нет", ()
 
     expect(outcome).toMatchObject({ recovered: true, boundaryFound: false });
     expect(outcome.boundary).toMatchObject({
-      liveWithTime: 60, timeKinds: { number: 60 }, nearestMs: 7, nearestIndex: 37, nearestRole: "assistant",
+      liveWithTime: 60, timeKinds: { number: 60 }, matched: null,
+      lastTurns: [{ offMs: 7 }, { offMs: 7 }, { offMs: 7 }],
     });
     expect(JSON.stringify(outcome.boundary)).not.toContain("[m");
-    expect(warned.join("\n")).toContain("nearest live message is 7 ms off");
+    expect(warned.join("\n")).toContain("the nearest live messages stand 7, 7, 7 ms off");
   });
 
   it("хвост не начинается с ответа инструмента, у которого отрезан вызов", async () => {
