@@ -130,13 +130,8 @@ export type AfterTurnOpenVikingSessionParams = {
   messages?: AgentMessage[];
   prePromptMessageCount?: number;
   isHeartbeat?: boolean;
-  /**
-   * Present only on the live path, where the host hands over the model's context
-   * budget: after recording the turn, archive once the pending tokens reach
-   * `commitTokenThresholdRatio` of it. Absent on the durable record path, whose
-   * host call carries no budget by contract: that path only records the turn.
-   */
-  archive?: { tokenBudget: number };
+  /** Model context window in tokens; the auto-commit threshold is a fraction of this. */
+  tokenBudget: number;
   runtimeContext?: Record<string, unknown>;
   cfg: {
     autoCapture: boolean;
@@ -1166,7 +1161,7 @@ export async function afterTurnOpenVikingSession({
   messages: rawMessages,
   prePromptMessageCount,
   isHeartbeat,
-  archive,
+  tokenBudget,
   runtimeContext,
   cfg,
   getClient,
@@ -1252,7 +1247,6 @@ export async function afterTurnOpenVikingSession({
       newMessageCount: newCount,
       prePromptMessageCount: start,
       newTurnTokens,
-      decidesArchive: archive !== undefined,
       senderIdFound: sender.found,
       senderId: sender.senderId ?? null,
       messages: newMsgFull,
@@ -1297,10 +1291,6 @@ export async function afterTurnOpenVikingSession({
       }
     }
 
-    if (!archive) {
-      return;
-    }
-    const { tokenBudget } = archive;
     const session = await client.getSession(ovSessionId);
     const pendingTokens = session.pending_tokens ?? 0;
 
