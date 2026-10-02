@@ -816,7 +816,7 @@ function messageDigest(messages, maxCharsPerMsg = 2000) {
         };
     });
 }
-export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, tokenBudget, runtimeContext, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, }) {
+export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, runtimeContext, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, }) {
     if (!cfg.autoCapture) {
         return;
     }
@@ -919,14 +919,12 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
         }
         const session = await client.getSession(ovSessionId);
         const pendingTokens = session.pending_tokens ?? 0;
-        const commitTokenThreshold = Math.floor(tokenBudget * cfg.commitTokenThresholdRatio);
+        const commitTokenThreshold = cfg.commitTokenThreshold;
         if (pendingTokens < commitTokenThreshold) {
             diag("afterTurn_skip", ovSessionId, {
                 reason: "below_threshold",
                 pendingTokens,
                 commitTokenThreshold,
-                commitTokenThresholdRatio: cfg.commitTokenThresholdRatio,
-                tokenBudget,
                 senderIdFound: sender.found,
                 senderId: sender.senderId ?? null,
             });
@@ -942,8 +940,6 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
         diag("afterTurn_commit", ovSessionId, {
             pendingTokens,
             commitTokenThreshold,
-            commitTokenThresholdRatio: cfg.commitTokenThresholdRatio,
-            tokenBudget,
             status: commitResult.status,
             archived: commitResult.archived ?? false,
             taskId: commitResult.task_id ?? null,

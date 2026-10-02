@@ -256,7 +256,6 @@ export function createMemoryOpenVikingContextEngine(params) {
             });
         },
         async afterTurn(afterTurnParams) {
-            const tokenBudget = validTokenBudget(afterTurnParams.tokenBudget) ?? 128_000;
             // Хост зовёт afterTurn безусловно, как только метод существует
             // (src/agents/harness/context-engine-lifecycle.ts), не глядя на commitTurn.
             // Поэтому один и тот же ход может прийти обоими путями — отпечаток
@@ -274,7 +273,6 @@ export function createMemoryOpenVikingContextEngine(params) {
                 messages: afterTurnParams.messages,
                 prePromptMessageCount: afterTurnParams.prePromptMessageCount,
                 isHeartbeat: afterTurnParams.isHeartbeat,
-                tokenBudget,
                 runtimeContext: afterTurnParams.runtimeContext,
                 cfg,
                 getClient,
@@ -291,7 +289,6 @@ export function createMemoryOpenVikingContextEngine(params) {
          * "duplicate", а не записать ход второй раз.
          */
         async commitTurn(commitParams) {
-            const tokenBudget = validTokenBudget(commitParams.tokenBudget) ?? 128_000;
             const sessionId = commitParams.sessionId;
             if (!claimTurn(sessionId, `key:${commitParams.advancementKey}`)) {
                 diag("commitTurn_duplicate", sessionId, {
@@ -313,7 +310,6 @@ export function createMemoryOpenVikingContextEngine(params) {
                 messages: commitParams.messages,
                 prePromptMessageCount: commitParams.prePromptMessageCount,
                 isHeartbeat: commitParams.isHeartbeat,
-                tokenBudget,
                 runtimeContext: commitParams.runtimeContext,
                 cfg,
                 getClient,

@@ -207,11 +207,11 @@
       "help": "Completely bypass OpenViking for matching session keys. Use * within one segment and ** across segments.",
       "advanced": true
     },
-    "commitTokenThresholdRatio": {
-      "label": "Commit Token Threshold Ratio",
-      "placeholder": "0.5",
+    "commitTokenThreshold": {
+      "label": "Commit Token Threshold",
+      "placeholder": "50000",
       "advanced": true,
-      "help": "Auto-commit triggers once estimated pending tokens reach this fraction (0-1) of the model context window (e.g. 0.5 = 50%). Set to 0 to commit every turn."
+      "help": "Archive threshold in tokens: once the session's pending tokens reach this number, the recorded turn asks for an async commit. Set to 0 to commit every turn."
     },
     "commitKeepRecentCount": {
       "label": "Commit Keep Recent Count",
@@ -401,12 +401,8 @@
         "type": "number"
       },
       "commitTokenThreshold": {
-        "type": "number"
-      },
-      "commitTokenThresholdRatio": {
         "type": "number",
-        "minimum": 0,
-        "maximum": 1
+        "minimum": 0
       },
       "commitKeepRecentCount": {
         "type": "number",

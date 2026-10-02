@@ -44,7 +44,7 @@ OpenClaw owns agent execution, prompts, and tool invocation. OpenViking owns lon
 | Layer | Current behavior |
 |---|---|
 | `assemble` | Rebuilds compressed session history from OpenViking and injects relevant recall into the latest user message. |
-| `afterTurn` | Appends only the new turn to the OpenViking session; may trigger async commit when `pending_tokens >= tokenBudget * commitTokenThresholdRatio`. |
+| `afterTurn` | Appends only the new turn to the OpenViking session; may trigger async commit when `pending_tokens >= commitTokenThreshold`. |
 | `compact` | Runs `commit(wait=true)`, waits for archive/extraction completion, and reads back latest archive overview. |
 | Tools | Memory recall/store/forget, archive search/expand, resource/skill import/search, recall trace query, tool-result list/search/read. |
 
@@ -79,7 +79,7 @@ Core config lives under `plugins.entries.openviking.config`:
 | `recallLimit` | `6` | Max selected recall items. |
 | `recallScoreThreshold` | `0.15` | Min score after post-processing. |
 | `recallMaxInjectedChars` | `4000` | Total injected character cap; complete memories that do not fit are skipped. |
-| `commitTokenThresholdRatio` | `0.5` | Async-commit threshold as a fraction (0-1) of the model context window (e.g. 0.5 = 50%); `0` commits every turn. |
+| `commitTokenThreshold` | `50000` | Async-commit threshold in pending tokens; both the in-turn (afterTurn) and the after-turn (commitTurn) records decide by this number; `0` commits every turn. |
 | `commitKeepRecentCount` | `10` | Recent messages kept live after afterTurn commit. Compact always uses `0`. |
 | `bypassSessionPatterns` | empty | Glob-like session keys that completely bypass OpenViking (`*` segment, `**` multi-segment). |
 | `emitStandardDiagnostics` | `false` | Emit structured `openviking: diag {...}` lines. |
