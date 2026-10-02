@@ -133,7 +133,6 @@ type ContextEngine = {
     sessionId: string;
     sessionKey?: string;
     isHeartbeat?: boolean;
-    tokenBudget?: number;
     runtimeContext?: Record<string, unknown>;
   }) => Promise<{ status: "committed" | "duplicate" }>;
   afterTurn?: (params: {
@@ -470,7 +469,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         messages: afterTurnParams.messages,
         prePromptMessageCount: afterTurnParams.prePromptMessageCount,
         isHeartbeat: afterTurnParams.isHeartbeat,
-        tokenBudget,
+        archive: { tokenBudget },
         runtimeContext: afterTurnParams.runtimeContext,
         cfg,
         getClient,
@@ -486,9 +485,13 @@ export function createMemoryOpenVikingContextEngine(params: {
      * Долговечный путь фиксации хода. Хост держит очередь в SQLite и повторяет
      * вызов с тем же advancementKey после сбоя, поэтому повтор обязан вернуть
      * "duplicate", а не записать ход второй раз.
+     *
+     * Только записывает. Бюджета контекста в этом вызове у хоста нет (это
+     * запись «что было сказано», а не работа с моделью), поэтому решение
+     * о сводке здесь не принимается: его принимает живой путь afterTurn,
+     * которому хост бюджет передаёт и который зовётся каждый ход.
      */
     async commitTurn(commitParams): Promise<{ status: "committed" | "duplicate" }> {
-      const tokenBudget = validTokenBudget(commitParams.tokenBudget) ?? 128_000;
       const sessionId = commitParams.sessionId;
       if (!claimTurn(sessionId, `key:${commitParams.advancementKey}`)) {
         diag("commitTurn_duplicate", sessionId, {
@@ -514,7 +517,6 @@ export function createMemoryOpenVikingContextEngine(params: {
         messages: commitParams.messages,
         prePromptMessageCount: commitParams.prePromptMessageCount,
         isHeartbeat: commitParams.isHeartbeat,
-        tokenBudget,
         runtimeContext: commitParams.runtimeContext,
         cfg,
         getClient,
