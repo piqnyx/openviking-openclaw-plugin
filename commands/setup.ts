@@ -77,7 +77,7 @@ const CONFIG_KEYS_TO_PRESERVE = [
   "recallMaxContentChars",
   "recallPreferAbstract",
   "recallTokenBudget",
-  "commitTokenThresholdRatio",
+  "commitTokenThreshold",
   "commitKeepRecentCount",
   "bypassSessionPatterns",
   "emitStandardDiagnostics",

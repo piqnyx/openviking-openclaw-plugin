@@ -65,14 +65,14 @@ export type MemoryOpenVikingConfig = {
   /** @deprecated Use recallMaxInjectedChars. */
   recallTokenBudget?: number;
   /**
-   * Auto-commit threshold expressed as a fraction (0-1) of the model context
-   * window (tokenBudget). afterTurn triggers an async commit once estimated
-   * pending tokens reach `commitTokenThresholdRatio * tokenBudget`
-   * (e.g. 0.5 = 50% of the window). Replaces the former absolute
-   * `commitTokenThreshold` (still accepted but ignored for backward
-   * compatibility). Set to 0 to commit every turn.
+   * Archive threshold in tokens. Once the session's pending (not yet archived)
+   * tokens reach this number, the turn that was just recorded asks the server
+   * for an async commit (archive + memory extraction). A plain number, so the
+   * two paths that record a turn (afterTurn inside the turn, commitTurn after
+   * it) decide the same way without needing the model's context budget.
+   * Set to 0 to commit every turn. Default 50 000.
    */
-  commitTokenThresholdRatio?: number;
+  commitTokenThreshold?: number;
   /**
    * WM v2: number of most-recent messages to keep live after an afterTurn
    * commit so the next turn still has immediate context. Forwarded to the
@@ -155,7 +155,7 @@ const DEFAULT_RECALL_SCORE_THRESHOLD = 0.15;
 const DEFAULT_RECALL_MAX_CONTENT_CHARS = 5000;
 const DEFAULT_RECALL_PREFER_ABSTRACT = false;
 const DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000;
-const DEFAULT_COMMIT_TOKEN_THRESHOLD_RATIO = 0.5;
+const DEFAULT_COMMIT_TOKEN_THRESHOLD = 50_000;
 const DEFAULT_COMMIT_KEEP_RECENT_COUNT = 10;
 const DEFAULT_BYPASS_SESSION_PATTERNS: string[] = [];
 const DEFAULT_EMIT_STANDARD_DIAGNOSTICS = false;
@@ -473,7 +473,6 @@ export const OPENVIKING_CONFIG_KEYS = [
   "recallPreferAbstract",
   "recallTokenBudget",
   "commitTokenThreshold",
-  "commitTokenThresholdRatio",
   "commitKeepRecentCount",
   "bypassSessionPatterns",
   "ingestReplyAssist",
@@ -632,9 +631,9 @@ export const memoryOpenVikingConfigSchema = {
           : DEFAULT_RECALL_PREFER_ABSTRACT,
       recallMaxInjectedChars,
       recallTokenBudget: recallMaxInjectedChars,
-      commitTokenThresholdRatio: Math.max(
+      commitTokenThreshold: Math.max(
         0,
-        Math.min(1, toNumber(cfg.commitTokenThresholdRatio, DEFAULT_COMMIT_TOKEN_THRESHOLD_RATIO)),
+        Math.floor(toNumber(cfg.commitTokenThreshold, DEFAULT_COMMIT_TOKEN_THRESHOLD)),
       ),
       commitKeepRecentCount: Math.max(
         0,
@@ -875,11 +874,11 @@ export const memoryOpenVikingConfigSchema = {
       help: "Completely bypass OpenViking for matching session keys. Use * within one segment and ** across segments.",
       advanced: true,
     },
-    commitTokenThresholdRatio: {
-      label: "Commit Token Threshold Ratio",
-      placeholder: String(DEFAULT_COMMIT_TOKEN_THRESHOLD_RATIO),
+    commitTokenThreshold: {
+      label: "Commit Token Threshold",
+      placeholder: String(DEFAULT_COMMIT_TOKEN_THRESHOLD),
       advanced: true,
-      help: "Auto-commit triggers once estimated pending tokens reach this fraction (0-1) of the model context window (e.g. 0.5 = 50%). Set to 0 to commit every turn.",
+      help: "Archive threshold in tokens: once the session's pending tokens reach this number, the recorded turn asks for an async commit. Set to 0 to commit every turn.",
     },
     commitKeepRecentCount: {
       label: "Commit Keep Recent Count",
