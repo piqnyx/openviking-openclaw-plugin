@@ -816,7 +816,7 @@ function messageDigest(messages, maxCharsPerMsg = 2000) {
         };
     });
 }
-export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, archive, runtimeContext, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, }) {
+export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, tokenBudget, runtimeContext, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, }) {
     if (!cfg.autoCapture) {
         return;
     }
@@ -883,7 +883,6 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
             newMessageCount: newCount,
             prePromptMessageCount: start,
             newTurnTokens,
-            decidesArchive: archive !== undefined,
             senderIdFound: sender.found,
             senderId: sender.senderId ?? null,
             messages: newMsgFull,
@@ -918,10 +917,6 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
                 }));
             }
         }
-        if (!archive) {
-            return;
-        }
-        const { tokenBudget } = archive;
         const session = await client.getSession(ovSessionId);
         const pendingTokens = session.pending_tokens ?? 0;
         const commitTokenThreshold = Math.floor(tokenBudget * cfg.commitTokenThresholdRatio);
