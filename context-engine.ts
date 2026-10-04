@@ -304,6 +304,11 @@ function validTokenBudget(raw: unknown): number | undefined {
   return undefined;
 }
 
+// The estimated size of the window the main assemble last built for a session:
+// what the model saw on its latest turn, in the plugin's own estimate. Read by
+// the record paths for the archive's ceiling; absent until the first assemble.
+const windowTokensBySession = new Map<string, number>();
+
 export function createMemoryOpenVikingContextEngine(params: {
   id: string;
   name: string;
@@ -422,7 +427,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         Object.prototype.hasOwnProperty.call(assembleParams, "availableTools") ||
         Object.prototype.hasOwnProperty.call(assembleParams, "citationsMode") ||
         Object.prototype.hasOwnProperty.call(assembleParams, "prompt");
-      return assembleOpenVikingSession({
+      const assembled = await assembleOpenVikingSession({
         sessionId: assembleParams.sessionId,
         sessionKey: resolveSessionKey(assembleParams),
         messages: assembleParams.messages,
@@ -444,6 +449,15 @@ export function createMemoryOpenVikingContextEngine(params: {
         hasAutoRecallBlock,
         prependRecallToLatestUserMessage,
       });
+      // The size of what the model is about to see, for the ceiling of the
+      // archive (Vit, 2026-10-04). The main assemble builds the window; the
+      // host's own transcript, handed to the record paths, is the whole
+      // session file and says nothing about the window (seen 04.10: 865 000
+      // against a window of 96 000 after a restart).
+      if (isMainAssemble) {
+        windowTokensBySession.set(assembleParams.sessionId, assembled.estimatedTokens);
+      }
+      return assembled;
     },
 
     async afterTurn(afterTurnParams): Promise<void> {
@@ -469,6 +483,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         prePromptMessageCount: afterTurnParams.prePromptMessageCount,
         isHeartbeat: afterTurnParams.isHeartbeat,
         runtimeContext: afterTurnParams.runtimeContext,
+        windowTokens: windowTokensBySession.get(afterTurnParams.sessionId),
         cfg,
         getClient,
         logger,
@@ -511,6 +526,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         prePromptMessageCount: commitParams.prePromptMessageCount,
         isHeartbeat: commitParams.isHeartbeat,
         runtimeContext: commitParams.runtimeContext,
+        windowTokens: windowTokensBySession.get(sessionId),
         cfg,
         getClient,
         logger,

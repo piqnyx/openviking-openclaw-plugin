@@ -139,11 +139,18 @@ export type AfterTurnOpenVikingSessionParams = {
   prePromptMessageCount?: number;
   isHeartbeat?: boolean;
   runtimeContext?: Record<string, unknown>;
+  /**
+   * The estimated size of the window the main assemble last built for this
+   * session -- what the model saw -- for the ceiling; unknown before the first
+   * assemble, and then the ceiling stays quiet. The host's own transcript is
+   * not it: that is the whole session file.
+   */
+  windowTokens?: number;
   cfg: {
     autoCapture: boolean;
     /** Pending tokens from which the recorded turn asks for an archive; a plain number, no budget needed. */
     commitTokenThreshold: number;
-    /** Whole-transcript size (plugin estimate) from which the recorded turn asks for an archive anyway; 0 is off. */
+    /** Window size (plugin estimate of the assembled window) from which the recorded turn asks for an archive anyway; 0 is off. */
     commitContextCeiling: number;
     commitKeepRecentCount: number;
     logFindRequests: boolean;
@@ -1171,6 +1178,7 @@ export async function afterTurnOpenVikingSession({
   prePromptMessageCount,
   isHeartbeat,
   runtimeContext,
+  windowTokens,
   cfg,
   getClient,
   logger,
@@ -1303,17 +1311,18 @@ export async function afterTurnOpenVikingSession({
     const pendingTokens = session.pending_tokens ?? 0;
 
     const commitTokenThreshold = cfg.commitTokenThreshold;
-    // The ceiling on the whole transcript (Vit, 2026-10-04): the host hands both
-    // record paths the whole transcript, so its size is known here in the same
-    // estimate the window is measured with against the host's budget. Over the
-    // ceiling the turn archives even under the pending threshold -- before the
-    // window has to be cut -- as long as there is something outside the kept
-    // tail to archive; the pending tokens are exactly that.
+    // The ceiling on the window (Vit, 2026-10-04): the size of what the model
+    // saw on this turn, as the main assemble estimated it -- the same estimate
+    // the window is measured with against the host's budget. Over the ceiling
+    // the turn archives even under the pending threshold -- before the window
+    // has to be cut -- as long as there is something outside the kept tail to
+    // archive; the pending tokens are exactly that. Not the host's transcript:
+    // that is the whole session file (865 000 against a window of 96 000 after
+    // a restart, seen 04.10), and no estimate of it says anything about the window.
     const commitContextCeiling = cfg.commitContextCeiling;
-    const contextTokens = Array.isArray(rawMessages)
-      ? rawMessages.reduce((sum, message) => sum + estimateAgentMessageTokens(message), 0)
-      : 0;
-    const overCeiling = commitContextCeiling > 0 && contextTokens >= commitContextCeiling && pendingTokens > 0;
+    const contextTokens = typeof windowTokens === "number" && Number.isFinite(windowTokens) ? windowTokens : null;
+    const overCeiling =
+      commitContextCeiling > 0 && contextTokens !== null && contextTokens >= commitContextCeiling && pendingTokens > 0;
     const trigger = pendingTokens >= commitTokenThreshold ? "pending_threshold" : overCeiling ? "context_ceiling" : null;
 
     if (trigger === null) {
