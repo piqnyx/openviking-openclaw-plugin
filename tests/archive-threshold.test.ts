@@ -144,13 +144,11 @@ describe("порог сводки в токенах", () => {
 });
 
 /*
- * Потолок окна (Вит, 04.10.2026). Порог ожидающих не видит хвоста из последних сообщений,
- * а шлюз режет окно по его размеру: тяжёлый хвост доводил до резки раньше сводки. Мерить
- * надо то, что увидела модель: окно, собранное главной сборкой, в оценке плагина. Лента
- * шлюза, которую получают пути записи, это весь файл сессии (04.10: 865 000 против окна
- * в 96 000 после перезапуска), по ней судить нельзя. Достигли потолка -- сводка и под
- * порогом ожидающих, с теми же оставленными последними сообщениями. Сводить нечего
- * (ожидающих нет) -- потолок молчит; окна ещё не собирали -- тоже молчит.
+ * Потолок общего объёма (Вит, 04.10.2026). Порог ожидающих не видит хвоста из последних
+ * сообщений, а шлюз режет окно по всей переписке: тяжёлый хвост доводил до резки раньше
+ * сводки. Оба пути записи получают всю переписку от шлюза, и её размер в оценке плагина
+ * сравнивается с потолком: достигли -- сводка и под порогом ожидающих, с теми же
+ * оставленными последними сообщениями. Сводить нечего (ожидающих нет) -- потолок молчит.
  */
 function engineWithCeiling(fake: FakeServer, commitContextCeiling: number) {
   return createMemoryOpenVikingContextEngine({
@@ -176,30 +174,10 @@ function heavyTurn(tag: string) {
   ];
 }
 
-/**
- * The main assemble before the turn, as the host does it: it leaves the window's
- * estimate behind for the record paths. The fake server has no context to give,
- * and a transcript under the budget goes to the model as it is -- the window is
- * the transcript itself.
- */
-async function assembleFirst(engine: ReturnType<typeof engineWithCeiling>, tag: string, messages: unknown[]) {
-  const assembled = await engine.assemble?.({
-    sessionId: `${SESSION_BASE}-${tag}`,
-    sessionFile: `/tmp/${tag}.jsonl`,
-    messages: messages as never,
-    tokenBudget: 240_000,
-    prompt: "x",
-  } as never);
-  expect(assembled?.estimatedTokens).toBeGreaterThan(0);
-  return assembled;
-}
-
-describe("потолок окна", () => {
-  it("окно над потолком -- запись хода сворачивает и под порогом ожидающих", async () => {
+describe("потолок общего объёма переписки", () => {
+  it("над потолком запись хода сворачивает и под порогом ожидающих", async () => {
     const fake = server(1_000);
     const engine = engineWithCeiling(fake, 500);
-    const assembled = await assembleFirst(engine, "ceiling-record", heavyTurn("ceiling-record"));
-    expect(assembled!.estimatedTokens).toBeGreaterThanOrEqual(500);
     const result = await engine.commitTurn?.({
       advancementKey: "adv-ceiling-record",
       messages: heavyTurn("ceiling-record") as never,
@@ -213,7 +191,6 @@ describe("потолок окна", () => {
   it("живой путь решает так же", async () => {
     const fake = server(1_000);
     const engine = engineWithCeiling(fake, 500);
-    await assembleFirst(engine, "ceiling-live", heavyTurn("ceiling-live"));
     await engine.afterTurn?.({
       sessionId: `${SESSION_BASE}-ceiling-live`,
       sessionFile: "/tmp/ceiling-live.jsonl",
@@ -224,10 +201,9 @@ describe("потолок окна", () => {
     expect(fake.commits()).toBe(1);
   });
 
-  it("окно под потолком и под порогом -- без сводки", async () => {
+  it("под потолком и под порогом -- без сводки", async () => {
     const fake = server(1_000);
     const engine = engineWithCeiling(fake, 1_000_000);
-    await assembleFirst(engine, "ceiling-under", heavyTurn("ceiling-under"));
     await engine.commitTurn?.({
       advancementKey: "adv-ceiling-under",
       messages: heavyTurn("ceiling-under") as never,
@@ -240,7 +216,6 @@ describe("потолок окна", () => {
   it("ноль -- потолка нет, решает один порог ожидающих", async () => {
     const fake = server(1_000);
     const engine = engineWithCeiling(fake, 0);
-    await assembleFirst(engine, "ceiling-off", heavyTurn("ceiling-off"));
     await engine.commitTurn?.({
       advancementKey: "adv-ceiling-off",
       messages: heavyTurn("ceiling-off") as never,
@@ -253,38 +228,11 @@ describe("потолок окна", () => {
   it("над потолком, но сводить нечего -- потолок молчит", async () => {
     const fake = server(0);
     const engine = engineWithCeiling(fake, 500);
-    await assembleFirst(engine, "ceiling-nothing", heavyTurn("ceiling-nothing"));
     await engine.commitTurn?.({
       advancementKey: "adv-ceiling-nothing",
       messages: heavyTurn("ceiling-nothing") as never,
       prePromptMessageCount: 0,
       sessionId: `${SESSION_BASE}-ceiling-nothing`,
-    });
-    expect(fake.commits()).toBe(0);
-  });
-
-  it("окно ещё не собирали -- потолок молчит, какой бы ни была лента шлюза", async () => {
-    const fake = server(1_000);
-    const engine = engineWithCeiling(fake, 500);
-    await engine.commitTurn?.({
-      advancementKey: "adv-ceiling-no-window",
-      messages: heavyTurn("ceiling-no-window") as never,
-      prePromptMessageCount: 0,
-      sessionId: `${SESSION_BASE}-ceiling-no-window`,
-    });
-    expect(fake.commits()).toBe(0);
-  });
-
-  it("лента шлюза больше потолка, а окно меньше -- решает окно", async () => {
-    const fake = server(1_000);
-    const engine = engineWithCeiling(fake, 500);
-    // The window the model saw was small; the host then hands a heavy transcript to the record path.
-    await assembleFirst(engine, "ceiling-window-small", turn("ceiling-window-small"));
-    await engine.commitTurn?.({
-      advancementKey: "adv-ceiling-window-small",
-      messages: heavyTurn("ceiling-window-small") as never,
-      prePromptMessageCount: 0,
-      sessionId: `${SESSION_BASE}-ceiling-window-small`,
     });
     expect(fake.commits()).toBe(0);
   });

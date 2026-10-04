@@ -74,10 +74,10 @@ export type MemoryOpenVikingConfig = {
    */
   commitTokenThreshold?: number;
   /**
-   * Ceiling on the window, in the plugin's own token estimate of the window it
-   * assembled for the model (the one measured against the host's budget).
-   * Once the window of a recorded turn reaches this number, the turn asks for
-   * an async commit even if the pending tokens are still under
+   * Ceiling on the whole live transcript, in the plugin's own token estimate
+   * (the one the window is measured with against the host's budget). Once the
+   * transcript handed over with a recorded turn reaches this number, the turn
+   * asks for an async commit even if the pending tokens are still under
    * `commitTokenThreshold` -- so that the archive comes before the window has
    * to be cut. The recent messages are kept as on any commit. 0 (default)
    * turns the ceiling off. Decision by Vit 2026-10-04.
@@ -900,7 +900,7 @@ export const memoryOpenVikingConfigSchema = {
       label: "Commit Context Ceiling",
       placeholder: String(DEFAULT_COMMIT_CONTEXT_CEILING),
       advanced: true,
-      help: "Ceiling on the assembled window in the plugin's token estimate: once the window of a recorded turn reaches it, the turn asks for an async commit even under the pending threshold, keeping the recent messages. 0 turns it off.",
+      help: "Ceiling on the whole live transcript in the plugin's token estimate: once a recorded turn's transcript reaches it, the turn asks for an async commit even under the pending threshold, keeping the recent messages. 0 turns it off.",
     },
     commitKeepRecentCount: {
       label: "Commit Keep Recent Count",

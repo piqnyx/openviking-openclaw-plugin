@@ -593,7 +593,7 @@ export const memoryOpenVikingConfigSchema = {
             label: "Commit Context Ceiling",
             placeholder: String(DEFAULT_COMMIT_CONTEXT_CEILING),
             advanced: true,
-            help: "Ceiling on the assembled window in the plugin's token estimate: once the window of a recorded turn reaches it, the turn asks for an async commit even under the pending threshold, keeping the recent messages. 0 turns it off.",
+            help: "Ceiling on the whole live transcript in the plugin's token estimate: once a recorded turn's transcript reaches it, the turn asks for an async commit even under the pending threshold, keeping the recent messages. 0 turns it off.",
         },
         commitKeepRecentCount: {
             label: "Commit Keep Recent Count",
