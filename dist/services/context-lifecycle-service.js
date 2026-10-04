@@ -816,7 +816,7 @@ function messageDigest(messages, maxCharsPerMsg = 2000) {
         };
     });
 }
-export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, runtimeContext, windowTokens, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, }) {
+export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, runtimeContext, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, }) {
     if (!cfg.autoCapture) {
         return;
     }
@@ -920,25 +920,11 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
         const session = await client.getSession(ovSessionId);
         const pendingTokens = session.pending_tokens ?? 0;
         const commitTokenThreshold = cfg.commitTokenThreshold;
-        // The ceiling on the window (Vit, 2026-10-04): the size of what the model
-        // saw on this turn, as the main assemble estimated it -- the same estimate
-        // the window is measured with against the host's budget. Over the ceiling
-        // the turn archives even under the pending threshold -- before the window
-        // has to be cut -- as long as there is something outside the kept tail to
-        // archive; the pending tokens are exactly that. Not the host's transcript:
-        // that is the whole session file (865 000 against a window of 96 000 after
-        // a restart, seen 04.10), and no estimate of it says anything about the window.
-        const commitContextCeiling = cfg.commitContextCeiling;
-        const contextTokens = typeof windowTokens === "number" && Number.isFinite(windowTokens) ? windowTokens : null;
-        const overCeiling = commitContextCeiling > 0 && contextTokens !== null && contextTokens >= commitContextCeiling && pendingTokens > 0;
-        const trigger = pendingTokens >= commitTokenThreshold ? "pending_threshold" : overCeiling ? "context_ceiling" : null;
-        if (trigger === null) {
+        if (pendingTokens < commitTokenThreshold) {
             diag("afterTurn_skip", ovSessionId, {
                 reason: "below_threshold",
                 pendingTokens,
                 commitTokenThreshold,
-                contextTokens,
-                commitContextCeiling,
                 senderIdFound: sender.found,
                 senderId: sender.senderId ?? null,
             });
@@ -950,16 +936,10 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
         });
         logger.info(`openviking: committed session=${ovSessionId}, ` +
             `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
-            `task_id=${commitResult.task_id ?? "none"}, trace_id=${commitResult.trace_id ?? "none"}` +
-            (trigger === "context_ceiling"
-                ? ` (context ceiling: ${contextTokens} >= ${commitContextCeiling}, pending ${pendingTokens})`
-                : ""));
+            `task_id=${commitResult.task_id ?? "none"}, trace_id=${commitResult.trace_id ?? "none"}`);
         diag("afterTurn_commit", ovSessionId, {
             pendingTokens,
             commitTokenThreshold,
-            contextTokens,
-            commitContextCeiling,
-            trigger,
             status: commitResult.status,
             archived: commitResult.archived ?? false,
             taskId: commitResult.task_id ?? null,
@@ -1044,7 +1024,7 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
     const tokensBefore = tokensBeforeOriginal ?? preCommitEstimatedTokens ?? -1;
     try {
         logger.info(`openviking: compact committing session=${ovSessionId} (wait=true, tokenBudget=${tokenBudget}, keepRecentCount=${keepRecentCount})`);
-        let commitResult = await client.commitSession(ovSessionId, {
+        const commitResult = await client.commitSession(ovSessionId, {
             wait: true,
             keepRecentCount,
         });
@@ -1075,6 +1055,38 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
             return compactFailureResult("commit_timeout", tokensBefore, { commit: commitResult });
         }
         logger.info(`openviking: compact committed session=${ovSessionId}, archived=${commitResult.archived ?? false}, memories=${memCount}, task_id=${commitResult.task_id ?? "none"}, trace_id=${commitResult.trace_id ?? "none"}`);
+        if (!commitResult.archived && keepRecentCount > 0) {
+            // Nothing older than the kept messages: the archive at the pending
+            // threshold has just taken it, or the tail is all there is. The kept
+            // messages stay live -- archiving them would leave the model a summary
+            // alone -- and the host is told the session is already compacted: it
+            // treats only that ("already compacted", "below threshold") as a
+            // harmless skip, and any other reason drops the turn.
+            const reason = `already compacted: nothing older than the last ${keepRecentCount} messages to archive`;
+            logger.info(`openviking: compact ${reason} for session=${ovSessionId}, tokensBefore=${tokensBefore}`);
+            diag("compact_result", ovSessionId, {
+                ok: true,
+                compacted: false,
+                reason,
+                status: commitResult.status,
+                archived: false,
+                keepRecentCount,
+                tokensBefore,
+            });
+            return {
+                ok: true,
+                compacted: false,
+                reason,
+                result: {
+                    summary: "",
+                    tokensBefore,
+                    tokensAfter: tokensBefore >= 0 ? tokensBefore : undefined,
+                    details: {
+                        commit: commitResult,
+                    },
+                },
+            };
+        }
         if (!commitResult.archived) {
             logger.info(`openviking: compact no archive for session=${ovSessionId}, ` +
                 `tokensBefore=${tokensBefore}, tokensAfter=${tokensBefore}`);
@@ -1103,28 +1115,11 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
             };
         }
         let summary = "";
-        let firstKeptEntryId = commitResult.archive_uri?.split("/").pop() ?? "";
+        const firstKeptEntryId = commitResult.archive_uri?.split("/").pop() ?? "";
         let tokensAfter;
         let contextFetchError;
         try {
-            let ctx = await client.getSessionContext(ovSessionId, tokenBudget);
-            if (keepRecentCount > 0 &&
-                typeof ctx.estimatedTokens === "number" &&
-                Number.isFinite(ctx.estimatedTokens) &&
-                ctx.estimatedTokens > tokenBudget) {
-                // The kept tail alone does not fit the budget the host asked for: the
-                // compaction has to bring the window under it, so everything goes.
-                logger.info(`openviking: compact kept ${keepRecentCount} recent messages but the window is still ` +
-                    `${ctx.estimatedTokens} tokens against a budget of ${tokenBudget}; committing again with 0 kept`);
-                diag("compact_keep_recent_overflow", ovSessionId, {
-                    keepRecentCount,
-                    estimatedTokens: ctx.estimatedTokens,
-                    tokenBudget,
-                });
-                commitResult = await client.commitSession(ovSessionId, { wait: true, keepRecentCount: 0 });
-                firstKeptEntryId = commitResult.archive_uri?.split("/").pop() ?? firstKeptEntryId;
-                ctx = await client.getSessionContext(ovSessionId, tokenBudget);
-            }
+            const ctx = await client.getSessionContext(ovSessionId, tokenBudget);
             logger.info(`openviking: compact getSessionContext raw result for ${ovSessionId}: ` +
                 JSON.stringify(ctx, null, 2));
             if (typeof ctx.latest_archive_overview === "string") {

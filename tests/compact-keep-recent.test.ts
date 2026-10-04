@@ -6,16 +6,22 @@ import { memoryOpenVikingConfigSchema } from "../config.js";
 import { createMemoryOpenVikingContextEngine } from "../context-engine.js";
 
 /*
- * Что остаётся в окне после сжатия, которое просит сам шлюз (Вит, 04.10.2026).
+ * Сводка по просьбе шлюза (Вит, 04.10.2026).
  *
  * Шлюз зовёт compact движка двумя способами и помечает их: автоматическое сжатие
- * перед запуском, когда переписка подошла к окну, идёт со словом "budget"; ручной
- * /compact -- со словом "threshold". Раньше compact всегда сворачивал всё, и после
- * автоматического сжатия окно состояло из одной сводки. Теперь автоматическое
- * оставляет последние сообщения, сколько задано в commitKeepRecentCount, как и
- * сводка по порогу; ручное сворачивает всё, как было. Если оставленный хвост сам
- * не влезает в бюджет шлюза, коммит повторяется без хвоста: сжатие обязано
- * привести окно под бюджет.
+ * перед ходом, когда запрос подошёл к краю окна, идёт с пометкой "budget"; ручной
+ * /compact -- с пометкой "threshold". Раньше compact сворачивал всё, и после
+ * автоматического сжатия в окне оставалась одна сводка без живых сообщений.
+ * Теперь автоматическое сжатие оставляет столько последних сообщений, сколько
+ * задано в commitKeepRecentCount, как и сводка самого Викинга по порогу. Ручной
+ * /compact сворачивает всё, как было.
+ *
+ * Если с сохранёнными последними сообщениями сводить нечего (например, Викинг
+ * только что сам сделал сводку, а шлюз ещё не видит, что запрос стал меньше),
+ * плагин отвечает шлюзу «уже сжато». Шлюз считает безвредными только такие
+ * ответы («already compacted», «below threshold»); на любой другой он роняет ход.
+ * Сворачивать в этом случае живые сообщения нельзя: модель осталась бы с одной
+ * сводкой.
  */
 
 type Fake = {
@@ -23,10 +29,8 @@ type Fake = {
   commits: () => Array<Record<string, unknown>>;
 };
 
-/** A server whose context estimate is read in turn from `contextTokens`: before the commit, after it, after a second one. */
-function server(contextTokens: number[]): Fake {
+function server(archived: boolean): Fake {
   const commits: Array<Record<string, unknown>> = [];
-  let reads = 0;
   const transport: HttpTransport = vi.fn(async (url, init) => {
     const path = new URL(url).pathname;
     const answer = (body: unknown) =>
@@ -36,22 +40,27 @@ function server(contextTokens: number[]): Fake {
       });
     if (path.endsWith("/commit")) {
       commits.push(init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {});
-      return answer({ status: "ok", archived: true, archive_uri: "viking://archives/a1" });
+      return answer(
+        archived
+          ? { status: "completed", archived: true, archive_uri: "viking://session/archives/archive_007" }
+          : { status: "completed", archived: false },
+      );
     }
     if (path.endsWith("/context")) {
-      const estimatedTokens = contextTokens[Math.min(reads, contextTokens.length - 1)];
-      reads += 1;
       return answer({
         latest_archive_overview: "сводка",
         pre_archive_abstracts: [],
         messages: [],
-        estimatedTokens,
-        stats: { totalArchives: 1, includedArchives: 1, droppedArchives: 0, failedArchives: 0,
-                 activeTokens: estimatedTokens, archiveTokens: 100 },
+        estimatedTokens: 5_000,
+        stats: {
+          totalArchives: 1,
+          includedArchives: 1,
+          droppedArchives: 0,
+          failedArchives: 0,
+          activeTokens: 4_000,
+          archiveTokens: 1_000,
+        },
       });
-    }
-    if (/\/api\/v1\/sessions\/[^/]+$/.test(path)) {
-      return answer({ pending_tokens: 90_000 });
     }
     return new Response(JSON.stringify({ status: "error", error: { code: "NOT_FOUND", message: path } }), {
       status: 404,
@@ -64,8 +73,8 @@ function server(contextTokens: number[]): Fake {
   return { client, commits: () => commits };
 }
 
-function engineOver(fake: Fake) {
-  return createMemoryOpenVikingContextEngine({
+async function compact(fake: Fake, compactionTarget: "budget" | "threshold" | undefined) {
+  const engine = createMemoryOpenVikingContextEngine({
     id: "openviking",
     name: "OpenViking",
     cfg: memoryOpenVikingConfigSchema.parse({
@@ -77,46 +86,51 @@ function engineOver(fake: Fake) {
     getClient: async () => fake.client,
     resolveAgentId: () => "main",
   });
-}
-
-async function compact(fake: Fake, compactionTarget: "budget" | "threshold" | undefined) {
-  const engine = engineOver(fake);
   return await engine.compact?.({
     sessionId: "9478e347-6bdc-44f5-a4e0-207fe7e4b6e3",
     sessionFile: "/tmp/compact.jsonl",
-    tokenBudget: 240_000,
+    tokenBudget: 249_000,
+    currentTokenCount: 226_000,
     ...(compactionTarget ? { compactionTarget } : {}),
   } as never);
 }
 
-describe("сжатие по просьбе шлюза", () => {
+describe("сводка по просьбе шлюза", () => {
   it("автоматическое сжатие оставляет последние сообщения, сколько задано", async () => {
-    const fake = server([250_000, 90_000]);
+    const fake = server(true);
     const result = await compact(fake, "budget");
-    expect(result?.ok).toBe(true);
     expect(fake.commits()).toEqual([{ keep_recent_count: 20 }]);
+    expect(result?.ok).toBe(true);
+    expect(result?.compacted).toBe(true);
   });
 
-  it("ручной /compact сворачивает всё, как и сжатие без пометки", async () => {
-    const manual = server([250_000, 5_000]);
+  it("ручной /compact и сжатие без пометки сворачивают всё, как раньше", async () => {
+    const manual = server(true);
     await compact(manual, "threshold");
     expect(manual.commits()).toEqual([{}]);
 
-    const unmarked = server([250_000, 5_000]);
+    const unmarked = server(true);
     await compact(unmarked, undefined);
     expect(unmarked.commits()).toEqual([{}]);
   });
 
-  it("хвост, который сам не влезает в бюджет, сворачивается вторым коммитом", async () => {
-    const fake = server([300_000, 260_000, 5_000]);
+  it("сводить нечего: ответ «уже сжато», живые сообщения не трогаются", async () => {
+    const fake = server(false);
     const result = await compact(fake, "budget");
+    // Один коммит, с сохранёнными сообщениями; второго, сворачивающего всё, нет.
+    expect(fake.commits()).toEqual([{ keep_recent_count: 20 }]);
     expect(result?.ok).toBe(true);
-    expect(fake.commits()).toEqual([{ keep_recent_count: 20 }, {}]);
+    expect(result?.compacted).toBe(false);
+    // Шлюз пропускает ход только при таких словах; на другие он роняет ход.
+    expect(String(result?.reason)).toMatch(/already compacted/i);
   });
 
-  it("хвост, который влезает, второго коммита не вызывает", async () => {
-    const fake = server([300_000, 239_000]);
-    await compact(fake, "budget");
-    expect(fake.commits()).toEqual([{ keep_recent_count: 20 }]);
+  it("ручной /compact при пустой сессии отвечает как раньше", async () => {
+    const fake = server(false);
+    const result = await compact(fake, "threshold");
+    expect(fake.commits()).toEqual([{}]);
+    expect(result?.ok).toBe(true);
+    expect(result?.compacted).toBe(false);
+    expect(result?.reason).toBe("commit_no_archive");
   });
 });
