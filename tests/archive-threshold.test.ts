@@ -142,3 +142,98 @@ describe("порог сводки в токенах", () => {
     expect(fake.commits()).toBe(1);
   });
 });
+
+/*
+ * Потолок общего объёма (Вит, 04.10.2026). Порог ожидающих не видит хвоста из последних
+ * сообщений, а шлюз режет окно по всей переписке: тяжёлый хвост доводил до резки раньше
+ * сводки. Оба пути записи получают всю переписку от шлюза, и её размер в оценке плагина
+ * сравнивается с потолком: достигли -- сводка и под порогом ожидающих, с теми же
+ * оставленными последними сообщениями. Сводить нечего (ожидающих нет) -- потолок молчит.
+ */
+function engineWithCeiling(fake: FakeServer, commitContextCeiling: number) {
+  return createMemoryOpenVikingContextEngine({
+    id: "openviking",
+    name: "OpenViking",
+    cfg: memoryOpenVikingConfigSchema.parse({
+      baseUrl: "http://127.0.0.1:1933",
+      autoRecall: false,
+      commitTokenThreshold: 131_072,
+      commitContextCeiling,
+    }),
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
+    getClient: async () => fake.client,
+    resolveAgentId: () => "main",
+  });
+}
+
+/** A turn whose transcript is well over a small ceiling in the plugin's estimate. */
+function heavyTurn(tag: string) {
+  return [
+    { role: "user", content: `вопрос ${tag} ` + "слово ".repeat(600), timestamp: 1 },
+    { role: "assistant", content: [{ type: "text", text: `ответ ${tag}` }], timestamp: 2 },
+  ];
+}
+
+describe("потолок общего объёма переписки", () => {
+  it("над потолком запись хода сворачивает и под порогом ожидающих", async () => {
+    const fake = server(1_000);
+    const engine = engineWithCeiling(fake, 500);
+    const result = await engine.commitTurn?.({
+      advancementKey: "adv-ceiling-record",
+      messages: heavyTurn("ceiling-record") as never,
+      prePromptMessageCount: 0,
+      sessionId: `${SESSION_BASE}-ceiling-record`,
+    });
+    expect(result?.status).toBe("committed");
+    expect(fake.commits()).toBe(1);
+  });
+
+  it("живой путь решает так же", async () => {
+    const fake = server(1_000);
+    const engine = engineWithCeiling(fake, 500);
+    await engine.afterTurn?.({
+      sessionId: `${SESSION_BASE}-ceiling-live`,
+      sessionFile: "/tmp/ceiling-live.jsonl",
+      messages: heavyTurn("ceiling-live") as never,
+      prePromptMessageCount: 0,
+      tokenBudget: 240_000,
+    });
+    expect(fake.commits()).toBe(1);
+  });
+
+  it("под потолком и под порогом -- без сводки", async () => {
+    const fake = server(1_000);
+    const engine = engineWithCeiling(fake, 1_000_000);
+    await engine.commitTurn?.({
+      advancementKey: "adv-ceiling-under",
+      messages: heavyTurn("ceiling-under") as never,
+      prePromptMessageCount: 0,
+      sessionId: `${SESSION_BASE}-ceiling-under`,
+    });
+    expect(fake.commits()).toBe(0);
+  });
+
+  it("ноль -- потолка нет, решает один порог ожидающих", async () => {
+    const fake = server(1_000);
+    const engine = engineWithCeiling(fake, 0);
+    await engine.commitTurn?.({
+      advancementKey: "adv-ceiling-off",
+      messages: heavyTurn("ceiling-off") as never,
+      prePromptMessageCount: 0,
+      sessionId: `${SESSION_BASE}-ceiling-off`,
+    });
+    expect(fake.commits()).toBe(0);
+  });
+
+  it("над потолком, но сводить нечего -- потолок молчит", async () => {
+    const fake = server(0);
+    const engine = engineWithCeiling(fake, 500);
+    await engine.commitTurn?.({
+      advancementKey: "adv-ceiling-nothing",
+      messages: heavyTurn("ceiling-nothing") as never,
+      prePromptMessageCount: 0,
+      sessionId: `${SESSION_BASE}-ceiling-nothing`,
+    });
+    expect(fake.commits()).toBe(0);
+  });
+});

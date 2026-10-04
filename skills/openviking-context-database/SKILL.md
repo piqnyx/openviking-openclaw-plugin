@@ -44,7 +44,7 @@ OpenClaw owns agent execution, prompts, and tool invocation. OpenViking owns lon
 | Layer | Current behavior |
 |---|---|
 | `assemble` | Rebuilds compressed session history from OpenViking and injects relevant recall into the latest user message. |
-| `afterTurn` | Appends only the new turn to the OpenViking session; may trigger async commit when `pending_tokens >= commitTokenThreshold`. |
+| `afterTurn` | Appends only the new turn to the OpenViking session; may trigger async commit when `pending_tokens >= commitTokenThreshold`, or when the whole transcript reaches `commitContextCeiling`. |
 | `compact` | Runs `commit(wait=true)`, waits for archive/extraction completion, and reads back latest archive overview. |
 | Tools | Memory recall/store/forget, archive search/expand, resource/skill import/search, recall trace query, tool-result list/search/read. |
 
@@ -80,7 +80,8 @@ Core config lives under `plugins.entries.openviking.config`:
 | `recallScoreThreshold` | `0.15` | Min score after post-processing. |
 | `recallMaxInjectedChars` | `4000` | Total injected character cap; complete memories that do not fit are skipped. |
 | `commitTokenThreshold` | `50000` | Async-commit threshold in pending tokens; both the in-turn (afterTurn) and the after-turn (commitTurn) records decide by this number; `0` commits every turn. |
-| `commitKeepRecentCount` | `10` | Recent messages kept live after afterTurn commit. Compact always uses `0`. |
+| `commitContextCeiling` | `0` | Ceiling on the whole live transcript (plugin token estimate): a recorded turn whose transcript reaches it asks for an async commit even under the pending threshold, keeping the recent messages. `0` turns it off. |
+| `commitKeepRecentCount` | `10` | Recent messages kept live after an afterTurn commit and after the host's automatic compaction (`compactionTarget: "budget"`). A manual `/compact` (`"threshold"`) archives everything. |
 | `bypassSessionPatterns` | empty | Glob-like session keys that completely bypass OpenViking (`*` segment, `**` multi-segment). |
 | `emitStandardDiagnostics` | `false` | Emit structured `openviking: diag {...}` lines. |
 | `logFindRequests` | `false` | Log routing for find/session writes. Also enabled by `OPENVIKING_LOG_ROUTING=1` or `OPENVIKING_DEBUG=1`. |
