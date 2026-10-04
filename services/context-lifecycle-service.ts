@@ -114,6 +114,13 @@ export type CompactOpenVikingSessionParams = {
   currentTokenCount?: unknown;
   force?: boolean;
   compactionTarget?: "budget" | "threshold";
+  /**
+   * Recent messages the commit keeps live (Vit, 2026-10-04): the host's
+   * automatic compaction keeps commitKeepRecentCount of them, so the window
+   * after it is the summary and the recent turns, not the summary alone; a
+   * manual /compact passes 0 and archives everything.
+   */
+  keepRecentCount?: number;
   customInstructions?: string;
   getClient: (agentId: string | undefined) => Promise<CompactClient>;
   logger: ContextEngineLifecycleLogger;
@@ -1375,6 +1382,7 @@ export async function compactOpenVikingSession({
   currentTokenCount,
   force,
   compactionTarget,
+  keepRecentCount = 0,
   customInstructions,
   getClient,
   logger,
@@ -1388,6 +1396,7 @@ export async function compactOpenVikingSession({
     force: force ?? false,
     currentTokenCount: currentTokenCount ?? null,
     compactionTarget: compactionTarget ?? null,
+    keepRecentCount,
     hasCustomInstructions: typeof customInstructions === "string" &&
       customInstructions.trim().length > 0,
   });
@@ -1427,11 +1436,11 @@ export async function compactOpenVikingSession({
 
   try {
     logger.info(
-      `openviking: compact committing session=${ovSessionId} (wait=true, tokenBudget=${tokenBudget})`,
+      `openviking: compact committing session=${ovSessionId} (wait=true, tokenBudget=${tokenBudget}, keepRecentCount=${keepRecentCount})`,
     );
     const commitResult = await client.commitSession(ovSessionId, {
       wait: true,
-      keepRecentCount: 0,
+      keepRecentCount,
     });
     const memCount = totalExtractedMemories(commitResult.memories_extracted);
 
@@ -1469,6 +1478,39 @@ export async function compactOpenVikingSession({
     logger.info(
       `openviking: compact committed session=${ovSessionId}, archived=${commitResult.archived ?? false}, memories=${memCount}, task_id=${commitResult.task_id ?? "none"}, trace_id=${commitResult.trace_id ?? "none"}`,
     );
+
+    if (!commitResult.archived && keepRecentCount > 0) {
+      // Nothing older than the kept messages: the archive at the pending
+      // threshold has just taken it, or the tail is all there is. The kept
+      // messages stay live -- archiving them would leave the model a summary
+      // alone -- and the host is told the session is already compacted: it
+      // treats only that ("already compacted", "below threshold") as a
+      // harmless skip, and any other reason drops the turn.
+      const reason = `already compacted: nothing older than the last ${keepRecentCount} messages to archive`;
+      logger.info(`openviking: compact ${reason} for session=${ovSessionId}, tokensBefore=${tokensBefore}`);
+      diag("compact_result", ovSessionId, {
+        ok: true,
+        compacted: false,
+        reason,
+        status: commitResult.status,
+        archived: false,
+        keepRecentCount,
+        tokensBefore,
+      });
+      return {
+        ok: true,
+        compacted: false,
+        reason,
+        result: {
+          summary: "",
+          tokensBefore,
+          tokensAfter: tokensBefore >= 0 ? tokensBefore : undefined,
+          details: {
+            commit: commitResult,
+          },
+        },
+      };
+    }
 
     if (!commitResult.archived) {
       logger.info(

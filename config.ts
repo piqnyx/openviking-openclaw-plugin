@@ -76,8 +76,8 @@ export type MemoryOpenVikingConfig = {
   /**
    * WM v2: number of most-recent messages to keep live after an afterTurn
    * commit so the next turn still has immediate context. Forwarded to the
-   * server as `keep_recent_count`. Default 10. The compact path ignores this
-   * value and always passes 0.
+   * server as `keep_recent_count`. Default 10. The host's automatic
+   * compaction keeps them too; a manual /compact passes 0.
    */
   commitKeepRecentCount?: number;
   bypassSessionPatterns?: string[];
@@ -886,7 +886,7 @@ export const memoryOpenVikingConfigSchema = {
       advanced: true,
       help:
         "Number of most-recent messages to keep live after an afterTurn commit. " +
-        "Forwarded as keep_recent_count to the server. Compact path always uses 0.",
+        "Forwarded as keep_recent_count to the server. The host's automatic compaction keeps them too; a manual /compact archives everything.",
     },
     emitStandardDiagnostics: {
       label: "Standard diagnostics (diag JSON lines)",

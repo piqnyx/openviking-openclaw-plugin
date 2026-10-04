@@ -591,7 +591,7 @@ export const memoryOpenVikingConfigSchema = {
             placeholder: String(DEFAULT_COMMIT_KEEP_RECENT_COUNT),
             advanced: true,
             help: "Number of most-recent messages to keep live after an afterTurn commit. " +
-                "Forwarded as keep_recent_count to the server. Compact path always uses 0.",
+                "Forwarded as keep_recent_count to the server. The host's automatic compaction keeps them too; a manual /compact archives everything.",
         },
         emitStandardDiagnostics: {
             label: "Standard diagnostics (diag JSON lines)",

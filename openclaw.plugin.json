@@ -217,7 +217,7 @@
       "label": "Commit Keep Recent Count",
       "placeholder": "10",
       "advanced": true,
-      "help": "WM v2: number of most-recent messages kept live after an afterTurn commit. Compact always uses 0."
+      "help": "WM v2: number of most-recent messages kept live after an afterTurn commit and after the host's automatic compaction. A manual /compact archives everything."
     },
     "emitStandardDiagnostics": {
       "label": "Standard diagnostics (diag JSON lines)",
