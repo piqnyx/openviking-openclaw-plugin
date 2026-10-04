@@ -920,25 +920,11 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
         const session = await client.getSession(ovSessionId);
         const pendingTokens = session.pending_tokens ?? 0;
         const commitTokenThreshold = cfg.commitTokenThreshold;
-        // The ceiling on the whole transcript (Vit, 2026-10-04): the host hands both
-        // record paths the whole transcript, so its size is known here in the same
-        // estimate the window is measured with against the host's budget. Over the
-        // ceiling the turn archives even under the pending threshold -- before the
-        // window has to be cut -- as long as there is something outside the kept
-        // tail to archive; the pending tokens are exactly that.
-        const commitContextCeiling = cfg.commitContextCeiling;
-        const contextTokens = Array.isArray(rawMessages)
-            ? rawMessages.reduce((sum, message) => sum + estimateAgentMessageTokens(message), 0)
-            : 0;
-        const overCeiling = commitContextCeiling > 0 && contextTokens >= commitContextCeiling && pendingTokens > 0;
-        const trigger = pendingTokens >= commitTokenThreshold ? "pending_threshold" : overCeiling ? "context_ceiling" : null;
-        if (trigger === null) {
+        if (pendingTokens < commitTokenThreshold) {
             diag("afterTurn_skip", ovSessionId, {
                 reason: "below_threshold",
                 pendingTokens,
                 commitTokenThreshold,
-                contextTokens,
-                commitContextCeiling,
                 senderIdFound: sender.found,
                 senderId: sender.senderId ?? null,
             });
@@ -950,16 +936,10 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
         });
         logger.info(`openviking: committed session=${ovSessionId}, ` +
             `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
-            `task_id=${commitResult.task_id ?? "none"}, trace_id=${commitResult.trace_id ?? "none"}` +
-            (trigger === "context_ceiling"
-                ? ` (context ceiling: ${contextTokens} >= ${commitContextCeiling}, pending ${pendingTokens})`
-                : ""));
+            `task_id=${commitResult.task_id ?? "none"}, trace_id=${commitResult.trace_id ?? "none"}`);
         diag("afterTurn_commit", ovSessionId, {
             pendingTokens,
             commitTokenThreshold,
-            contextTokens,
-            commitContextCeiling,
-            trigger,
             status: commitResult.status,
             archived: commitResult.archived ?? false,
             taskId: commitResult.task_id ?? null,
@@ -1002,14 +982,13 @@ function compactFailureResult(reason, tokensBefore, details) {
         },
     };
 }
-export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBudget, currentTokenCount, force, compactionTarget, keepRecentCount = 0, customInstructions, getClient, logger, resolveAgentId, isBypassedSession, diag, }) {
+export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBudget, currentTokenCount, force, compactionTarget, customInstructions, getClient, logger, resolveAgentId, isBypassedSession, diag, }) {
     const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
     diag("compact_entry", ovSessionId, {
         tokenBudget,
         force: force ?? false,
         currentTokenCount: currentTokenCount ?? null,
         compactionTarget: compactionTarget ?? null,
-        keepRecentCount,
         hasCustomInstructions: typeof customInstructions === "string" &&
             customInstructions.trim().length > 0,
     });
@@ -1043,10 +1022,10 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
     }
     const tokensBefore = tokensBeforeOriginal ?? preCommitEstimatedTokens ?? -1;
     try {
-        logger.info(`openviking: compact committing session=${ovSessionId} (wait=true, tokenBudget=${tokenBudget}, keepRecentCount=${keepRecentCount})`);
-        let commitResult = await client.commitSession(ovSessionId, {
+        logger.info(`openviking: compact committing session=${ovSessionId} (wait=true, tokenBudget=${tokenBudget})`);
+        const commitResult = await client.commitSession(ovSessionId, {
             wait: true,
-            keepRecentCount,
+            keepRecentCount: 0,
         });
         const memCount = totalExtractedMemories(commitResult.memories_extracted);
         if (commitResult.status === "failed") {
@@ -1103,28 +1082,11 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
             };
         }
         let summary = "";
-        let firstKeptEntryId = commitResult.archive_uri?.split("/").pop() ?? "";
+        const firstKeptEntryId = commitResult.archive_uri?.split("/").pop() ?? "";
         let tokensAfter;
         let contextFetchError;
         try {
-            let ctx = await client.getSessionContext(ovSessionId, tokenBudget);
-            if (keepRecentCount > 0 &&
-                typeof ctx.estimatedTokens === "number" &&
-                Number.isFinite(ctx.estimatedTokens) &&
-                ctx.estimatedTokens > tokenBudget) {
-                // The kept tail alone does not fit the budget the host asked for: the
-                // compaction has to bring the window under it, so everything goes.
-                logger.info(`openviking: compact kept ${keepRecentCount} recent messages but the window is still ` +
-                    `${ctx.estimatedTokens} tokens against a budget of ${tokenBudget}; committing again with 0 kept`);
-                diag("compact_keep_recent_overflow", ovSessionId, {
-                    keepRecentCount,
-                    estimatedTokens: ctx.estimatedTokens,
-                    tokenBudget,
-                });
-                commitResult = await client.commitSession(ovSessionId, { wait: true, keepRecentCount: 0 });
-                firstKeptEntryId = commitResult.archive_uri?.split("/").pop() ?? firstKeptEntryId;
-                ctx = await client.getSessionContext(ovSessionId, tokenBudget);
-            }
+            const ctx = await client.getSessionContext(ovSessionId, tokenBudget);
             logger.info(`openviking: compact getSessionContext raw result for ${ovSessionId}: ` +
                 JSON.stringify(ctx, null, 2));
             if (typeof ctx.latest_archive_overview === "string") {

@@ -13,7 +13,6 @@ const DEFAULT_RECALL_MAX_CONTENT_CHARS = 5000;
 const DEFAULT_RECALL_PREFER_ABSTRACT = false;
 const DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000;
 const DEFAULT_COMMIT_TOKEN_THRESHOLD = 50_000;
-const DEFAULT_COMMIT_CONTEXT_CEILING = 0;
 const DEFAULT_COMMIT_KEEP_RECENT_COUNT = 10;
 const DEFAULT_BYPASS_SESSION_PATTERNS = [];
 const DEFAULT_EMIT_STANDARD_DIAGNOSTICS = false;
@@ -303,7 +302,6 @@ export const OPENVIKING_CONFIG_KEYS = [
     "recallPreferAbstract",
     "recallTokenBudget",
     "commitTokenThreshold",
-    "commitContextCeiling",
     "commitKeepRecentCount",
     "bypassSessionPatterns",
     "ingestReplyAssist",
@@ -416,7 +414,6 @@ export const memoryOpenVikingConfigSchema = {
             recallMaxInjectedChars,
             recallTokenBudget: recallMaxInjectedChars,
             commitTokenThreshold: Math.max(0, Math.floor(toNumber(cfg.commitTokenThreshold, DEFAULT_COMMIT_TOKEN_THRESHOLD))),
-            commitContextCeiling: Math.max(0, Math.floor(toNumber(cfg.commitContextCeiling, DEFAULT_COMMIT_CONTEXT_CEILING))),
             commitKeepRecentCount: Math.max(0, Math.min(1_000, Math.floor(toNumber(cfg.commitKeepRecentCount, DEFAULT_COMMIT_KEEP_RECENT_COUNT)))),
             bypassSessionPatterns: toStringArray(cfg.bypassSessionPatterns, toStringArray(cfg.ingestReplyAssistIgnoreSessionPatterns, DEFAULT_BYPASS_SESSION_PATTERNS)),
             emitStandardDiagnostics: typeof cfg.emitStandardDiagnostics === "boolean"
@@ -589,18 +586,12 @@ export const memoryOpenVikingConfigSchema = {
             advanced: true,
             help: "Archive threshold in tokens: once the session's pending tokens reach this number, the recorded turn asks for an async commit. Set to 0 to commit every turn.",
         },
-        commitContextCeiling: {
-            label: "Commit Context Ceiling",
-            placeholder: String(DEFAULT_COMMIT_CONTEXT_CEILING),
-            advanced: true,
-            help: "Ceiling on the whole live transcript in the plugin's token estimate: once a recorded turn's transcript reaches it, the turn asks for an async commit even under the pending threshold, keeping the recent messages. 0 turns it off.",
-        },
         commitKeepRecentCount: {
             label: "Commit Keep Recent Count",
             placeholder: String(DEFAULT_COMMIT_KEEP_RECENT_COUNT),
             advanced: true,
             help: "Number of most-recent messages to keep live after an afterTurn commit. " +
-                "Forwarded as keep_recent_count to the server. The host's automatic compaction keeps them too; a manual /compact archives everything.",
+                "Forwarded as keep_recent_count to the server. Compact path always uses 0.",
         },
         emitStandardDiagnostics: {
             label: "Standard diagnostics (diag JSON lines)",
