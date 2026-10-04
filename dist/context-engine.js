@@ -330,6 +330,10 @@ export function createMemoryOpenVikingContextEngine(params) {
                 currentTokenCount: compactParams.currentTokenCount,
                 force: compactParams.force,
                 compactionTarget: compactParams.compactionTarget,
+                // The host's automatic compaction ("budget") keeps the recent messages
+                // as a commit does; a manual /compact ("threshold", or no target at
+                // all) archives everything (Vit, 2026-10-04).
+                keepRecentCount: compactParams.compactionTarget === "budget" ? cfg.commitKeepRecentCount : 0,
                 customInstructions: compactParams.customInstructions,
                 getClient,
                 logger,
