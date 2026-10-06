@@ -28,6 +28,13 @@ import { estimateAgentMessagesTokens } from "../token-estimator.js";
  * числу сообщений (`keep_recent_count`), а не по ходам, и может кончиться посреди хода. Поэтому
  * хвост начинается с начала того хода, на котором кончился архив: лишний ход в ответе стоит
  * токенов, пропущенное сообщение стоит нити разговора.
+ *
+ * Что не влезает (PLAN-gorizont 4б, 07.10): хвост режется не по оценке знаков под бюджет шлюза,
+ * а по весу ручки прокси -- живая часть окна не тяжелее K, целыми ходами, не меньше планки;
+ * переписка не длиннее планки или не тяжелее K целиком идёт как есть. Ручка здесь считает знаки
+ * содержимого: сообщение переписки весит около 966, шестьдесят -- около 58 000, двадцать два --
+ * около 21 250; K в этих проверках 30 000, чтобы целая переписка не проходила как есть, а хвост
+ * с границы архива помещался. Без ручки режет одна планка, с предупреждением.
  */
 
 const START = Date.UTC(2026, 8, 28, 8, 0, 0);
@@ -131,7 +138,24 @@ function server(shelf: Shelf) {
   return { client, asked };
 }
 
-function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVikingClient) {
+/** Ручка: вес тела -- сумма знаков содержимого. */
+function charsHandle() {
+  return {
+    url: "http://127.0.0.1:8787/price",
+    price: async (body: Record<string, unknown>) => {
+      const messages = (body as { messages: Array<{ content: unknown }> }).messages;
+      const charge = messages.reduce(
+        (sum, m) => sum + (typeof m.content === "string" ? m.content.length : 0),
+        0,
+      );
+      return { model: "m", charge, ours: charge, google: null, surcharge: 0, ceiling: 249_000, fits: true };
+    },
+  };
+}
+
+type Cut = { keepRecentTokens?: number; keepRecentFloor?: number; handle?: boolean };
+
+function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVikingClient, cut: Cut = {}) {
   const seen: Array<{ stage: string; data: Record<string, unknown> }> = [];
   const warned: string[] = [];
   const result = assembleOpenVikingSession({
@@ -139,7 +163,13 @@ function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVik
     messages,
     tokenBudget,
     isMainAssemble: true,
-    cfg: { autoRecall: false },
+    cfg: {
+      autoRecall: false,
+      keepRecentTokens: cut.keepRecentTokens ?? 30_000,
+      keepRecentFloor: cut.keepRecentFloor ?? 20,
+    },
+    ...(cut.handle === false ? {} : { priceHandle: charsHandle() }),
+    runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite", requested: null } },
     getClient: async () => client,
     logger: { info: () => {}, warn: (line) => warned.push(line) },
     resolveAgentId: () => "main",
@@ -335,52 +365,66 @@ describe("сборка, когда свежего пересказа нет", ()
     expect(marksOf(value.messages)).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
   });
 
-  it("в архиве виден один ход: границу не угадывает, берёт по бюджету", async () => {
+  it("в архиве виден один ход: границу не угадывает, берёт по весу, не меньше планки", async () => {
     const live = liveTranscript(60);
     const { client } = server({
       context: NO_SUMMARY(3, 1, [ovMessage(59)]),
       archives: { archive_002: { overview: "ПЕРЕСКАЗ-ОДИН-ХОД", lastMessageIndex: 1 } },
     });
-    const { value, outcome } = await assemble(live, 12_000, client);
+    // K в 12 000 знаков -- это двенадцать сообщений, планка в двадцать сильнее: остаются двадцать.
+    const { value, outcome } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000 });
 
     expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ОДИН-ХОД");
-    expect(marksOf(value.messages).at(-1)).toBe(mark(59));
-    expect(value.estimatedTokens).toBeLessThanOrEqual(12_000);
-    expect(outcome).toMatchObject({ recovered: true, boundaryFound: false, tailMessages: 60 });
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 20 }, (_, k) => mark(40 + k)));
+    expect(outcome).toMatchObject({
+      recovered: true, boundaryFound: false, tailMessages: 60, droppedMessages: 40, priced: true,
+    });
   });
 
-  it("то, что не влезает в бюджет, режет со старого конца и говорит, сколько срезал", async () => {
+  it("что тяжелее K, режет со старого конца целыми ходами и говорит, сколько срезал", async () => {
     const live = liveTranscript(60);
-    const budget = 12_000;
     const { client } = server({
       context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
       archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-9", lastMessageIndex: 9 } },
     });
-    const { value, outcome, warned } = await assemble(live, budget, client);
+    // Хвост -- 52 сообщения с десятого; под 12 000 знаков -- двенадцать (шесть ходов), не четырнадцать.
+    const { value, outcome, warned } = await assemble(live, 12_000, client, {
+      keepRecentTokens: 12_000, keepRecentFloor: 4,
+    });
 
     const kept = marksOf(value.messages);
-    expect(kept.length).toBeGreaterThan(0);
-    expect(kept.length).toBeLessThan(50);
-    // Остался хвост подряд, до самого последнего сообщения.
-    expect(kept).toEqual(Array.from({ length: kept.length }, (_, k) => mark(60 - kept.length + k)));
-    expect(value.estimatedTokens).toBeLessThanOrEqual(budget);
+    expect(kept).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
     expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ДО-9");
-    expect(outcome).toMatchObject({ recovered: true, tailMessages: 52, droppedMessages: 52 - kept.length });
-    expect(warned.join("\n")).toContain(`dropped ${52 - kept.length}`);
+    expect(outcome).toMatchObject({ recovered: true, tailMessages: 52, droppedMessages: 40, priced: true });
+    expect(Number(outcome.keptWeight)).toBeLessThanOrEqual(12_000);
+    expect(Number(outcome.keptWeight)).toBeGreaterThan(10_000);
+    expect(warned.join("\n")).toContain("dropped 40 oldest above 12000 by the counter");
   });
 
-  it("закрытого архива нет: хвост в пределах бюджета, начинается с сообщения пользователя", async () => {
+  it("без ручки режет одна планка целыми ходами, с предупреждением", async () => {
     const live = liveTranscript(60);
-    const budget = 12_000;
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-9", lastMessageIndex: 9 } },
+    });
+    const { value, outcome, warned } = await assemble(live, 12_000, client, { handle: false });
+
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 20 }, (_, k) => mark(40 + k)));
+    expect(outcome).toMatchObject({ recovered: true, droppedMessages: 32, priced: false, keptWeight: null });
+    expect(warned.join("\n")).toContain("no price handle");
+    expect(warned.join("\n")).toContain("dropped 32 oldest beyond the floor, unweighed");
+  });
+
+  it("закрытого архива нет: хвост не тяжелее K, начинается с сообщения пользователя", async () => {
+    const live = liveTranscript(60);
     const { client, asked } = server({ context: NO_SUMMARY(2, 1, [ovMessage(59, "assistant")]), archives: {} });
-    const { value, outcome } = await assemble(live, budget, client);
+    const { value, outcome } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
 
     expect(JSON.stringify(value.messages)).not.toContain("[Session History Summary]");
     const kept = marksOf(value.messages);
-    expect(kept.at(-1)).toBe(mark(59));
-    expect(kept).toEqual(Array.from({ length: kept.length }, (_, k) => mark(60 - kept.length + k)));
+    expect(kept).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
     expect(value.messages[0].role).toBe("user");
-    expect(value.estimatedTokens).toBeLessThanOrEqual(budget);
+    expect(Number(outcome.keptWeight)).toBeLessThanOrEqual(12_000);
     expect(value.systemPromptAddition).toBeUndefined();
     expect(asked.filter((p) => p.includes("/archives/")).map((p) => p.split("/").at(-1)))
       .toEqual(["archive_002", "archive_001"]);
@@ -400,20 +444,20 @@ describe("сборка, когда свежего пересказа нет", ()
     expect(outcome).toMatchObject({ recovered: true, archiveId: null });
   });
 
-  it("время в живой переписке не читается: хвост по бюджету, пересказ на месте", async () => {
+  it("время в живой переписке не читается: хвост по весу, пересказ на месте", async () => {
     const live = liveTranscript(60).map(({ timestamp: _gone, ...rest }) => rest);
-    const budget = 12_000;
     const { client } = server({
       context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
       archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39 } },
     });
-    const { value, outcome } = await assemble(live, budget, client);
+    const { value, outcome } = await assemble(live, 12_000, client);
 
     expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ДО-39");
     const kept = marksOf(value.messages);
     expect(kept.at(-1)).toBe(mark(59));
-    expect(kept.length).toBeGreaterThan(20);        // граница неизвестна -- берём больше, а не меньше
-    expect(value.estimatedTokens).toBeLessThanOrEqual(budget);
+    // Граница неизвестна -- берём больше, а не меньше: сколько влезает под K, тридцать.
+    expect(kept).toEqual(Array.from({ length: 30 }, (_, k) => mark(30 + k)));
+    expect(outcome).toMatchObject({ droppedMessages: 30, priced: true });
     expect(outcome).toMatchObject({ recovered: true, archiveId: "archive_002", boundaryFound: false });
     expect(outcome.boundary).toEqual({
       archiveTurns: 3,
@@ -494,11 +538,9 @@ describe("сборка, когда ответ сервера негоден по
   it("сервер не отвечает: большая переписка целиком не уходит", async () => {
     const live = liveTranscript(60);
     const { client } = server({ down: true });
-    const { value, outcome, warned } = await assemble(live, budget, client);
+    const { value, outcome, warned } = await assemble(live, budget, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
 
-    expect(value.estimatedTokens).toBeLessThanOrEqual(budget);
-    expect(marksOf(value.messages).at(-1)).toBe(mark(59));
-    expect(marksOf(value.messages).length).toBeLessThan(60);
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
     expect(value.messages[0].role).toBe("user");
     expect(outcome).toMatchObject({ recovered: true, reason: "assemble_error", archiveId: null });
     expect(warned.join("\n")).toContain("assemble failed");
@@ -512,25 +554,33 @@ describe("сборка, когда ответ сервера негоден по
     expect(value.messages).toBe(live);
   });
 
+  it("сервер не отвечает, а переписка целиком не тяжелее K: тем же массивом, по весу", async () => {
+    const live = liveTranscript(30);
+    const { client } = server({ down: true });
+    const { value, outcome } = await assemble(live, 200_000, client, { keepRecentTokens: 150_000 });
+
+    expect(value.messages).toBe(live);
+    expect(outcome).toMatchObject({ passthrough: true, keepRecentTokens: 150_000 });
+    expect(Number(outcome.liveWeight)).toBeGreaterThan(20_000);
+  });
+
   it("сессии на сервере нет: большая переписка целиком не уходит", async () => {
     const live = liveTranscript(60);
     const { client } = server({
       contextError: { status: 404, code: "NOT_FOUND", message: "Session not found: 9478e347" },
     });
-    const { value, outcome } = await assemble(live, budget, client);
+    const { value, outcome } = await assemble(live, budget, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
 
-    expect(value.estimatedTokens).toBeLessThanOrEqual(budget);
-    expect(marksOf(value.messages).at(-1)).toBe(mark(59));
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
     expect(outcome).toMatchObject({ recovered: true, reason: "session_not_found", archiveId: null });
   });
 
   it("на сервере пусто: большая переписка целиком не уходит", async () => {
     const live = liveTranscript(60);
     const { client } = server({ context: NO_SUMMARY(0, 0, []) });
-    const { value, outcome } = await assemble(live, budget, client);
+    const { value, outcome } = await assemble(live, budget, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
 
-    expect(value.estimatedTokens).toBeLessThanOrEqual(budget);
-    expect(marksOf(value.messages).at(-1)).toBe(mark(59));
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
     expect(outcome).toMatchObject({ recovered: true, reason: "no_ov_data", archiveId: null });
   });
 });
@@ -545,20 +595,23 @@ describe("то же через движок, как его зовёт шлюз",
     const engine = createMemoryOpenVikingContextEngine({
       id: "openviking",
       name: "OpenViking",
-      cfg: memoryOpenVikingConfigSchema.parse({ baseUrl: "http://127.0.0.1:1933", autoRecall: false }),
+      cfg: memoryOpenVikingConfigSchema.parse({
+        baseUrl: "http://127.0.0.1:1933", autoRecall: false, keepRecentTokens: 30_000,
+      }),
       logger: { info: () => {}, warn: () => {}, error: () => {} },
       getClient: async () => client,
       resolveAgentId: () => "main",
+      priceHandle: charsHandle(),
     });
     const value = await engine.assemble({
       sessionId: "9478e347-6bdc-44f5-a4e0-207fe7e4b6e3",
       messages: live,
       tokenBudget: 12_000,
       availableTools: new Set<string>(),
+      runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite", requested: null } },
     } as never);
 
     expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ДО-39");
     expect(marksOf(value.messages as AgentMessage[])).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
-    expect(value.estimatedTokens).toBeLessThanOrEqual(12_000);
   });
 });

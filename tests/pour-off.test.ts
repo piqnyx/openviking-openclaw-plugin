@@ -37,8 +37,8 @@ function ovMessage(i: number, chars: number): OVMessage {
   };
 }
 
-/** Сервер: столько ходов по два сообщения, каждое из `chars` знаков; счётчик висящих без сводки. */
-function server(turns: number, chars: number, unsummarized: number | undefined = 0): Stand {
+/** Сервер: столько ходов по два сообщения, каждое из `chars` знаков; счётчик висящих без сводки (null -- сервер его не знает). */
+function server(turns: number, chars: number, unsummarized: number | null = 0): Stand {
   const commits: Array<Record<string, unknown>> = [];
   const asked: string[] = [];
   const messages = Array.from({ length: turns * 2 }, (_, i) => ovMessage(i, chars));
@@ -66,7 +66,7 @@ function server(turns: number, chars: number, unsummarized: number | undefined =
         stats: {
           totalArchives: 1, includedArchives: 1, droppedArchives: 0, failedArchives: 0,
           activeTokens: 1, archiveTokens: 1,
-          ...(unsummarized === undefined ? {} : { unsummarizedArchives: unsummarized }),
+          ...(unsummarized === null ? {} : { unsummarizedArchives: unsummarized }),
         },
       });
     }
@@ -141,11 +141,12 @@ function turn(tag: string) {
   ];
 }
 
+/** `model` null -- шлюз модель не назвал (настройки без неё). */
 async function afterTurn(
   engine: ReturnType<typeof engineOver>["engine"],
   tag: string,
   window: number | undefined,
-  model: string | undefined = "gemini-3.5-flash-lite",
+  model: string | null = "gemini-3.5-flash-lite",
 ) {
   await engine.afterTurn?.({
     sessionId: `${SESSION}-${tag}`,
@@ -153,7 +154,7 @@ async function afterTurn(
     messages: turn(tag) as never,
     prePromptMessageCount: 0,
     runtimeContext: window === undefined ? {} : { currentTokenCount: window },
-    ...(model === undefined ? {} : { runtimeSettings: { model: { resolved: model, requested: model } } }),
+    ...(model === null ? {} : { runtimeSettings: { model: { resolved: model, requested: model } } }),
   } as never);
 }
 
@@ -173,25 +174,28 @@ describe("отливание по X", () => {
   });
 
   it("окно весит X -- остаётся самый длинный хвост целых ходов не тяжелее K, остальное в архив", async () => {
-    // 20 ходов по два сообщения в 10 000 знаков: ход весит 20 000; не тяжелее 150 000 -- семь ходов.
-    const stand = server(20, 10_000);
+    // 20 ходов по два сообщения в 5 000 знаков: ход весит 10 000; не тяжелее 150 000 -- 14 ходов
+    // (140 001 с «x»), пятнадцать весили бы 150 001.
+    const stand = server(20, 5_000);
     const { price, bodies } = handle();
     const { engine, diags, warned } = engineOver(stand, price);
     await afterTurn(engine, "at-x", X);
-    expect(stand.commits).toEqual([{ keep_recent_count: 14 }]);
+    expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
     expect(warned).toEqual([]);
-    // Вес всех плюс двоичный поиск по границам: не больше семи обращений.
-    expect(bodies.length).toBeLessThanOrEqual(7);
+    // Вес всех плюс двоичный поиск по границам: не больше шести обращений.
+    expect(bodies.length).toBeLessThanOrEqual(6);
     for (const body of bodies) {
       expect(body.model).toBe("gemini-3.5-flash-lite");
       expect(body.messages.at(-1)).toEqual({ role: "user", content: "x" });
     }
     expect(lastDiag(diags, "pour_off")).toMatchObject({
       window: X,
+      rest: 44_999,
       cap: K,
-      keptMessages: 14,
+      keptMessages: 28,
       keptWeight: 140_001,
-      archivedMessages: 26,
+      archivedMessages: 12,
+      priced: true,
       taskId: "task-1",
     });
     expect(stand.asked.filter((line) => line.includes("/context"))).toEqual([
@@ -200,14 +204,30 @@ describe("отливание по X", () => {
   });
 
   it("K -- верхняя планка: остаётся не больше, чем влезает под X с постоянной частью окна", async () => {
-    // Десять ходов по два сообщения в 1 000 знаков: все вместе 20 001, постоянная часть окна
-    // 245 000 − 20 001 = 224 999, под X остаётся 20 000 -- девять ходов (18 001), не десять (20 001).
+    // Десять ходов по два сообщения в 1 000 знаков: все вместе 20 001; окно 250 000, значит
+    // постоянная часть 229 999 и под X влезает 15 001 -- семь ходов (14 001), не восемь (16 001).
+    // Планка 4, чтобы решал вес.
     const stand = server(10, 1_000);
     const { price } = handle();
-    const { engine, diags } = engineOver(stand, price);
-    await afterTurn(engine, "cap", X);
-    expect(stand.commits).toEqual([{ keep_recent_count: 18 }]);
-    expect(lastDiag(diags, "pour_off")).toMatchObject({ rest: 224_999, cap: 20_000, keptMessages: 18 });
+    const { engine, diags } = engineOver(stand, price, 4);
+    await afterTurn(engine, "cap", 250_000);
+    expect(stand.commits).toEqual([{ keep_recent_count: 14 }]);
+    expect(lastDiag(diags, "pour_off")).toMatchObject({
+      window: 250_000, rest: 229_999, cap: 15_001, keptMessages: 14, keptWeight: 14_001, archivedMessages: 6,
+    });
+  });
+
+  it("окно на X из-за постоянной части, а сообщения лёгкие: все остаются, сервер не трогается", async () => {
+    // Все сообщения весят 20 001 и влезают под X целиком: cap равен им, отливать нечего.
+    const stand = server(10, 1_000);
+    const { price } = handle();
+    const { engine, diags, warned } = engineOver(stand, price, 4);
+    await afterTurn(engine, "light", X);
+    expect(stand.commits).toEqual([]);
+    expect(lastDiag(diags, "pour_skip")).toMatchObject({
+      reason: "nothing_to_pour", rest: 224_999, cap: 20_001, allWeight: 20_001, pendingMessages: 20,
+    });
+    expect(warned.join("\n")).toMatch(/nothing to pour/);
   });
 
   it("сводка прошлого отливания ещё не записана -- не отливать снова", async () => {
@@ -221,11 +241,11 @@ describe("отливание по X", () => {
   });
 
   it("сервер без счётчика висящих -- предупреждение, отливание идёт", async () => {
-    const stand = server(20, 10_000, undefined);
+    const stand = server(20, 5_000, null);
     const { price } = handle();
     const { engine, warned } = engineOver(stand, price);
     await afterTurn(engine, "old-server", X);
-    expect(stand.commits).toEqual([{ keep_recent_count: 14 }]);
+    expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
     expect(warned.join("\n")).toMatch(/unsummarizedArchives/);
   });
 
@@ -242,7 +262,7 @@ describe("отливание по X", () => {
     const stand = server(20, 10_000);
     const { price, bodies } = handle();
     const { engine, warned } = engineOver(stand, price);
-    await afterTurn(engine, "no-model", X, undefined);
+    await afterTurn(engine, "no-model", X, null);
     expect(stand.commits).toEqual([{ keep_recent_count: 20 }]);
     expect(bodies).toEqual([]);
     expect(warned.join("\n")).toMatch(/model/);
@@ -282,7 +302,7 @@ describe("отливание по X", () => {
   });
 
   it("запись хода после хода отливает так же", async () => {
-    const stand = server(20, 10_000);
+    const stand = server(20, 5_000);
     const { price } = handle();
     const { engine } = engineOver(stand, price);
     const result = await engine.commitTurn?.({
@@ -294,7 +314,7 @@ describe("отливание по X", () => {
       runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite" } },
     } as never);
     expect(result?.status).toBe("committed");
-    expect(stand.commits).toEqual([{ keep_recent_count: 14 }]);
+    expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
   });
 });
 
