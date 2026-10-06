@@ -37,3 +37,15 @@ describe("срок ожидания сводки при сжатии", () => {
     expect(memoryOpenVikingConfigSchema.parse({ ...BASE, compactWaitSeconds: 0.5 }).compactWaitSeconds).toBe(1);
   });
 });
+
+describe("прежние ключи порога", () => {
+  it("commitTokenThreshold и commitKeepRecentCount больше не принимаются: у настройки одно имя и один смысл", () => {
+    expect(() => memoryOpenVikingConfigSchema.parse({ ...BASE, commitTokenThreshold: 48_000 }))
+      .toThrow(/unknown keys: commitTokenThreshold/);
+    expect(() => memoryOpenVikingConfigSchema.parse({ ...BASE, commitKeepRecentCount: 20 }))
+      .toThrow(/unknown keys: commitKeepRecentCount/);
+    const cfg = memoryOpenVikingConfigSchema.parse(BASE) as Record<string, unknown>;
+    expect("commitTokenThreshold" in cfg).toBe(false);
+    expect("commitKeepRecentCount" in cfg).toBe(false);
+  });
+});
