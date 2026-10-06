@@ -1056,6 +1056,7 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
         });
         const newMsgFull = messageDigest(newMessages);
         const newTurnTokens = newMsgFull.reduce((sum, digest) => sum + digest.tokens, 0);
+        const promptCache = runtimeContext?.promptCache;
         diag("afterTurn_entry", ovSessionId, {
             totalMessages: messages.length,
             newMessageCount: newCount,
@@ -1063,6 +1064,13 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
             newTurnTokens,
             senderIdFound: sender.found,
             senderId: sender.senderId ?? null,
+            // What the host hands on for the pour-off by X (PLAN-gorizont 4б): the
+            // window's weight, the budget, the last call's usage, and the model.
+            window: runtimeContext?.currentTokenCount ?? null,
+            hostTokenBudget: runtimeContext?.tokenBudget ?? null,
+            lastCallUsage: promptCache?.lastCallUsage ?? null,
+            runtimeContextKeys: Object.keys(runtimeContext ?? {}),
+            model: modelOf(runtimeSettings) ?? null,
             messages: newMsgFull,
         });
         const client = await getClient(agentId);
