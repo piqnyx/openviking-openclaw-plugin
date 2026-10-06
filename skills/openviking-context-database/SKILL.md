@@ -79,6 +79,8 @@ Core config lives under `plugins.entries.openviking.config`:
 | `recallLimit` | `6` | Max selected recall items. |
 | `recallScoreThreshold` | `0.15` | Min score after post-processing. |
 | `recallMaxInjectedChars` | `4000` | Total injected character cap; complete memories that do not fit are skipped. |
+| `priceUrl` | `http://127.0.0.1:8787/price` | The proxy's `POST /price`: the weight of a body by the counter that charges the keys, without a send. Empty disables it; the plugin then decides without a price and says so in the log. |
+| `priceTimeoutMs` | `60000` | How long one question to the price handle may take (ms). Floor 1000. |
 | `commitTokenThreshold` | `50000` | Async-commit threshold in pending tokens; both the in-turn (afterTurn) and the after-turn (commitTurn) records decide by this number; `0` commits every turn. |
 | `commitKeepRecentCount` | `10` | Recent messages kept live after an afterTurn commit and after the host's automatic compaction (`compactionTarget: "budget"`). A manual `/compact` archives everything. |
 | `bypassSessionPatterns` | empty | Glob-like session keys that completely bypass OpenViking (`*` segment, `**` multi-segment). |

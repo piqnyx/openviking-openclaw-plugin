@@ -1,5 +1,6 @@
 import type { OpenVikingClient } from "./client.js";
 import type { MemoryOpenVikingConfig } from "./config.js";
+import type { PriceHandle } from "./price-handle.js";
 import type { RuntimeQueryConfigStore } from "./query-config.js";
 import {
   AUTO_RECALL_SOURCE_MARKER,
@@ -321,6 +322,8 @@ export function createMemoryOpenVikingContextEngine(params: {
   }) => void;
   queryConfigStore?: RuntimeQueryConfigStore;
   traceRecorder?: { record(entry: RecallTraceEntry): void; recordAndFlush?: (entry: RecallTraceEntry) => Promise<unknown> };
+  /** The proxy's price handle (PLAN-gorizont 4а); none when the config names no address. */
+  priceHandle?: PriceHandle;
 }): ContextEngineWithCommit {
   const {
     id,
@@ -333,6 +336,7 @@ export function createMemoryOpenVikingContextEngine(params: {
     rememberSessionAgentId,
     queryConfigStore,
     traceRecorder,
+    priceHandle,
   } = params;
 
   const diagEnabled = cfg.emitStandardDiagnostics;
@@ -476,6 +480,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         rememberSessionAgentId,
         isBypassedSession,
         diag,
+        priceHandle,
       });
     },
 
@@ -518,6 +523,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         rememberSessionAgentId,
         isBypassedSession,
         diag,
+        priceHandle,
       });
       return { status: "committed" };
     },

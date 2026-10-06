@@ -10,6 +10,7 @@ import {
   sanitizeOpenVikingPeerId,
   type OpenVikingPeerRole,
 } from "../routing/identity-routing.js";
+import type { PriceHandle } from "../price-handle.js";
 import { extractNewTurnMessages } from "../text-utils.js";
 import { estimateAgentMessageTokens, estimateTextTokens } from "../token-estimator.js";
 import {
@@ -157,6 +158,8 @@ export type AfterTurnOpenVikingSessionParams = {
   }) => void;
   isBypassedSession: (params: { sessionId?: string; sessionKey?: string }) => boolean;
   diag: (stage: string, sessionId: string, data: Record<string, unknown>) => void;
+  /** The proxy's price handle (PLAN-gorizont 4а): the pour-off by weight (4б) asks it. */
+  priceHandle?: Pick<PriceHandle, "price" | "url">;
 };
 
 export function totalExtractedMemories(memories?: Record<string, number>): number {
@@ -172,8 +175,17 @@ type ContextBudgets = {
   reserved: number;
 };
 
-const BUDGET_UNLIMITED = -1;
 const ARCHIVE_BUDGET_RATIO = 0.15;
+/**
+ * The budget the server is asked for the session's context (PLAN-gorizont 4а).
+ *
+ * The server fits its messages to the budget by its own estimate, which is not
+ * in the counter's units; so does the plugin's rough estimate. The window is
+ * not cut by either: whatever the server has not archived is the window, whole,
+ * and only the proxy's counter says what it weighs -- by that the plugin pours
+ * off (4б). A budget this large makes the server cut nothing.
+ */
+export const NO_TRIM_TOKEN_BUDGET = 1_000_000_000;
 const ARCHIVE_BUDGET_CAP = 8_000;
 const RESERVED_MIN = 20_000;
 const RESERVED_RATIO = 0.15;
@@ -291,22 +303,18 @@ function buildArchiveMemory(
   return { messages, tokens: roughEstimate(messages) };
 }
 
+/**
+ * The server's live messages as the model sees them: all of them. What the
+ * server has not archived is the window (PLAN-gorizont 4а); the rough estimate
+ * is kept for the diagnostics only and cuts nothing.
+ */
 function buildSessionContext(
   ovMessages: OVMessage[],
-  budget: number,
   roughEstimate: (messages: AgentMessage[]) => number,
 ): { messages: AgentMessage[]; tokens: number } {
   const raw = ovMessages.flatMap((m) => convertToAgentMessages(m));
   const messages = mergeConsecutiveAssistants(raw);
-  const tokens = roughEstimate(messages);
-  if (budget === BUDGET_UNLIMITED || tokens <= budget) {
-    return { messages, tokens };
-  }
-  const trimmed = [...messages];
-  while (trimmed.length > 0 && roughEstimate(trimmed) > budget) {
-    trimmed.shift();
-  }
-  return { messages: trimmed, tokens: roughEstimate(trimmed) };
+  return { messages, tokens: roughEstimate(messages) };
 }
 
 function buildAssembledContext(
@@ -328,11 +336,7 @@ function buildAssembledContext(
   //   Reserved    — headroom for model output (not consumed here)
   const budgets = allocateContextBudget(tokenBudget, instruction.tokens);
   const archive = buildArchiveMemory(overview, preAbstracts, budgets.archiveMemory, roughEstimate);
-  const sessionBudget = Math.max(
-    tokenBudget - budgets.reserved - instruction.tokens - archive.tokens,
-    0,
-  );
-  const session = buildSessionContext(ovMessages, sessionBudget, roughEstimate);
+  const session = buildSessionContext(ovMessages, roughEstimate);
   const assembled = [...archive.messages, ...session.messages];
 
   logger.info(
@@ -910,7 +914,7 @@ export async function assembleOpenVikingSession({
     const client = await getClient(
       resolveAgentId(sessionId ?? sessionKey ?? ovSessionId, sessionKey, ovSessionId),
     );
-    const ctx = await client.getSessionContext(ovSessionId, tokenBudget);
+    const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
 
     const preAbstracts = ctx?.pre_archive_abstracts ?? [];
     const hasArchives = !!ctx?.latest_archive_overview || preAbstracts.length > 0;
@@ -1420,7 +1424,7 @@ export async function compactOpenVikingSession({
   let preCommitEstimatedTokens: number | undefined;
   if (typeof tokensBeforeOriginal !== "number") {
     try {
-      const preCtx = await client.getSessionContext(ovSessionId, tokenBudget);
+      const preCtx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
       if (typeof preCtx.estimatedTokens === "number" && Number.isFinite(preCtx.estimatedTokens)) {
         preCommitEstimatedTokens = preCtx.estimatedTokens;
       }
@@ -1548,7 +1552,7 @@ export async function compactOpenVikingSession({
     let contextFetchError: string | undefined;
 
     try {
-      const ctx = await client.getSessionContext(ovSessionId, tokenBudget);
+      const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
       logger.info(
         `openviking: compact getSessionContext raw result for ${ovSessionId}: ` +
           JSON.stringify(ctx, null, 2),

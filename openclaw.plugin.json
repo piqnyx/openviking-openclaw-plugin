@@ -207,6 +207,18 @@
       "help": "Completely bypass OpenViking for matching session keys. Use * within one segment and ** across segments.",
       "advanced": true
     },
+    "priceUrl": {
+      "label": "Price Handle URL",
+      "placeholder": "http://127.0.0.1:8787/price",
+      "advanced": true,
+      "help": "The proxy's POST /price: the weight of a body by the counter that charges the keys, without a send. Empty disables it; the plugin then decides without a price and says so in the log."
+    },
+    "priceTimeoutMs": {
+      "label": "Price Handle Timeout (ms)",
+      "placeholder": "60000",
+      "advanced": true,
+      "help": "How long one question to the price handle may take. Floor 1000."
+    },
     "commitTokenThreshold": {
       "label": "Commit Token Threshold",
       "placeholder": "50000",
@@ -399,6 +411,13 @@
       },
       "recallTokenBudget": {
         "type": "number"
+      },
+      "priceUrl": {
+        "type": "string"
+      },
+      "priceTimeoutMs": {
+        "type": "number",
+        "minimum": 1000
       },
       "commitTokenThreshold": {
         "type": "number",
