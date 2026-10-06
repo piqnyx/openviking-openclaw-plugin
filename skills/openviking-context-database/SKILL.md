@@ -85,8 +85,6 @@ Core config lives under `plugins.entries.openviking.config`:
 | `keepRecentTokens` | `150000` | K: the weight by the counter of the newest messages that stay live after a pour-off and after the host's automatic compaction; whole turns. An upper bound: never more than fits under `pourOffAtTokens` with the rest of the window. |
 | `keepRecentFloor` | `20` | Never fewer messages than this stay live, whatever they weigh; whole turns. |
 | `compactWaitSeconds` | `150` | How long the host's compaction waits for the archive's summary to stand on the server before it gives up. Keep it under the host's compaction timeout (`agents.defaults.compaction.timeoutSeconds`, 180 by default). |
-| `commitTokenThreshold` | `50000` | Async-commit threshold in pending tokens; both the in-turn (afterTurn) and the after-turn (commitTurn) records decide by this number; `0` commits every turn. |
-| `commitKeepRecentCount` | `10` | Recent messages kept live after an afterTurn commit and after the host's automatic compaction (`compactionTarget: "budget"`). A manual `/compact` archives everything. |
 | `bypassSessionPatterns` | empty | Glob-like session keys that completely bypass OpenViking (`*` segment, `**` multi-segment). |
 | `emitStandardDiagnostics` | `false` | Emit structured `openviking: diag {...}` lines. |
 | `logFindRequests` | `false` | Log routing for find/session writes. Also enabled by `OPENVIKING_LOG_ROUTING=1` or `OPENVIKING_DEBUG=1`. |

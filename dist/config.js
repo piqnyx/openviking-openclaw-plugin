@@ -18,8 +18,6 @@ const DEFAULT_POUR_OFF_AT_TOKENS = 245_000;
 const DEFAULT_KEEP_RECENT_TOKENS = 150_000;
 const DEFAULT_KEEP_RECENT_FLOOR = 20;
 const DEFAULT_COMPACT_WAIT_SECONDS = 150;
-const DEFAULT_COMMIT_TOKEN_THRESHOLD = 50_000;
-const DEFAULT_COMMIT_KEEP_RECENT_COUNT = 10;
 const DEFAULT_BYPASS_SESSION_PATTERNS = [];
 const DEFAULT_EMIT_STANDARD_DIAGNOSTICS = false;
 const DEFAULT_PEER_ROLE = "assistant";
@@ -313,8 +311,6 @@ export const OPENVIKING_CONFIG_KEYS = [
     "keepRecentTokens",
     "keepRecentFloor",
     "compactWaitSeconds",
-    "commitTokenThreshold",
-    "commitKeepRecentCount",
     "bypassSessionPatterns",
     "ingestReplyAssist",
     "ingestReplyAssistMinSpeakerTurns",
@@ -431,8 +427,6 @@ export const memoryOpenVikingConfigSchema = {
             keepRecentTokens: Math.max(1, Math.floor(toNumber(cfg.keepRecentTokens, DEFAULT_KEEP_RECENT_TOKENS))),
             keepRecentFloor: Math.max(0, Math.floor(toNumber(cfg.keepRecentFloor, DEFAULT_KEEP_RECENT_FLOOR))),
             compactWaitSeconds: Math.max(1, toNumber(cfg.compactWaitSeconds, DEFAULT_COMPACT_WAIT_SECONDS)),
-            commitTokenThreshold: Math.max(0, Math.floor(toNumber(cfg.commitTokenThreshold, DEFAULT_COMMIT_TOKEN_THRESHOLD))),
-            commitKeepRecentCount: Math.max(0, Math.min(1_000, Math.floor(toNumber(cfg.commitKeepRecentCount, DEFAULT_COMMIT_KEEP_RECENT_COUNT)))),
             bypassSessionPatterns: toStringArray(cfg.bypassSessionPatterns, toStringArray(cfg.ingestReplyAssistIgnoreSessionPatterns, DEFAULT_BYPASS_SESSION_PATTERNS)),
             emitStandardDiagnostics: typeof cfg.emitStandardDiagnostics === "boolean"
                 ? cfg.emitStandardDiagnostics
@@ -637,19 +631,6 @@ export const memoryOpenVikingConfigSchema = {
             advanced: true,
             help: "How long the host's compaction waits for the archive's summary to stand on the server before it gives up. " +
                 "Keep it under the host's compaction timeout (agents.defaults.compaction.timeoutSeconds, 180 by default).",
-        },
-        commitTokenThreshold: {
-            label: "Commit Token Threshold",
-            placeholder: String(DEFAULT_COMMIT_TOKEN_THRESHOLD),
-            advanced: true,
-            help: "Archive threshold in tokens: once the session's pending tokens reach this number, the recorded turn asks for an async commit. Set to 0 to commit every turn.",
-        },
-        commitKeepRecentCount: {
-            label: "Commit Keep Recent Count",
-            placeholder: String(DEFAULT_COMMIT_KEEP_RECENT_COUNT),
-            advanced: true,
-            help: "Number of most-recent messages to keep live after an afterTurn commit. " +
-                "Forwarded as keep_recent_count to the server. The host's automatic compaction keeps them too; a manual /compact archives everything.",
         },
         emitStandardDiagnostics: {
             label: "Standard diagnostics (diag JSON lines)",

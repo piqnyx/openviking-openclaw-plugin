@@ -243,18 +243,6 @@
       "advanced": true,
       "help": "How long the host's compaction waits for the archive's summary to stand on the server before it gives up. Keep it under the host's compaction timeout (agents.defaults.compaction.timeoutSeconds, 180 by default)."
     },
-    "commitTokenThreshold": {
-      "label": "Commit Token Threshold",
-      "placeholder": "50000",
-      "advanced": true,
-      "help": "Archive threshold in tokens: once the session's pending tokens reach this number, the recorded turn asks for an async commit. Set to 0 to commit every turn."
-    },
-    "commitKeepRecentCount": {
-      "label": "Commit Keep Recent Count",
-      "placeholder": "10",
-      "advanced": true,
-      "help": "WM v2: number of most-recent messages kept live after an afterTurn commit and after the host's automatic compaction. A manual /compact archives everything."
-    },
     "emitStandardDiagnostics": {
       "label": "Standard diagnostics (diag JSON lines)",
       "advanced": true,
@@ -458,15 +446,6 @@
       "compactWaitSeconds": {
         "type": "number",
         "minimum": 1
-      },
-      "commitTokenThreshold": {
-        "type": "number",
-        "minimum": 0
-      },
-      "commitKeepRecentCount": {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 1000
       },
       "bypassSessionPatterns": {
         "type": "array",
