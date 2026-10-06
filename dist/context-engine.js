@@ -169,7 +169,7 @@ function validTokenBudget(raw) {
     return undefined;
 }
 export function createMemoryOpenVikingContextEngine(params) {
-    const { id, name, version, cfg, logger, getClient, resolveAgentId, rememberSessionAgentId, queryConfigStore, traceRecorder, priceHandle, } = params;
+    const { id, name, version, cfg, logger, getClient, resolveAgentId, rememberSessionAgentId, queryConfigStore, traceRecorder, priceHandle, pollIntervalMs, } = params;
     const diagEnabled = cfg.emitStandardDiagnostics;
     const bypassSessionPatterns = compileSessionPatterns(cfg.bypassSessionPatterns);
     const diag = (stage, sessionId, data) => emitDiag(logger, stage, sessionId, data, diagEnabled);
@@ -285,6 +285,7 @@ export function createMemoryOpenVikingContextEngine(params) {
                 isBypassedSession,
                 diag,
                 priceHandle,
+                pollIntervalMs,
             });
         },
         /**
@@ -324,6 +325,7 @@ export function createMemoryOpenVikingContextEngine(params) {
                 isBypassedSession,
                 diag,
                 priceHandle,
+                pollIntervalMs,
             });
             return { status: "committed" };
         },
@@ -336,11 +338,11 @@ export function createMemoryOpenVikingContextEngine(params) {
                 currentTokenCount: compactParams.currentTokenCount,
                 force: compactParams.force,
                 compactionTarget: compactParams.compactionTarget,
-                // The host's automatic compaction ("budget") keeps the recent messages,
-                // as the archive at the pending threshold does; a manual /compact
-                // ("threshold", or no mark at all) archives everything (Vit, 2026-10-04).
-                keepRecentCount: compactParams.compactionTarget === "budget" ? cfg.commitKeepRecentCount : 0,
                 customInstructions: compactParams.customInstructions,
+                runtimeSettings: compactParams.runtimeSettings,
+                priceHandle,
+                cfg,
+                pollIntervalMs,
                 getClient,
                 logger,
                 resolveAgentId,

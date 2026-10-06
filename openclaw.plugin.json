@@ -237,6 +237,12 @@
       "advanced": true,
       "help": "Never fewer messages than this stay live, whatever they weigh; whole turns."
     },
+    "compactWaitSeconds": {
+      "label": "Compact Wait (seconds)",
+      "placeholder": "150",
+      "advanced": true,
+      "help": "How long the host's compaction waits for the archive's summary to stand on the server before it gives up. Keep it under the host's compaction timeout (agents.defaults.compaction.timeoutSeconds, 180 by default)."
+    },
     "commitTokenThreshold": {
       "label": "Commit Token Threshold",
       "placeholder": "50000",
@@ -448,6 +454,10 @@
       "keepRecentFloor": {
         "type": "number",
         "minimum": 0
+      },
+      "compactWaitSeconds": {
+        "type": "number",
+        "minimum": 1
       },
       "commitTokenThreshold": {
         "type": "number",
