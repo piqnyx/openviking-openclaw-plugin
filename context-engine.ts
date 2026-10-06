@@ -168,6 +168,7 @@ type ContextEngine = {
     compactionTarget?: "budget" | "threshold";
     customInstructions?: string;
     runtimeContext?: Record<string, unknown>;
+    runtimeSettings?: unknown;
   }) => Promise<CompactResult>;
 };
 
@@ -327,6 +328,8 @@ export function createMemoryOpenVikingContextEngine(params: {
   traceRecorder?: { record(entry: RecallTraceEntry): void; recordAndFlush?: (entry: RecallTraceEntry) => Promise<unknown> };
   /** The proxy's price handle (PLAN-gorizont 4а); none when the config names no address. */
   priceHandle?: Pick<PriceHandle, "price" | "url">;
+  /** How often the server is asked while waiting or watching a task, ms; the tests shorten it. */
+  pollIntervalMs?: number;
 }): ContextEngineWithCommit {
   const {
     id,
@@ -340,6 +343,7 @@ export function createMemoryOpenVikingContextEngine(params: {
     queryConfigStore,
     traceRecorder,
     priceHandle,
+    pollIntervalMs,
   } = params;
 
   const diagEnabled = cfg.emitStandardDiagnostics;
@@ -487,6 +491,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         isBypassedSession,
         diag,
         priceHandle,
+        pollIntervalMs,
       });
     },
 
@@ -531,6 +536,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         isBypassedSession,
         diag,
         priceHandle,
+        pollIntervalMs,
       });
       return { status: "committed" };
     },
@@ -544,11 +550,11 @@ export function createMemoryOpenVikingContextEngine(params: {
         currentTokenCount: compactParams.currentTokenCount,
         force: compactParams.force,
         compactionTarget: compactParams.compactionTarget,
-        // The host's automatic compaction ("budget") keeps the recent messages,
-        // as the archive at the pending threshold does; a manual /compact
-        // ("threshold", or no mark at all) archives everything (Vit, 2026-10-04).
-        keepRecentCount: compactParams.compactionTarget === "budget" ? cfg.commitKeepRecentCount : 0,
         customInstructions: compactParams.customInstructions,
+        runtimeSettings: compactParams.runtimeSettings,
+        priceHandle,
+        cfg,
+        pollIntervalMs,
         getClient,
         logger,
         resolveAgentId,

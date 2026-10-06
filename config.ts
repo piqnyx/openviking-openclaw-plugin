@@ -89,6 +89,12 @@ export type MemoryOpenVikingConfig = {
   /** Never fewer messages than this stay live, whatever they weigh; whole turns. Default 20. */
   keepRecentFloor?: number;
   /**
+   * How long the host's compaction waits for the archive's summary to stand on the
+   * server before it gives up, seconds. Keep it under the host's own compaction
+   * timeout (agents.defaults.compaction.timeoutSeconds, 180 by default). Default 150.
+   */
+  compactWaitSeconds?: number;
+  /**
    * Archive threshold in tokens. Once the session's pending (not yet archived)
    * tokens reach this number, the turn that was just recorded asks the server
    * for an async commit (archive + memory extraction). A plain number, so the
@@ -184,6 +190,7 @@ const DEFAULT_PRICE_TIMEOUT_MS = 60_000;
 const DEFAULT_POUR_OFF_AT_TOKENS = 245_000;
 const DEFAULT_KEEP_RECENT_TOKENS = 150_000;
 const DEFAULT_KEEP_RECENT_FLOOR = 20;
+const DEFAULT_COMPACT_WAIT_SECONDS = 150;
 const DEFAULT_COMMIT_TOKEN_THRESHOLD = 50_000;
 const DEFAULT_COMMIT_KEEP_RECENT_COUNT = 10;
 const DEFAULT_BYPASS_SESSION_PATTERNS: string[] = [];
@@ -506,6 +513,7 @@ export const OPENVIKING_CONFIG_KEYS = [
   "pourOffAtTokens",
   "keepRecentTokens",
   "keepRecentFloor",
+  "compactWaitSeconds",
   "commitTokenThreshold",
   "commitKeepRecentCount",
   "bypassSessionPatterns",
@@ -670,6 +678,7 @@ export const memoryOpenVikingConfigSchema = {
       pourOffAtTokens: Math.max(1, Math.floor(toNumber(cfg.pourOffAtTokens, DEFAULT_POUR_OFF_AT_TOKENS))),
       keepRecentTokens: Math.max(1, Math.floor(toNumber(cfg.keepRecentTokens, DEFAULT_KEEP_RECENT_TOKENS))),
       keepRecentFloor: Math.max(0, Math.floor(toNumber(cfg.keepRecentFloor, DEFAULT_KEEP_RECENT_FLOOR))),
+      compactWaitSeconds: Math.max(1, toNumber(cfg.compactWaitSeconds, DEFAULT_COMPACT_WAIT_SECONDS)),
       commitTokenThreshold: Math.max(
         0,
         Math.floor(toNumber(cfg.commitTokenThreshold, DEFAULT_COMMIT_TOKEN_THRESHOLD)),
@@ -948,6 +957,14 @@ export const memoryOpenVikingConfigSchema = {
       placeholder: String(DEFAULT_KEEP_RECENT_FLOOR),
       advanced: true,
       help: "Never fewer messages than this stay live, whatever they weigh; whole turns.",
+    },
+    compactWaitSeconds: {
+      label: "Compact Wait (seconds)",
+      placeholder: String(DEFAULT_COMPACT_WAIT_SECONDS),
+      advanced: true,
+      help:
+        "How long the host's compaction waits for the archive's summary to stand on the server before it gives up. " +
+        "Keep it under the host's compaction timeout (agents.defaults.compaction.timeoutSeconds, 180 by default).",
     },
     commitTokenThreshold: {
       label: "Commit Token Threshold",

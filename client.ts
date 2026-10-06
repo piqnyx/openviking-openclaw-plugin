@@ -877,6 +877,8 @@ export class OpenVikingClient {
     commit_count?: number;
     last_commit_at?: string;
     pending_tokens?: number;
+    /** Archives waiting for a summary (the server of ours, PLAN-gorizont 3е). */
+    unsummarized_archives?: number;
     llm_token_usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   }> {
     return this.request<{
@@ -884,6 +886,7 @@ export class OpenVikingClient {
       commit_count?: number;
       last_commit_at?: string;
       pending_tokens?: number;
+      unsummarized_archives?: number;
       llm_token_usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
     }>(
       `/api/v1/sessions/${encodeURIComponent(sessionId)}`,

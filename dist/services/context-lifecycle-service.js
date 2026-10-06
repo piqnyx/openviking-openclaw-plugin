@@ -37,12 +37,12 @@ function sleep(ms) {
  * After wait=false commit, Phase2 runs on the server. Poll task until completed/failed/timeout
  * so logs show memories_extracted (otherwise it looks like "nothing was saved").
  */
-async function pollPhase2ExtractionOutcome(client, taskId, logger, sessionLabel) {
+async function pollPhase2ExtractionOutcome(client, taskId, logger, sessionLabel, pollMs = PHASE2_POLL_INTERVAL_MS) {
     const deadline = Date.now() + PHASE2_POLL_MAX_MS;
     let stageSeen;
     try {
         while (Date.now() < deadline) {
-            await sleep(PHASE2_POLL_INTERVAL_MS);
+            await sleep(pollMs);
             const task = await client.getTask(taskId).catch((e) => {
                 logger.warn?.(`openviking: phase2 getTask failed task_id=${taskId}: ${String(e)}`);
                 return null;
@@ -383,6 +383,102 @@ function modelOf(runtimeSettings) {
     const { resolved, requested } = model;
     const name = typeof resolved === "string" && resolved.trim() ? resolved : requested;
     return typeof name === "string" && name.trim() ? name.trim() : undefined;
+}
+/**
+ * The newest server messages that stay live (PLAN-gorizont 4б), for the pour-off
+ * and for the host's compaction alike: the longest tail by whole turns, not
+ * shorter than the floor, weighing up to the cap by the price handle. The cap
+ * is K, or less when the rest of the window -- its weight less the weight of
+ * all the messages -- leaves less under X. Without a price (no handle, or no
+ * model named by the host) the floor alone decides, and a warning says so.
+ */
+async function chooseKeptTail(params) {
+    const { pending, window, priceHandle, cfg, logger, ovSessionId } = params;
+    const model = modelOf(params.runtimeSettings);
+    const weighed = new Map();
+    const weigh = priceHandle && model
+        ? async (start) => {
+            if (!weighed.has(start)) {
+                const verdict = await priceHandle.price(priceBodyOf(model, pending.slice(start)));
+                weighed.set(start, verdict ? verdict.charge : null);
+            }
+            return weighed.get(start) ?? null;
+        }
+        : null;
+    if (!weigh) {
+        logger.warn?.(`openviking: ${params.doing} session=${ovSessionId} without a price ` +
+            `(${priceHandle ? "the model is not named by the host" : "no price handle"}): ` +
+            `the floor of ${cfg.keepRecentFloor} messages by whole turns stays, the rest goes to the archive`);
+    }
+    let rest = null;
+    let cap = cfg.keepRecentTokens;
+    if (weigh && window !== undefined && pending.length > 0) {
+        const all = await weigh(0);
+        if (all !== null) {
+            rest = Math.max(0, window - all);
+            cap = Math.min(cfg.keepRecentTokens, Math.max(0, cfg.pourOffAtTokens - rest));
+        }
+    }
+    const chosen = await tailByWeight({
+        starts: turnStarts(pending),
+        total: pending.length,
+        floor: cfg.keepRecentFloor,
+        cap,
+        weigh,
+    });
+    return {
+        chosen,
+        cap,
+        rest,
+        model,
+        keepRecentCount: chosen ? pending.length - chosen.start : 0,
+    };
+}
+/**
+ * Waits until the archive's summary stands on the server (PLAN-gorizont 4в): the
+ * server's count of archives waiting for a summary is nought. The task's words
+ * are not waited for -- the extraction runs beside the summary and overwrites
+ * them. The task failing before that is a failure; a server that gives no count
+ * (older than image .3) is waited for the way it was: until the task is done.
+ */
+async function waitForSummary(client, ovSessionId, options) {
+    const deadline = Date.now() + options.deadlineMs;
+    let polls = 0;
+    let warnedOfNoCount = false;
+    for (;;) {
+        const session = await client.getSession(ovSessionId).catch((trouble) => {
+            options.logger.warn?.(`openviking: asking the server about session=${ovSessionId} failed: ${String(trouble)}`);
+            return null;
+        });
+        polls += 1;
+        const waiting = session?.unsummarized_archives;
+        if (typeof waiting === "number") {
+            if (waiting === 0) {
+                return { outcome: "stands", polls };
+            }
+        }
+        else if (!warnedOfNoCount) {
+            warnedOfNoCount = true;
+            options.logger.warn?.(`openviking: the server gives no unsummarized_archives for session=${ovSessionId} ` +
+                "(a server older than image .3); waiting for the whole task instead");
+            if (!options.taskId) {
+                return { outcome: "stands", polls };
+            }
+        }
+        if (options.taskId) {
+            const task = await client.getTask(options.taskId).catch(() => null);
+            if (task?.status === "failed") {
+                return { outcome: "failed", polls, error: task.error ?? "unknown" };
+            }
+            if (task?.status === "completed") {
+                return { outcome: "stands", polls };
+            }
+        }
+        if (Date.now() >= deadline) {
+            return { outcome: "timeout", polls };
+        }
+        await sleep(options.pollMs);
+    }
 }
 /**
  * The tail of a list of messages that stays live (PLAN-gorizont 4б): whole
@@ -898,7 +994,7 @@ function messageDigest(messages, maxCharsPerMsg = 2000) {
         };
     });
 }
-export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, runtimeContext, runtimeSettings, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, priceHandle, }) {
+export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, runtimeContext, runtimeSettings, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, priceHandle, pollIntervalMs, }) {
     if (!cfg.autoCapture) {
         return;
     }
@@ -1034,39 +1130,15 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
             return;
         }
         const pending = ctx?.messages ?? [];
-        const model = modelOf(runtimeSettings);
-        const weighed = new Map();
-        const weigh = priceHandle && model
-            ? async (start) => {
-                if (!weighed.has(start)) {
-                    const verdict = await priceHandle.price(priceBodyOf(model, pending.slice(start)));
-                    weighed.set(start, verdict ? verdict.charge : null);
-                }
-                return weighed.get(start) ?? null;
-            }
-            : null;
-        if (!weigh) {
-            logger.warn?.(`openviking: pouring session=${ovSessionId} without a price ` +
-                `(${priceHandle ? "the model is not named by the host" : "no price handle"}): ` +
-                `the floor of ${cfg.keepRecentFloor} messages by whole turns stays, the rest goes to the archive`);
-        }
-        // K is an upper bound: never more than fits under X with the rest of the
-        // window -- the window's weight less the weight of all the messages.
-        let rest = null;
-        let cap = cfg.keepRecentTokens;
-        if (weigh && pending.length > 0) {
-            const all = await weigh(0);
-            if (all !== null) {
-                rest = Math.max(0, window - all);
-                cap = Math.min(cfg.keepRecentTokens, Math.max(0, cfg.pourOffAtTokens - rest));
-            }
-        }
-        const chosen = await tailByWeight({
-            starts: turnStarts(pending),
-            total: pending.length,
-            floor: cfg.keepRecentFloor,
-            cap,
-            weigh,
+        const { chosen, cap, rest, model, keepRecentCount } = await chooseKeptTail({
+            pending,
+            window,
+            runtimeSettings,
+            priceHandle,
+            cfg,
+            logger,
+            ovSessionId,
+            doing: "pouring",
         });
         if (!chosen || chosen.start === 0) {
             // Nothing to pour: fewer messages than the floor, or all of them fit under
@@ -1083,7 +1155,6 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
             });
             return;
         }
-        const keepRecentCount = pending.length - chosen.start;
         const commitResult = await client.commitSession(ovSessionId, {
             wait: false,
             keepRecentCount,
@@ -1115,7 +1186,7 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
             senderId: sender.senderId ?? null,
         });
         if (commitResult.task_id) {
-            void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId);
+            void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId, pollIntervalMs);
         }
     }
     catch (err) {
@@ -1147,14 +1218,15 @@ function compactFailureResult(reason, tokensBefore, details) {
         },
     };
 }
-export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBudget, currentTokenCount, force, compactionTarget, keepRecentCount = 0, customInstructions, getClient, logger, resolveAgentId, isBypassedSession, diag, }) {
+export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBudget, currentTokenCount, force, compactionTarget, customInstructions, runtimeSettings, priceHandle, cfg, pollIntervalMs = PHASE2_POLL_INTERVAL_MS, getClient, logger, resolveAgentId, isBypassedSession, diag, }) {
     const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
+    const manual = compactionTarget !== "budget";
     diag("compact_entry", ovSessionId, {
         tokenBudget,
         force: force ?? false,
         currentTokenCount: currentTokenCount ?? null,
         compactionTarget: compactionTarget ?? null,
-        keepRecentCount,
+        manual,
         hasCustomInstructions: typeof customInstructions === "string" &&
             customInstructions.trim().length > 0,
     });
@@ -1172,61 +1244,126 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
     }
     const agentId = resolveAgentId(sessionId, sessionKey, ovSessionId);
     const client = await getClient(agentId);
-    const tokensBeforeOriginal = validTokenCount(currentTokenCount);
-    let preCommitEstimatedTokens;
-    if (typeof tokensBeforeOriginal !== "number") {
+    const window = validTokenCount(currentTokenCount);
+    const waitMs = Math.max(1, cfg.compactWaitSeconds) * 1000;
+    /** The summary that stands now, and the live messages beside it, for the answer to the host. */
+    const restored = async () => {
         try {
-            const preCtx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
-            if (typeof preCtx.estimatedTokens === "number" && Number.isFinite(preCtx.estimatedTokens)) {
-                preCommitEstimatedTokens = preCtx.estimatedTokens;
-            }
+            const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+            const summary = typeof ctx.latest_archive_overview === "string" ? ctx.latest_archive_overview.trim() : "";
+            const tokensAfter = typeof ctx.estimatedTokens === "number" && Number.isFinite(ctx.estimatedTokens)
+                ? ctx.estimatedTokens
+                : undefined;
+            logger.info(`openviking: compact restored session content for ${ovSessionId}: ` +
+                `messages=${ctx.messages?.length ?? 0}, ` +
+                `latestArchiveOverview=${summary.length > 0 ? "present" : "empty"} (${summary.length} chars), ` +
+                `estimatedTokens=${ctx.estimatedTokens}`);
+            return { summary, tokensAfter };
         }
-        catch (preCtxErr) {
-            logger.info(`openviking: compact pre-ctx fetch failed for session=${ovSessionId}, ` +
-                `tokenBudget=${tokenBudget}, agentId=${agentId}: ${String(preCtxErr)}`);
+        catch (ctxErr) {
+            const error = String(ctxErr);
+            logger.info(`openviking: compact context fetch failed for session=${ovSessionId}, agentId=${agentId}: ${error}`);
+            return { summary: "", error };
         }
-    }
-    const tokensBefore = tokensBeforeOriginal ?? preCommitEstimatedTokens ?? -1;
+    };
     try {
-        logger.info(`openviking: compact committing session=${ovSessionId} (wait=true, tokenBudget=${tokenBudget}, keepRecentCount=${keepRecentCount})`);
+        const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+        const tokensBefore = window ??
+            (typeof ctx.estimatedTokens === "number" && Number.isFinite(ctx.estimatedTokens) ? ctx.estimatedTokens : -1);
+        const pending = ctx.messages ?? [];
+        let keepRecentCount = 0;
+        let kept;
+        if (!manual) {
+            // The summary of the last pour still being written: the server hands that
+            // archive's messages out raw until it stands, and the window shrinks by
+            // itself then. Another archive now would only wait in the queue behind it.
+            const waiting = ctx.stats?.unsummarizedArchives;
+            if (typeof waiting === "number" && waiting > 0) {
+                logger.info(`openviking: compact session=${ovSessionId}: the summary of the last pour is still being written ` +
+                    `(${waiting} archive(s) waiting); waiting for it up to ${cfg.compactWaitSeconds} s instead of a new archive`);
+                const wait = await waitForSummary(client, ovSessionId, { deadlineMs: waitMs, pollMs: pollIntervalMs, logger });
+                if (wait.outcome !== "stands") {
+                    logger.warn?.(`openviking: compact session=${ovSessionId}: the summary of the last pour did not stand within ` +
+                        `${cfg.compactWaitSeconds} s (${wait.polls} polls); the host will try again`);
+                    diag("compact_result", ovSessionId, {
+                        ok: false,
+                        compacted: false,
+                        reason: "summary_timeout",
+                        waitedFor: "previous_pour",
+                        waitedPolls: wait.polls,
+                        tokensBefore,
+                    });
+                    return compactFailureResult("summary_timeout", tokensBefore, { waitedFor: "previous_pour", polls: wait.polls });
+                }
+                const after = await restored();
+                diag("compact_result", ovSessionId, {
+                    ok: true,
+                    compacted: true,
+                    reason: "previous_pour_summary_stands",
+                    waitedPolls: wait.polls,
+                    tokensBefore,
+                    tokensAfter: after.tokensAfter ?? null,
+                    summaryPresent: after.summary.length > 0,
+                });
+                return {
+                    ok: true,
+                    compacted: true,
+                    reason: "previous_pour_summary_stands",
+                    result: {
+                        summary: after.summary,
+                        firstKeptEntryId: "",
+                        tokensBefore,
+                        tokensAfter: after.tokensAfter,
+                        details: { waitedPolls: wait.polls, ...(after.error ? { contextError: after.error } : {}) },
+                    },
+                };
+            }
+            kept = await chooseKeptTail({
+                pending,
+                window,
+                runtimeSettings,
+                priceHandle,
+                cfg,
+                logger,
+                ovSessionId,
+                doing: "compacting",
+            });
+            if (!kept.chosen || kept.chosen.start === 0) {
+                // Nothing older than what fits under the cap: archiving the kept messages
+                // would leave the model a summary alone. The host treats only "already
+                // compacted" (and "below threshold") as a harmless skip.
+                const reason = kept.chosen
+                    ? `already compacted: all ${pending.length} messages fit under the cap of ${kept.cap}`
+                    : `already compacted: ${pending.length} messages on the server, fewer than the floor of ${cfg.keepRecentFloor}`;
+                logger.info(`openviking: compact ${reason} for session=${ovSessionId}, tokensBefore=${tokensBefore}`);
+                diag("compact_result", ovSessionId, {
+                    ok: true,
+                    compacted: false,
+                    reason,
+                    pendingMessages: pending.length,
+                    cap: kept.cap,
+                    rest: kept.rest,
+                    allWeight: kept.chosen?.weight ?? null,
+                    tokensBefore,
+                });
+                return {
+                    ok: true,
+                    compacted: false,
+                    reason,
+                    result: { summary: "", tokensBefore, tokensAfter: tokensBefore >= 0 ? tokensBefore : undefined },
+                };
+            }
+            keepRecentCount = kept.keepRecentCount;
+        }
+        logger.info(`openviking: compact committing session=${ovSessionId} (${manual ? "manual, archiving everything" : `keeping ${keepRecentCount} newest messages`}, ` +
+            `wait=false, then waiting for the summary up to ${cfg.compactWaitSeconds} s)`);
         const commitResult = await client.commitSession(ovSessionId, {
-            wait: true,
+            wait: false,
             keepRecentCount,
         });
-        const memCount = totalExtractedMemories(commitResult.memories_extracted);
-        if (commitResult.status === "failed") {
-            logger.warn?.(`openviking: compact commit Phase 2 failed for session=${ovSessionId}: ${commitResult.error ?? "unknown"}`);
-            diag("compact_result", ovSessionId, {
-                ok: false,
-                compacted: false,
-                reason: "commit_failed",
-                status: commitResult.status,
-                archived: commitResult.archived ?? false,
-                taskId: commitResult.task_id ?? null,
-                error: commitResult.error ?? null,
-            });
-            return compactFailureResult("commit_failed", tokensBefore, { commit: commitResult });
-        }
-        if (commitResult.status === "timeout") {
-            logger.warn?.(`openviking: compact commit Phase 2 timed out for session=${ovSessionId}, task_id=${commitResult.task_id ?? "none"}`);
-            diag("compact_result", ovSessionId, {
-                ok: false,
-                compacted: false,
-                reason: "commit_timeout",
-                status: commitResult.status,
-                archived: commitResult.archived ?? false,
-                taskId: commitResult.task_id ?? null,
-            });
-            return compactFailureResult("commit_timeout", tokensBefore, { commit: commitResult });
-        }
-        logger.info(`openviking: compact committed session=${ovSessionId}, archived=${commitResult.archived ?? false}, memories=${memCount}, task_id=${commitResult.task_id ?? "none"}, trace_id=${commitResult.trace_id ?? "none"}`);
+        logger.info(`openviking: compact committed session=${ovSessionId}, status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
+            `task_id=${commitResult.task_id ?? "none"}, trace_id=${commitResult.trace_id ?? "none"}`);
         if (!commitResult.archived && keepRecentCount > 0) {
-            // Nothing older than the kept messages: the archive at the pending
-            // threshold has just taken it, or the tail is all there is. The kept
-            // messages stay live -- archiving them would leave the model a summary
-            // alone -- and the host is told the session is already compacted: it
-            // treats only that ("already compacted", "below threshold") as a
-            // harmless skip, and any other reason drops the turn.
             const reason = `already compacted: nothing older than the last ${keepRecentCount} messages to archive`;
             logger.info(`openviking: compact ${reason} for session=${ovSessionId}, tokensBefore=${tokensBefore}`);
             diag("compact_result", ovSessionId, {
@@ -1246,15 +1383,12 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
                     summary: "",
                     tokensBefore,
                     tokensAfter: tokensBefore >= 0 ? tokensBefore : undefined,
-                    details: {
-                        commit: commitResult,
-                    },
+                    details: { commit: commitResult },
                 },
             };
         }
         if (!commitResult.archived) {
-            logger.info(`openviking: compact no archive for session=${ovSessionId}, ` +
-                `tokensBefore=${tokensBefore}, tokensAfter=${tokensBefore}`);
+            logger.info(`openviking: compact no archive for session=${ovSessionId}, tokensBefore=${tokensBefore}, tokensAfter=${tokensBefore}`);
             diag("compact_result", ovSessionId, {
                 ok: true,
                 compacted: false,
@@ -1262,7 +1396,6 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
                 status: commitResult.status,
                 archived: commitResult.archived ?? false,
                 taskId: commitResult.task_id ?? null,
-                memories: memCount,
                 tokensBefore,
             });
             return {
@@ -1273,89 +1406,87 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
                     summary: "",
                     tokensBefore,
                     tokensAfter: tokensBefore >= 0 ? tokensBefore : undefined,
-                    details: {
-                        commit: commitResult,
-                    },
+                    details: { commit: commitResult },
                 },
             };
         }
-        let summary = "";
+        const wait = await waitForSummary(client, ovSessionId, {
+            taskId: commitResult.task_id,
+            deadlineMs: waitMs,
+            pollMs: pollIntervalMs,
+            logger,
+        });
+        if (wait.outcome === "failed") {
+            logger.warn?.(`openviking: compact session=${ovSessionId}: the task failed before the summary stood ` +
+                `(task_id=${commitResult.task_id ?? "none"}): ${wait.error ?? "unknown"}`);
+            diag("compact_result", ovSessionId, {
+                ok: false,
+                compacted: false,
+                reason: "commit_failed",
+                status: commitResult.status,
+                archived: true,
+                taskId: commitResult.task_id ?? null,
+                error: wait.error ?? null,
+                waitedPolls: wait.polls,
+            });
+            return compactFailureResult("commit_failed", tokensBefore, { commit: commitResult, error: wait.error ?? "unknown" });
+        }
+        if (wait.outcome === "timeout") {
+            logger.warn?.(`openviking: compact session=${ovSessionId}: the summary did not stand within ${cfg.compactWaitSeconds} s ` +
+                `(task_id=${commitResult.task_id ?? "none"}, ${wait.polls} polls); the host will try again, the server goes on`);
+            diag("compact_result", ovSessionId, {
+                ok: false,
+                compacted: false,
+                reason: "summary_timeout",
+                status: commitResult.status,
+                taskId: commitResult.task_id ?? null,
+                waitedPolls: wait.polls,
+                tokensBefore,
+            });
+            return compactFailureResult("summary_timeout", tokensBefore, { commit: commitResult, polls: wait.polls });
+        }
+        // The extraction goes on in the background; its outcome is logged when it comes.
+        if (commitResult.task_id) {
+            void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId, pollIntervalMs);
+        }
+        const after = await restored();
         const firstKeptEntryId = commitResult.archive_uri?.split("/").pop() ?? "";
-        let tokensAfter;
-        let contextFetchError;
-        try {
-            const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
-            logger.info(`openviking: compact getSessionContext raw result for ${ovSessionId}: ` +
-                JSON.stringify(ctx, null, 2));
-            if (typeof ctx.latest_archive_overview === "string") {
-                summary = ctx.latest_archive_overview.trim();
-            }
-            if (typeof ctx.estimatedTokens === "number" && Number.isFinite(ctx.estimatedTokens)) {
-                tokensAfter = ctx.estimatedTokens;
-            }
-            logger.info(`openviking: compact restored session content for ${ovSessionId}: ` +
-                `messages=${ctx.messages?.length ?? 0}, ` +
-                `latestArchiveOverview=${summary.length > 0 ? "present" : "empty"} (${summary.length} chars), ` +
-                `preArchiveAbstracts=${ctx.pre_archive_abstracts?.length ?? 0}, ` +
-                `estimatedTokens=${ctx.estimatedTokens}`);
-            if (summary.length > 0) {
-                logger.info(`openviking: compact latest_archive_overview for ${ovSessionId}: ${summary.substring(0, 200)}...`);
-            }
-            if (ctx.messages && ctx.messages.length > 0) {
-                const msgSummary = ctx.messages.map((m) => {
-                    const role = m.role ?? "unknown";
-                    let textPreview = "";
-                    if (m.content) {
-                        textPreview = m.content.substring(0, 80);
-                    }
-                    else if (m.parts && m.parts.length > 0) {
-                        const textPart = m.parts.find((p) => p.type === "text");
-                        textPreview = textPart?.text?.substring(0, 80) ?? JSON.stringify(m.parts).substring(0, 80);
-                    }
-                    return { role, textPreview };
-                });
-                logger.info(`openviking: compact restored messages for ${ovSessionId}: ` +
-                    JSON.stringify(msgSummary));
-            }
-        }
-        catch (ctxErr) {
-            contextFetchError = String(ctxErr);
-            logger.info(`openviking: compact context fetch failed for session=${ovSessionId}, ` +
-                `tokenBudget=${tokenBudget}, agentId=${agentId}: ${contextFetchError}`);
-        }
-        logger.info(`openviking: compact tokens session=${ovSessionId}, ` +
-            `tokensBefore=${tokensBefore}, tokensAfter=${tokensAfter ?? "unknown"}, ` +
-            `latestArchiveId=${firstKeptEntryId || "none"}`);
+        logger.info(`openviking: compact session=${ovSessionId}: the summary stands after ${wait.polls} polls; ` +
+            `tokensBefore=${tokensBefore}, tokensAfter=${after.tokensAfter ?? "unknown"}, latestArchiveId=${firstKeptEntryId || "none"}`);
         diag("compact_result", ovSessionId, {
             ok: true,
             compacted: true,
-            reason: "commit_completed",
+            reason: "summary_stands",
             status: commitResult.status,
-            archived: commitResult.archived ?? false,
+            archived: true,
             taskId: commitResult.task_id ?? null,
-            memories: memCount,
+            manual,
+            keptMessages: keepRecentCount,
+            keptWeight: kept?.chosen?.weight ?? null,
+            cap: kept?.cap ?? null,
+            rest: kept?.rest ?? null,
+            priced: kept?.chosen?.priced ?? false,
+            model: kept?.model ?? null,
+            waitedPolls: wait.polls,
             tokensBefore,
-            tokensAfter: tokensAfter ?? null,
+            tokensAfter: after.tokensAfter ?? null,
             latestArchiveId: firstKeptEntryId || null,
-            summaryPresent: summary.length > 0,
+            summaryPresent: after.summary.length > 0,
         });
         return {
             ok: true,
             compacted: true,
-            reason: "commit_completed",
+            reason: "summary_stands",
             result: {
-                summary,
+                summary: after.summary,
                 firstKeptEntryId,
                 tokensBefore,
-                tokensAfter,
-                details: contextFetchError
-                    ? {
-                        commit: commitResult,
-                        contextError: contextFetchError,
-                    }
-                    : {
-                        commit: commitResult,
-                    },
+                tokensAfter: after.tokensAfter,
+                details: {
+                    commit: commitResult,
+                    waitedPolls: wait.polls,
+                    ...(after.error ? { contextError: after.error } : {}),
+                },
             },
         };
     }
@@ -1376,10 +1507,10 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
                 reason: "session_not_found",
             };
         }
-        logger.warn?.(`openviking: compact commit failed for session=${ovSessionId}: ${errorMessage}`);
+        logger.warn?.(`openviking: compact failed for session=${ovSessionId}: ${errorMessage}`);
         diag("compact_error", ovSessionId, {
             error: errorMessage,
         });
-        return compactFailureResult("commit_error", tokensBefore, { error: errorMessage });
+        return compactFailureResult("commit_error", window ?? -1, { error: errorMessage });
     }
 }

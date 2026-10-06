@@ -29,3 +29,11 @@ describe("ключи отливания", () => {
     expect(memoryOpenVikingConfigSchema.parse({ ...BASE, keepRecentFloor: -3 }).keepRecentFloor).toBe(0);
   });
 });
+
+describe("срок ожидания сводки при сжатии", () => {
+  it("умолчание 150 с, ниже 180 с шлюза; число или число строкой, не меньше секунды", () => {
+    expect(memoryOpenVikingConfigSchema.parse(BASE).compactWaitSeconds).toBe(150);
+    expect(memoryOpenVikingConfigSchema.parse({ ...BASE, compactWaitSeconds: "60" }).compactWaitSeconds).toBe(60);
+    expect(memoryOpenVikingConfigSchema.parse({ ...BASE, compactWaitSeconds: 0.5 }).compactWaitSeconds).toBe(1);
+  });
+});
