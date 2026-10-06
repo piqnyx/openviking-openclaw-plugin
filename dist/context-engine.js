@@ -169,7 +169,7 @@ function validTokenBudget(raw) {
     return undefined;
 }
 export function createMemoryOpenVikingContextEngine(params) {
-    const { id, name, version, cfg, logger, getClient, resolveAgentId, rememberSessionAgentId, queryConfigStore, traceRecorder, } = params;
+    const { id, name, version, cfg, logger, getClient, resolveAgentId, rememberSessionAgentId, queryConfigStore, traceRecorder, priceHandle, } = params;
     const diagEnabled = cfg.emitStandardDiagnostics;
     const bypassSessionPatterns = compileSessionPatterns(cfg.bypassSessionPatterns);
     const diag = (stage, sessionId, data) => emitDiag(logger, stage, sessionId, data, diagEnabled);
@@ -281,6 +281,7 @@ export function createMemoryOpenVikingContextEngine(params) {
                 rememberSessionAgentId,
                 isBypassedSession,
                 diag,
+                priceHandle,
             });
         },
         /**
@@ -318,6 +319,7 @@ export function createMemoryOpenVikingContextEngine(params) {
                 rememberSessionAgentId,
                 isBypassedSession,
                 diag,
+                priceHandle,
             });
             return { status: "committed" };
         },

@@ -11,6 +11,7 @@ import {
 } from "./plugin/openviking-command-args.js";
 import { createOpenVikingContextEngineRef } from "./plugin/openviking-context-engine-ref.js";
 import { registerOpenVikingContextEngine } from "./plugin/openviking-context-engine-registration.js";
+import { PriceHandle } from "./price-handle.js";
 import { registerOpenVikingFeatureGatesMethod } from "./plugin/openviking-feature-gates.js";
 import { createOpenVikingQueryConfigCommandHandler } from "./plugin/openviking-query-config-command.js";
 import { createOpenVikingQueryRuntime } from "./plugin/openviking-query-runtime.js";
@@ -408,6 +409,16 @@ const contextEnginePlugin = {
       logger: api.logger,
     });
 
+    // The proxy's price handle (PLAN-gorizont 4а): the pour-off by weight asks it
+    // for the weight of the window's tails. No address in the config -- no handle;
+    // the engine then decides without a price and says so in the log.
+    const priceHandle = cfg.priceUrl
+      ? new PriceHandle(cfg.priceUrl, { timeoutMs: cfg.priceTimeoutMs, logger: api.logger })
+      : undefined;
+    if (!priceHandle) {
+      api.logger.warn("openviking: priceUrl is empty -- the pour-off by weight has no price handle and decides by the floor alone");
+    }
+
     registerOpenVikingContextEngine({
       api,
       plugin: contextEnginePlugin,
@@ -419,6 +430,7 @@ const contextEnginePlugin = {
       rememberSessionAgentId,
       queryConfigStore,
       traceRecorder,
+      priceHandle,
       createContextEngine: createMemoryOpenVikingContextEngine,
       setContextEngineRef,
     });

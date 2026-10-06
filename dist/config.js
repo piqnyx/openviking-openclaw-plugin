@@ -12,6 +12,8 @@ const DEFAULT_RECALL_SCORE_THRESHOLD = 0.15;
 const DEFAULT_RECALL_MAX_CONTENT_CHARS = 5000;
 const DEFAULT_RECALL_PREFER_ABSTRACT = false;
 const DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000;
+const DEFAULT_PRICE_URL = "http://127.0.0.1:8787/price";
+const DEFAULT_PRICE_TIMEOUT_MS = 60_000;
 const DEFAULT_COMMIT_TOKEN_THRESHOLD = 50_000;
 const DEFAULT_COMMIT_KEEP_RECENT_COUNT = 10;
 const DEFAULT_BYPASS_SESSION_PATTERNS = [];
@@ -301,6 +303,8 @@ export const OPENVIKING_CONFIG_KEYS = [
     "recallMaxContentChars",
     "recallPreferAbstract",
     "recallTokenBudget",
+    "priceUrl",
+    "priceTimeoutMs",
     "commitTokenThreshold",
     "commitKeepRecentCount",
     "bypassSessionPatterns",
@@ -413,6 +417,8 @@ export const memoryOpenVikingConfigSchema = {
                 : DEFAULT_RECALL_PREFER_ABSTRACT,
             recallMaxInjectedChars,
             recallTokenBudget: recallMaxInjectedChars,
+            priceUrl: typeof cfg.priceUrl === "string" ? cfg.priceUrl.trim() : DEFAULT_PRICE_URL,
+            priceTimeoutMs: Math.max(1_000, Math.floor(toNumber(cfg.priceTimeoutMs, DEFAULT_PRICE_TIMEOUT_MS))),
             commitTokenThreshold: Math.max(0, Math.floor(toNumber(cfg.commitTokenThreshold, DEFAULT_COMMIT_TOKEN_THRESHOLD))),
             commitKeepRecentCount: Math.max(0, Math.min(1_000, Math.floor(toNumber(cfg.commitKeepRecentCount, DEFAULT_COMMIT_KEEP_RECENT_COUNT)))),
             bypassSessionPatterns: toStringArray(cfg.bypassSessionPatterns, toStringArray(cfg.ingestReplyAssistIgnoreSessionPatterns, DEFAULT_BYPASS_SESSION_PATTERNS)),
@@ -579,6 +585,19 @@ export const memoryOpenVikingConfigSchema = {
             placeholder: "agent:*:cron:**",
             help: "Completely bypass OpenViking for matching session keys. Use * within one segment and ** across segments.",
             advanced: true,
+        },
+        priceUrl: {
+            label: "Price Handle URL",
+            placeholder: DEFAULT_PRICE_URL,
+            advanced: true,
+            help: "The proxy's POST /price: the weight of a body by the counter that charges the keys, without a send. " +
+                "Empty disables it; the plugin then decides without a price and says so in the log.",
+        },
+        priceTimeoutMs: {
+            label: "Price Handle Timeout (ms)",
+            placeholder: String(DEFAULT_PRICE_TIMEOUT_MS),
+            advanced: true,
+            help: "How long one question to the price handle may take. Floor 1000.",
         },
         commitTokenThreshold: {
             label: "Commit Token Threshold",

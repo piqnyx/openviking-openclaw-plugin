@@ -24,6 +24,7 @@ export type OpenVikingContextEngineCreateParams<
   TQueryConfigStore = unknown,
   TTraceRecorder = unknown,
   TLogger extends OpenVikingContextEngineLogger = OpenVikingContextEngineLogger,
+  TPriceHandle = unknown,
 > = {
   id: string;
   name: string;
@@ -40,6 +41,8 @@ export type OpenVikingContextEngineCreateParams<
   }) => void;
   queryConfigStore: TQueryConfigStore;
   traceRecorder: TTraceRecorder;
+  /** The proxy's price handle (PLAN-gorizont 4а); none when the config names no address. */
+  priceHandle?: TPriceHandle;
 };
 
 export type OpenVikingContextEngineRegistrationDeps<
@@ -49,6 +52,7 @@ export type OpenVikingContextEngineRegistrationDeps<
   TQueryConfigStore = unknown,
   TTraceRecorder = unknown,
   TLogger extends OpenVikingContextEngineLogger = OpenVikingContextEngineLogger,
+  TPriceHandle = unknown,
 > = {
   api: OpenVikingContextEngineRegistrationApi;
   plugin: OpenVikingContextEnginePluginInfo;
@@ -60,7 +64,8 @@ export type OpenVikingContextEngineRegistrationDeps<
   rememberSessionAgentId: OpenVikingContextEngineCreateParams["rememberSessionAgentId"];
   queryConfigStore: TQueryConfigStore;
   traceRecorder: TTraceRecorder;
-  createContextEngine: (params: OpenVikingContextEngineCreateParams<TCfg, TClient, TQueryConfigStore, TTraceRecorder, TLogger>) => TEngine;
+  priceHandle?: TPriceHandle;
+  createContextEngine: (params: OpenVikingContextEngineCreateParams<TCfg, TClient, TQueryConfigStore, TTraceRecorder, TLogger, TPriceHandle>) => TEngine;
   setContextEngineRef: (engine: TEngine) => void;
 };
 
@@ -71,8 +76,9 @@ export function registerOpenVikingContextEngine<
   TQueryConfigStore,
   TTraceRecorder,
   TLogger extends OpenVikingContextEngineLogger,
+  TPriceHandle = unknown,
 >(
-  deps: OpenVikingContextEngineRegistrationDeps<TEngine, TCfg, TClient, TQueryConfigStore, TTraceRecorder, TLogger>,
+  deps: OpenVikingContextEngineRegistrationDeps<TEngine, TCfg, TClient, TQueryConfigStore, TTraceRecorder, TLogger, TPriceHandle>,
 ): void {
   if (typeof deps.api.registerContextEngine !== "function") {
     deps.logger.warn(
@@ -122,6 +128,7 @@ export function registerOpenVikingContextEngine<
       rememberSessionAgentId: deps.rememberSessionAgentId,
       queryConfigStore: deps.queryConfigStore,
       traceRecorder: deps.traceRecorder,
+      ...(deps.priceHandle !== undefined ? { priceHandle: deps.priceHandle } : {}),
     });
     deps.setContextEngineRef(contextEngine);
     return contextEngine;

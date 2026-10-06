@@ -42,6 +42,7 @@ export function registerOpenVikingContextEngine(deps) {
             rememberSessionAgentId: deps.rememberSessionAgentId,
             queryConfigStore: deps.queryConfigStore,
             traceRecorder: deps.traceRecorder,
+            ...(deps.priceHandle !== undefined ? { priceHandle: deps.priceHandle } : {}),
         });
         deps.setContextEngineRef(contextEngine);
         return contextEngine;

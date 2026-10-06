@@ -102,7 +102,9 @@ describe("окно без обрезки по оценке", () => {
     expect(result.estimatedTokens).toBeGreaterThan(budget);
     expect(asked).toEqual(["/api/v1/sessions/9478e347-6bdc-44f5-a4e0-207fe7e4b6e3/context?token_budget=1000000000"]);
     const outcome = seen.filter((s) => s.stage === "assemble_result").at(-1)?.data ?? {};
-    expect(outcome.outputMessagesCount).toBe(count + 1);
     expect(outcome.activeCount).toBe(count);
+    // The summary is a user message, and the provider sanitizer joins it with the
+    // first user message of the server, so the count stays at the server's.
+    expect(outcome.outputMessagesCount).toBe(count);
   });
 });
