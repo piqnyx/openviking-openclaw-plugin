@@ -44,7 +44,7 @@ OpenClaw owns agent execution, prompts, and tool invocation. OpenViking owns lon
 | Layer | Current behavior |
 |---|---|
 | `assemble` | Rebuilds compressed session history from OpenViking and injects relevant recall into the latest user message. |
-| `afterTurn` | Appends only the new turn to the OpenViking session; may trigger async commit when `pending_tokens >= commitTokenThreshold`. |
+| `afterTurn` | Appends only the new turn to the OpenViking session; when the window weighs `pourOffAtTokens` or more by the proxy's counter (the host hands the last request's charge on), pours the session off: the newest messages weighing up to `keepRecentTokens` stay live (whole turns, never fewer than `keepRecentFloor`), the rest goes to the archive and its summary is written in the background; not while the previous pour's summary is still being written (`stats.unsummarizedArchives`). |
 | `compact` | Runs `commit(wait=true)`, waits for archive/extraction completion, and reads back latest archive overview. |
 | Tools | Memory recall/store/forget, archive search/expand, resource/skill import/search, recall trace query, tool-result list/search/read. |
 
@@ -81,6 +81,9 @@ Core config lives under `plugins.entries.openviking.config`:
 | `recallMaxInjectedChars` | `4000` | Total injected character cap; complete memories that do not fit are skipped. |
 | `priceUrl` | `http://127.0.0.1:8787/price` | The proxy's `POST /price`: the weight of a body by the counter that charges the keys, without a send. Empty disables it; the plugin then decides without a price and says so in the log. |
 | `priceTimeoutMs` | `60000` | How long one question to the price handle may take (ms). Floor 1000. |
+| `pourOffAtTokens` | `245000` | X: the weight of the window by the proxy's counter at which the recorded turn pours the session off: the newest messages weighing up to `keepRecentTokens` stay live, the rest goes to the archive, the summary is written in the background. |
+| `keepRecentTokens` | `150000` | K: the weight by the counter of the newest messages that stay live after a pour-off and after the host's automatic compaction; whole turns. An upper bound: never more than fits under `pourOffAtTokens` with the rest of the window. |
+| `keepRecentFloor` | `20` | Never fewer messages than this stay live, whatever they weigh; whole turns. |
 | `commitTokenThreshold` | `50000` | Async-commit threshold in pending tokens; both the in-turn (afterTurn) and the after-turn (commitTurn) records decide by this number; `0` commits every turn. |
 | `commitKeepRecentCount` | `10` | Recent messages kept live after an afterTurn commit and after the host's automatic compaction (`compactionTarget: "budget"`). A manual `/compact` archives everything. |
 | `bypassSessionPatterns` | empty | Glob-like session keys that completely bypass OpenViking (`*` segment, `**` multi-segment). |

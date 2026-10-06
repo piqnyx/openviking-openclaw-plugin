@@ -77,6 +77,8 @@ export type TaskResult = {
   created_at: number;
   updated_at: number;
   resource_id?: string;
+  /** What the task is at now, in words ("working memory written", "cutting ..."); the server of ours writes it. */
+  stage?: string | null;
   result?: Record<string, unknown>;
   error?: string;
 };
@@ -135,6 +137,8 @@ export type SessionContextResult = {
     includedArchives: number;
     droppedArchives: number;
     failedArchives: number;
+    /** Archives replayed raw because their summary is not written yet (the server of ours, PLAN-gorizont 3е). */
+    unsummarizedArchives?: number;
     activeTokens: number;
     archiveTokens: number;
   };

@@ -14,6 +14,9 @@ const DEFAULT_RECALL_PREFER_ABSTRACT = false;
 const DEFAULT_RECALL_MAX_INJECTED_CHARS = 4000;
 const DEFAULT_PRICE_URL = "http://127.0.0.1:8787/price";
 const DEFAULT_PRICE_TIMEOUT_MS = 60_000;
+const DEFAULT_POUR_OFF_AT_TOKENS = 245_000;
+const DEFAULT_KEEP_RECENT_TOKENS = 150_000;
+const DEFAULT_KEEP_RECENT_FLOOR = 20;
 const DEFAULT_COMMIT_TOKEN_THRESHOLD = 50_000;
 const DEFAULT_COMMIT_KEEP_RECENT_COUNT = 10;
 const DEFAULT_BYPASS_SESSION_PATTERNS = [];
@@ -305,6 +308,9 @@ export const OPENVIKING_CONFIG_KEYS = [
     "recallTokenBudget",
     "priceUrl",
     "priceTimeoutMs",
+    "pourOffAtTokens",
+    "keepRecentTokens",
+    "keepRecentFloor",
     "commitTokenThreshold",
     "commitKeepRecentCount",
     "bypassSessionPatterns",
@@ -419,6 +425,9 @@ export const memoryOpenVikingConfigSchema = {
             recallTokenBudget: recallMaxInjectedChars,
             priceUrl: typeof cfg.priceUrl === "string" ? cfg.priceUrl.trim() : DEFAULT_PRICE_URL,
             priceTimeoutMs: Math.max(1_000, Math.floor(toNumber(cfg.priceTimeoutMs, DEFAULT_PRICE_TIMEOUT_MS))),
+            pourOffAtTokens: Math.max(1, Math.floor(toNumber(cfg.pourOffAtTokens, DEFAULT_POUR_OFF_AT_TOKENS))),
+            keepRecentTokens: Math.max(1, Math.floor(toNumber(cfg.keepRecentTokens, DEFAULT_KEEP_RECENT_TOKENS))),
+            keepRecentFloor: Math.max(0, Math.floor(toNumber(cfg.keepRecentFloor, DEFAULT_KEEP_RECENT_FLOOR))),
             commitTokenThreshold: Math.max(0, Math.floor(toNumber(cfg.commitTokenThreshold, DEFAULT_COMMIT_TOKEN_THRESHOLD))),
             commitKeepRecentCount: Math.max(0, Math.min(1_000, Math.floor(toNumber(cfg.commitKeepRecentCount, DEFAULT_COMMIT_KEEP_RECENT_COUNT)))),
             bypassSessionPatterns: toStringArray(cfg.bypassSessionPatterns, toStringArray(cfg.ingestReplyAssistIgnoreSessionPatterns, DEFAULT_BYPASS_SESSION_PATTERNS)),
@@ -598,6 +607,26 @@ export const memoryOpenVikingConfigSchema = {
             placeholder: String(DEFAULT_PRICE_TIMEOUT_MS),
             advanced: true,
             help: "How long one question to the price handle may take. Floor 1000.",
+        },
+        pourOffAtTokens: {
+            label: "Pour Off At (tokens)",
+            placeholder: String(DEFAULT_POUR_OFF_AT_TOKENS),
+            advanced: true,
+            help: "X: the weight of the window by the proxy's counter at which the recorded turn pours the session off: " +
+                "the newest messages weighing up to keepRecentTokens stay live, the rest goes to the archive, the summary is written in the background.",
+        },
+        keepRecentTokens: {
+            label: "Keep Recent (tokens)",
+            placeholder: String(DEFAULT_KEEP_RECENT_TOKENS),
+            advanced: true,
+            help: "K: the weight by the counter of the newest messages that stay live after a pour-off and after the host's automatic compaction; " +
+                "whole turns. An upper bound: never more than fits under pourOffAtTokens with the rest of the window.",
+        },
+        keepRecentFloor: {
+            label: "Keep Recent Floor (messages)",
+            placeholder: String(DEFAULT_KEEP_RECENT_FLOOR),
+            advanced: true,
+            help: "Never fewer messages than this stay live, whatever they weigh; whole turns.",
         },
         commitTokenThreshold: {
             label: "Commit Token Threshold",

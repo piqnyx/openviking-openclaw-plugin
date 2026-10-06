@@ -219,6 +219,24 @@
       "advanced": true,
       "help": "How long one question to the price handle may take. Floor 1000."
     },
+    "pourOffAtTokens": {
+      "label": "Pour Off At (tokens)",
+      "placeholder": "245000",
+      "advanced": true,
+      "help": "X: the weight of the window by the proxy's counter at which the recorded turn pours the session off: the newest messages weighing up to keepRecentTokens stay live, the rest goes to the archive, the summary is written in the background."
+    },
+    "keepRecentTokens": {
+      "label": "Keep Recent (tokens)",
+      "placeholder": "150000",
+      "advanced": true,
+      "help": "K: the weight by the counter of the newest messages that stay live after a pour-off and after the host's automatic compaction; whole turns. An upper bound: never more than fits under pourOffAtTokens with the rest of the window."
+    },
+    "keepRecentFloor": {
+      "label": "Keep Recent Floor (messages)",
+      "placeholder": "20",
+      "advanced": true,
+      "help": "Never fewer messages than this stay live, whatever they weigh; whole turns."
+    },
     "commitTokenThreshold": {
       "label": "Commit Token Threshold",
       "placeholder": "50000",
@@ -418,6 +436,18 @@
       "priceTimeoutMs": {
         "type": "number",
         "minimum": 1000
+      },
+      "pourOffAtTokens": {
+        "type": "number",
+        "minimum": 1
+      },
+      "keepRecentTokens": {
+        "type": "number",
+        "minimum": 1
+      },
+      "keepRecentFloor": {
+        "type": "number",
+        "minimum": 0
       },
       "commitTokenThreshold": {
         "type": "number",

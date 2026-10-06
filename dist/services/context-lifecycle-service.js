@@ -3,6 +3,8 @@ import { DEFAULT_PHASE2_POLL_TIMEOUT_MS } from "../client.js";
 import { buildAutoRecallContext, prepareRecallQuery } from "../auto-recall.js";
 import { toJsonLog } from "../memory-ranking.js";
 import { openClawSessionToOvStorageId, resolveOpenVikingActorPeerId, resolveOpenVikingMessagePeerId, sanitizeOpenVikingPeerId, } from "../routing/identity-routing.js";
+import { priceBodyOf, toOpenAiMessages } from "../price-handle.js";
+import { floorTail, longestTailWithin, turnStarts } from "../tail-by-weight.js";
 import { extractNewTurnMessages } from "../text-utils.js";
 import { estimateAgentMessageTokens, estimateTextTokens } from "../token-estimator.js";
 import { convertToAgentMessages, mergeConsecutiveAssistants, sanitizeAgentMessagesForProvider, toRoleId, } from "./context-message-adapter.js";
@@ -26,7 +28,7 @@ export const NO_TRIM_TOKEN_BUDGET = 1_000_000_000;
 const ARCHIVE_BUDGET_CAP = 8_000;
 const RESERVED_MIN = 20_000;
 const RESERVED_RATIO = 0.15;
-const PHASE2_POLL_INTERVAL_MS = 800;
+const PHASE2_POLL_INTERVAL_MS = 2_000;
 const PHASE2_POLL_MAX_MS = DEFAULT_PHASE2_POLL_TIMEOUT_MS;
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -37,6 +39,7 @@ function sleep(ms) {
  */
 async function pollPhase2ExtractionOutcome(client, taskId, logger, sessionLabel) {
     const deadline = Date.now() + PHASE2_POLL_MAX_MS;
+    let stageSeen;
     try {
         while (Date.now() < deadline) {
             await sleep(PHASE2_POLL_INTERVAL_MS);
@@ -46,6 +49,10 @@ async function pollPhase2ExtractionOutcome(client, taskId, logger, sessionLabel)
             });
             if (!task) {
                 return;
+            }
+            if (typeof task.stage === "string" && task.stage && task.stage !== stageSeen) {
+                stageSeen = task.stage;
+                logger.info(`openviking: phase2 task_id=${taskId} session=${sessionLabel} stage: ${task.stage}`);
             }
             const { status } = task;
             if (status === "completed") {
@@ -364,22 +371,37 @@ function boundarySearchInWords(search) {
  * Counted message by message from the newest, then checked as a whole, because
  * the estimate of a list is a little more than the sum of its parts.
  */
-function newestWithinBudget(messages, budget, roughEstimate) {
-    let start = messages.length;
-    let spent = 0;
-    while (start > 0) {
-        const cost = roughEstimate([messages[start - 1]]);
-        if (spent + cost > budget) {
-            break;
-        }
-        spent += cost;
-        start -= 1;
+/** The model's name off the host's runtime settings, for the price handle. */
+function modelOf(runtimeSettings) {
+    if (!runtimeSettings || typeof runtimeSettings !== "object") {
+        return undefined;
     }
-    let kept = messages.slice(start);
-    while (kept.length > 0 && roughEstimate(kept) > budget) {
-        kept = kept.slice(1);
+    const model = runtimeSettings.model;
+    if (!model || typeof model !== "object") {
+        return undefined;
     }
-    return kept;
+    const { resolved, requested } = model;
+    const name = typeof resolved === "string" && resolved.trim() ? resolved : requested;
+    return typeof name === "string" && name.trim() ? name.trim() : undefined;
+}
+/**
+ * The tail of a list of messages that stays live (PLAN-gorizont 4б): whole
+ * turns, not shorter than the floor, the longest whose weight by the handle is
+ * not above the cap. Without a price -- no handle, no model -- the floor alone:
+ * the shortest tail by whole turns that is not shorter than it, and a warning.
+ * Null when no tail is eligible: there is nothing to cut.
+ */
+async function tailByWeight(params) {
+    const { total, floor, cap, weigh } = params;
+    // The whole list is always a candidate: its first message may be the rest of
+    // a turn the archive ended in the middle of, and that rest is not to be lost.
+    const starts = params.starts.includes(0) ? params.starts : [0, ...params.starts];
+    if (weigh) {
+        const chosen = await longestTailWithin({ starts, total, floor, cap, weigh });
+        return chosen ? { ...chosen, priced: true } : null;
+    }
+    const start = floorTail(starts, total, floor);
+    return start === null ? null : { start, weight: null, priced: false, asked: 0 };
 }
 /**
  * Assembly without a fresh summary (28.09.2026).
@@ -405,8 +427,31 @@ function newestWithinBudget(messages, budget, roughEstimate) {
  */
 async function assembleWithoutFreshSummary(params) {
     const { diag, logger, roughEstimate, ovSessionId, reason, liveMessages, originalTokens, tokenBudget, extra } = params;
-    if (originalTokens <= tokenBudget) {
+    const keepRecentTokens = params.keepRecentTokens;
+    const keepRecentFloor = params.keepRecentFloor;
+    if (liveMessages.length <= keepRecentFloor) {
+        // Not more than the floor: it stays whole whatever it weighs.
         return assemblePassthrough({ diag, ovSessionId, reason, liveMessages, originalTokens, extra });
+    }
+    const model = modelOf(params.runtimeSettings);
+    const weighLive = params.priceHandle && model
+        ? async (messages) => {
+            const verdict = await params.priceHandle.price({
+                model,
+                messages: [...toOpenAiMessages(messages), { role: "user", content: "x" }],
+            });
+            return verdict ? verdict.charge : null;
+        }
+        : null;
+    if (weighLive) {
+        // The whole live transcript under K goes as it is, as it always did when it fit.
+        const whole = await weighLive(liveMessages);
+        if (whole !== null && whole <= keepRecentTokens) {
+            return assemblePassthrough({
+                diag, ovSessionId, reason, liveMessages, originalTokens,
+                extra: { ...extra, liveWeight: whole, keepRecentTokens },
+            });
+        }
     }
     let archive = null;
     if (params.client && typeof params.totalArchives === "number" && params.totalArchives >= 1) {
@@ -420,12 +465,27 @@ async function assembleWithoutFreshSummary(params) {
     const instruction = archive ? buildInstructionPrompt() : { text: "", tokens: 0 };
     const budgets = allocateContextBudget(tokenBudget, instruction.tokens);
     const summary = buildArchiveMemory(archive?.overview, [], budgets.archiveMemory, roughEstimate);
-    const sessionBudget = Math.max(tokenBudget - budgets.reserved - instruction.tokens - summary.tokens, 0);
     const boundary = archive ? boundaryBeforeArchiveEnd(liveMessages, archive.turnStamps) : -1;
     const boundaryFound = boundary >= 0;
     const search = archive ? describeBoundarySearch(liveMessages, archive.turnStamps, boundary) : null;
     const tail = boundaryFound ? liveMessages.slice(boundary + 1) : liveMessages.slice();
-    let kept = newestWithinBudget(tail, sessionBudget, roughEstimate);
+    // The tail by weight (PLAN-gorizont 4б): the live part of the window is never
+    // heavier than K by the handle, whole turns, never fewer than the floor. The
+    // estimate of characters cut here before; it is not in the counter's units.
+    const weigh = weighLive ? (start) => weighLive(tail.slice(start)) : null;
+    if (!weigh) {
+        logger.warn?.(`openviking: no fresh summary for session=${ovSessionId} and no price ` +
+            `(${params.priceHandle ? "the model is not named" : "no price handle"}): ` +
+            `the live tail is cut by the floor of ${keepRecentFloor} messages alone`);
+    }
+    const chosen = await tailByWeight({
+        starts: turnStarts(tail),
+        total: tail.length,
+        floor: keepRecentFloor,
+        cap: keepRecentTokens,
+        weigh,
+    });
+    let kept = chosen ? tail.slice(chosen.start) : tail.slice();
     if (!archive) {
         // Nothing stands before the tail, so it has to open with the user's turn.
         const firstUser = kept.findIndex((message) => message?.role === "user");
@@ -450,7 +510,9 @@ async function assembleWithoutFreshSummary(params) {
         (boundaryFound
             ? " from the turn the archive ends in"
             : " by budget, where the archive ends could not be told") +
-        (droppedMessages > 0 ? `; dropped ${droppedMessages} oldest that did not fit` : "") +
+        (droppedMessages > 0
+            ? `; dropped ${droppedMessages} oldest ${chosen?.priced ? `above ${keepRecentTokens} by the counter` : "beyond the floor, unweighed"}`
+            : "") +
         (search && !boundaryFound ? `; ${boundarySearchInWords(search)}` : ""));
     diag("assemble_result", ovSessionId, {
         passthrough: false,
@@ -461,6 +523,11 @@ async function assembleWithoutFreshSummary(params) {
         ...(search ? { boundary: search } : {}),
         tailMessages: tail.length,
         droppedMessages,
+        keptWeight: chosen?.weight ?? null,
+        priced: chosen?.priced ?? false,
+        priceAsked: chosen?.asked ?? 0,
+        keepRecentTokens,
+        keepRecentFloor,
         outputMessagesCount: messages.length,
         inputTokenEstimate: originalTokens,
         estimatedTokens,
@@ -468,7 +535,6 @@ async function assembleWithoutFreshSummary(params) {
         savingPct: originalTokens > 0 ? Math.round((tokensSaved / originalTokens) * 100) : 0,
         archiveTokens: summary.tokens,
         instructionTokens: instruction.tokens,
-        sessionBudget,
         tokenBudget,
         ...extra,
     });
@@ -478,12 +544,19 @@ async function assembleWithoutFreshSummary(params) {
         ...(instruction.text ? { systemPromptAddition: instruction.text } : {}),
     };
 }
-export async function assembleOpenVikingSession({ sessionId, sessionKey, messages, tokenBudget, runtimeContext, isMainAssemble, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, queryConfigStore, traceRecorder, diag, roughEstimate, messageDigest, extractAgentMessageText, hasAutoRecallBlock, prependRecallToLatestUserMessage, }) {
+export async function assembleOpenVikingSession({ sessionId, sessionKey, messages, tokenBudget, runtimeContext, runtimeSettings, isMainAssemble, cfg, getClient, priceHandle, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, queryConfigStore, traceRecorder, diag, roughEstimate, messageDigest, extractAgentMessageText, hasAutoRecallBlock, prependRecallToLatestUserMessage, }) {
     const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
     const sender = extractRuntimeSenderId(runtimeContext);
     const latestMessage = messages.at(-1);
     const isTransformContextAssemble = !isMainAssemble;
     const originalTokens = roughEstimate(messages);
+    // What the recovery path cuts the live tail by (PLAN-gorizont 4б).
+    const recoveryBits = {
+        keepRecentTokens: typeof cfg?.keepRecentTokens === "number" ? cfg.keepRecentTokens : 150_000,
+        keepRecentFloor: typeof cfg?.keepRecentFloor === "number" ? cfg.keepRecentFloor : 20,
+        ...(priceHandle ? { priceHandle } : {}),
+        ...(runtimeSettings !== undefined ? { runtimeSettings } : {}),
+    };
     rememberSessionAgentId?.({
         sessionId,
         sessionKey,
@@ -602,6 +675,7 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
         const activeCount = ctx?.messages?.length ?? 0;
         if (!ctx || (!hasArchives && activeCount === 0)) {
             return await assembleWithoutFreshSummary({
+                ...recoveryBits,
                 diag,
                 logger,
                 roughEstimate,
@@ -617,6 +691,7 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
         }
         if (!hasArchives && ctx.messages.length < messages.length) {
             return await assembleWithoutFreshSummary({
+                ...recoveryBits,
                 diag,
                 logger,
                 roughEstimate,
@@ -633,6 +708,7 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
         const { sanitized, archive, session, budgets, instruction } = buildAssembledContext(ctx.latest_archive_overview, preAbstracts, ctx.messages, tokenBudget, ovSessionId, logger, roughEstimate);
         if (sanitized.length === 0 && messages.length > 0) {
             return await assembleWithoutFreshSummary({
+                ...recoveryBits,
                 diag,
                 logger,
                 roughEstimate,
@@ -679,6 +755,7 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
             logger.info(`openviking: assemble skipped because OV session does not exist ` +
                 `(session=${ovSessionId}, tokenBudget=${tokenBudget}, agentId=${resolveAgentId(ovSessionId)})`);
             return await assembleWithoutFreshSummary({
+                ...recoveryBits,
                 diag,
                 logger,
                 roughEstimate,
@@ -705,10 +782,10 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
             senderIdFound: sender.found,
             senderId: sender.senderId ?? null,
         });
-        if (originalTokens <= tokenBudget) {
-            return { messages, estimatedTokens: originalTokens };
-        }
+        // No shortcut by the rough estimate here (PLAN-gorizont 4б): the recovery
+        // path passes the transcript through by its weight, or by the floor.
         return await assembleWithoutFreshSummary({
+            ...recoveryBits,
             diag,
             logger,
             roughEstimate,
@@ -821,7 +898,7 @@ function messageDigest(messages, maxCharsPerMsg = 2000) {
         };
     });
 }
-export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, runtimeContext, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, }) {
+export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, runtimeContext, runtimeSettings, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, priceHandle, }) {
     if (!cfg.autoCapture) {
         return;
     }
@@ -922,39 +999,122 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
                 }));
             }
         }
-        const session = await client.getSession(ovSessionId);
-        const pendingTokens = session.pending_tokens ?? 0;
-        const commitTokenThreshold = cfg.commitTokenThreshold;
-        if (pendingTokens < commitTokenThreshold) {
-            diag("afterTurn_skip", ovSessionId, {
-                reason: "below_threshold",
-                pendingTokens,
-                commitTokenThreshold,
-                senderIdFound: sender.found,
-                senderId: sender.senderId ?? null,
+        // The pour-off by X (PLAN-gorizont 4б). The window's weight is the charge of
+        // the turn's last request, as the proxy's counter made it and the host hands
+        // it on; at X or above, the newest messages weighing up to K stay live and
+        // the rest goes to the archive, its summary written in the background.
+        const window = validTokenCount(runtimeContext?.currentTokenCount);
+        const skip = (reason, extra = {}) => diag("pour_skip", ovSessionId, {
+            reason,
+            window: window ?? null,
+            pourOffAtTokens: cfg.pourOffAtTokens,
+            senderIdFound: sender.found,
+            senderId: sender.senderId ?? null,
+            ...extra,
+        });
+        if (window === undefined) {
+            skip("no_window_weight");
+            return;
+        }
+        if (window < cfg.pourOffAtTokens) {
+            skip("below_x");
+            return;
+        }
+        const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+        const unsummarized = ctx?.stats?.unsummarizedArchives;
+        if (typeof unsummarized !== "number") {
+            logger.warn?.(`openviking: the server gives no stats.unsummarizedArchives for session=${ovSessionId} ` +
+                "(a server older than image .3); pouring without the guard against a summary still being written");
+        }
+        else if (unsummarized > 0) {
+            // The summary of the last pour is not written yet: the server still hands
+            // that archive's messages out raw, and the window will shrink when the
+            // summary stands. Pouring again now would only queue another archive.
+            skip("summary_pending", { unsummarizedArchives: unsummarized });
+            return;
+        }
+        const pending = ctx?.messages ?? [];
+        const model = modelOf(runtimeSettings);
+        const weighed = new Map();
+        const weigh = priceHandle && model
+            ? async (start) => {
+                if (!weighed.has(start)) {
+                    const verdict = await priceHandle.price(priceBodyOf(model, pending.slice(start)));
+                    weighed.set(start, verdict ? verdict.charge : null);
+                }
+                return weighed.get(start) ?? null;
+            }
+            : null;
+        if (!weigh) {
+            logger.warn?.(`openviking: pouring session=${ovSessionId} without a price ` +
+                `(${priceHandle ? "the model is not named by the host" : "no price handle"}): ` +
+                `the floor of ${cfg.keepRecentFloor} messages by whole turns stays, the rest goes to the archive`);
+        }
+        // K is an upper bound: never more than fits under X with the rest of the
+        // window -- the window's weight less the weight of all the messages.
+        let rest = null;
+        let cap = cfg.keepRecentTokens;
+        if (weigh && pending.length > 0) {
+            const all = await weigh(0);
+            if (all !== null) {
+                rest = Math.max(0, window - all);
+                cap = Math.min(cfg.keepRecentTokens, Math.max(0, cfg.pourOffAtTokens - rest));
+            }
+        }
+        const chosen = await tailByWeight({
+            starts: turnStarts(pending),
+            total: pending.length,
+            floor: cfg.keepRecentFloor,
+            cap,
+            weigh,
+        });
+        if (!chosen || chosen.start === 0) {
+            // Nothing to pour: fewer messages than the floor, or all of them fit under
+            // the cap -- the window is at X because of its constant part, not them.
+            logger.warn?.(`openviking: session=${ovSessionId} weighs ${window} by the counter, at or above ${cfg.pourOffAtTokens}, ` +
+                `and there is nothing to pour: ${pending.length} messages on the server` +
+                (chosen ? ` weighing ${chosen.weight ?? "unweighed"} under the cap of ${cap}` : `, the floor is ${cfg.keepRecentFloor}`));
+            skip("nothing_to_pour", {
+                pendingMessages: pending.length,
+                keepRecentFloor: cfg.keepRecentFloor,
+                rest,
+                cap,
+                allWeight: chosen?.weight ?? null,
             });
             return;
         }
+        const keepRecentCount = pending.length - chosen.start;
         const commitResult = await client.commitSession(ovSessionId, {
             wait: false,
-            keepRecentCount: cfg.commitKeepRecentCount,
+            keepRecentCount,
         });
-        logger.info(`openviking: committed session=${ovSessionId}, ` +
+        logger.info(`openviking: poured session=${ovSessionId}: window ${window} by the counter, ` +
+            `kept ${keepRecentCount} newest messages` +
+            (chosen.weight !== null ? ` weighing ${chosen.weight}` : " by the floor, unweighed") +
+            ` under ${cap}, archiving ${chosen.start}; ` +
             `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
             `task_id=${commitResult.task_id ?? "none"}, trace_id=${commitResult.trace_id ?? "none"}`);
-        diag("afterTurn_commit", ovSessionId, {
-            pendingTokens,
-            commitTokenThreshold,
+        diag("pour_off", ovSessionId, {
+            window,
+            pourOffAtTokens: cfg.pourOffAtTokens,
+            keepRecentTokens: cfg.keepRecentTokens,
+            keepRecentFloor: cfg.keepRecentFloor,
+            rest,
+            cap,
+            model: model ?? null,
+            priced: chosen.priced,
+            priceAsked: chosen.asked,
+            pendingMessages: pending.length,
+            keptMessages: keepRecentCount,
+            keptWeight: chosen.weight,
+            archivedMessages: chosen.start,
             status: commitResult.status,
             archived: commitResult.archived ?? false,
             taskId: commitResult.task_id ?? null,
-            extractedMemories: totalExtractedMemories(commitResult.memories_extracted),
             senderIdFound: sender.found,
             senderId: sender.senderId ?? null,
         });
-        if (commitResult.task_id && cfg.logFindRequests) {
-            logger.info(`openviking: Phase2 memory extraction runs asynchronously on the server (task_id=${commitResult.task_id}). ` +
-                "memories_extracted appears only after that task completes — not in this immediate response.");
+        if (commitResult.task_id) {
             void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId);
         }
     }

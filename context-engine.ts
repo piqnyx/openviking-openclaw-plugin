@@ -135,6 +135,7 @@ type ContextEngine = {
     sessionKey?: string;
     isHeartbeat?: boolean;
     runtimeContext?: Record<string, unknown>;
+    runtimeSettings?: unknown;
   }) => Promise<{ status: "committed" | "duplicate" }>;
   afterTurn?: (params: {
     sessionId: string;
@@ -145,6 +146,7 @@ type ContextEngine = {
     isHeartbeat?: boolean;
     tokenBudget?: number;
     runtimeContext?: Record<string, unknown>;
+    runtimeSettings?: unknown;
     sessionKey?: string;
   }) => Promise<void>;
   assemble: (params: {
@@ -154,6 +156,7 @@ type ContextEngine = {
     prompt?: string;
     tokenBudget?: number;
     runtimeContext?: Record<string, unknown>;
+    runtimeSettings?: unknown;
   }) => Promise<AssembleResult>;
   compact: (params: {
     sessionId: string;
@@ -323,7 +326,7 @@ export function createMemoryOpenVikingContextEngine(params: {
   queryConfigStore?: RuntimeQueryConfigStore;
   traceRecorder?: { record(entry: RecallTraceEntry): void; recordAndFlush?: (entry: RecallTraceEntry) => Promise<unknown> };
   /** The proxy's price handle (PLAN-gorizont 4а); none when the config names no address. */
-  priceHandle?: PriceHandle;
+  priceHandle?: Pick<PriceHandle, "price" | "url">;
 }): ContextEngineWithCommit {
   const {
     id,
@@ -432,9 +435,11 @@ export function createMemoryOpenVikingContextEngine(params: {
         messages: assembleParams.messages,
         tokenBudget,
         runtimeContext: assembleParams.runtimeContext,
+        runtimeSettings: assembleParams.runtimeSettings,
         isMainAssemble,
         cfg,
         getClient,
+        priceHandle,
         logger,
         resolveAgentId,
         rememberSessionAgentId,
@@ -473,6 +478,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         prePromptMessageCount: afterTurnParams.prePromptMessageCount,
         isHeartbeat: afterTurnParams.isHeartbeat,
         runtimeContext: afterTurnParams.runtimeContext,
+        runtimeSettings: afterTurnParams.runtimeSettings,
         cfg,
         getClient,
         logger,
@@ -516,6 +522,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         prePromptMessageCount: commitParams.prePromptMessageCount,
         isHeartbeat: commitParams.isHeartbeat,
         runtimeContext: commitParams.runtimeContext,
+        runtimeSettings: commitParams.runtimeSettings,
         cfg,
         getClient,
         logger,
