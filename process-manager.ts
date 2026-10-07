@@ -1,4 +1,5 @@
 import type { OpenVikingClient } from "./client.js";
+import { describeError } from "./error-text.js";
 
 export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -16,26 +17,16 @@ export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMe
   });
 }
 
-export async function quickHealthCheck(
-  client: OpenVikingClient,
-  agentId: string | undefined,
-  timeoutMs: number,
-): Promise<boolean> {
-  try {
-    await client.healthCheck(timeoutMs, agentId);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
+// A short health request before the recall; when it fails, the reason goes into
+// the text whole (timed out, refused, closed), not a bare "health check failed".
 export async function quickRecallPrecheck(
   client: OpenVikingClient,
   agentId?: string,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const healthOk = await quickHealthCheck(client, agentId, 500);
-  if (healthOk) {
+  try {
+    await client.healthCheck(500, agentId);
     return { ok: true };
+  } catch (trouble) {
+    return { ok: false, reason: `health check failed: ${describeError(trouble)}` };
   }
-  return { ok: false, reason: "health check failed" };
 }

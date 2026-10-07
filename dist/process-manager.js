@@ -1,3 +1,4 @@
+import { describeError } from "./error-text.js";
 export function withTimeout(promise, timeoutMs, timeoutMessage) {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
@@ -10,19 +11,14 @@ export function withTimeout(promise, timeoutMs, timeoutMessage) {
         });
     });
 }
-export async function quickHealthCheck(client, agentId, timeoutMs) {
-    try {
-        await client.healthCheck(timeoutMs, agentId);
-        return true;
-    }
-    catch {
-        return false;
-    }
-}
+// A short health request before the recall; when it fails, the reason goes into
+// the text whole (timed out, refused, closed), not a bare "health check failed".
 export async function quickRecallPrecheck(client, agentId) {
-    const healthOk = await quickHealthCheck(client, agentId, 500);
-    if (healthOk) {
+    try {
+        await client.healthCheck(500, agentId);
         return { ok: true };
     }
-    return { ok: false, reason: "health check failed" };
+    catch (trouble) {
+        return { ok: false, reason: `health check failed: ${describeError(trouble)}` };
+    }
 }

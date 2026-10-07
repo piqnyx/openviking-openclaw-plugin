@@ -2,6 +2,7 @@
 // (gemini-proxy `POST /price`, PLAN-gorizont 1а; the plugin's side is 4а).
 import { defaultHttpTransport, type HttpTransport } from "./adapters/http-transport.js";
 import type { OVMessage } from "./client.js";
+import { describeError } from "./error-text.js";
 import {
   convertToAgentMessages,
   mergeConsecutiveAssistants,
@@ -65,8 +66,12 @@ export class PriceHandle {
         signal: controller.signal,
       });
     } catch (trouble) {
+      // Our own timer firing is a timeout; anything else is told with its causes.
+      const why = controller.signal.aborted
+        ? `timed out after ${this.timeoutMs} ms`
+        : describeError(trouble);
       this.logger.warn?.(
-        `openviking: price handle ${this.url} gave no answer (${String(trouble)}); deciding without a price`,
+        `openviking: price handle ${this.url} gave no answer (${why}); deciding without a price`,
       );
       return null;
     } finally {
