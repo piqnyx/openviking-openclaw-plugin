@@ -20,7 +20,7 @@ import { PriceHandle, priceBodyOf } from "../price-handle.js";
 
 type Answer = { status: number; body: unknown; raw?: string };
 
-function handle(answer: Answer | (() => Promise<Response>), timeoutMs = 5_000) {
+function handle(answer: Answer | ((init: RequestInit) => Promise<Response>), timeoutMs = 5_000) {
   const posted: Array<{ url: string; body: unknown; contentType: string | null }> = [];
   const warned: string[] = [];
   const transport: HttpTransport = vi.fn(async (url, init) => {
@@ -31,7 +31,7 @@ function handle(answer: Answer | (() => Promise<Response>), timeoutMs = 5_000) {
       contentType: headers.get("Content-Type"),
     });
     if (typeof answer === "function") {
-      return answer();
+      return answer(init);
     }
     return new Response(answer.raw ?? JSON.stringify(answer.body), {
       status: answer.status,
@@ -80,6 +80,34 @@ describe("ручка цены", () => {
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain("http://127.0.0.1:8787/price");
     expect(warned[0]).toContain("fetch failed");
+  });
+
+  it("ручка молчит -- причина сетевой ошибки в предупреждении", async () => {
+    const socket = Object.assign(new Error("other side closed"), {
+      name: "SocketError",
+      code: "UND_ERR_SOCKET",
+    });
+    const { price, warned } = handle(async () => {
+      throw new TypeError("fetch failed", { cause: socket });
+    });
+    expect(await price.price({ model: "m", messages: [] })).toBeNull();
+    expect(warned[0]).toContain(
+      "(TypeError: fetch failed (cause: SocketError: other side closed [UND_ERR_SOCKET]))",
+    );
+  });
+
+  it("ручка не отвечает в срок -- срок назван числом", async () => {
+    const { price, warned } = handle(
+      (init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+        }),
+      10,
+    );
+    expect(await price.price({ model: "m", messages: [] })).toBeNull();
+    expect(warned[0]).toContain("(timed out after 10 ms)");
   });
 
   it("ручка не отвечает в срок -- вердикта нет", async () => {
