@@ -19,7 +19,9 @@ describe("quickRecallPrecheck", () => {
   it("сервер ответил -- проверка пройдена", async () => {
     const healthCheck = vi.fn(async () => undefined);
     expect(await quickRecallPrecheck(clientWith(healthCheck), "main")).toEqual({ ok: true });
-    expect(healthCheck).toHaveBeenCalledWith(500, "main");
+    // Five seconds (decision of 07.10): half a second lost to the gateway's own
+    // stalls of two to three seconds and silently skipped the recall.
+    expect(healthCheck).toHaveBeenCalledWith(5_000, "main");
   });
 
   it("сервер не ответил -- причина в тексте", async () => {
