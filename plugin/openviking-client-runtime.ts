@@ -5,6 +5,7 @@ import { SYSTEM_AGENT_ID, type AgentKeyResolver } from "../agent-keys.js";
 
 type Logger = {
   info: (message: string) => void;
+  warn?: (message: string) => void;
 };
 
 type ClientRuntimeConfig = {
@@ -78,6 +79,7 @@ export function createOpenVikingClientRuntime(options: {
         headers: resolveOpenVikingRequestHeaders({
           headers: cfg.headers,
         }),
+        warn: (message) => logger.warn?.(message),
       },
     );
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeError } from "../error-text.js";
+import { describeError, isConnectionDropped } from "../error-text.js";
 
 /*
  * Текст ошибки для журнала (PLAN-gorizont, 5-0, замер 07.10).
@@ -59,6 +59,26 @@ describe("describeError", () => {
   it("не-ошибка печатается как есть", () => {
     expect(describeError("plain string")).toBe("plain string");
     expect(describeError(42)).toBe("42");
+  });
+
+  it("узнаёт соединение, закрытое или сброшенное другой стороной, по всей цепочке", () => {
+    const closed = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+    expect(isConnectionDropped(new TypeError("fetch failed", { cause: closed }))).toBe(true);
+    const reset = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    expect(isConnectionDropped(new TypeError("fetch failed", { cause: reset }))).toBe(true);
+    const pipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    expect(isConnectionDropped(new TypeError("fetch failed", { cause: pipe }))).toBe(true);
+    expect(isConnectionDropped(new Error("socket hang up"))).toBe(true);
+  });
+
+  it("отказ в соединении, срок и прочее -- не сброс", () => {
+    const refused = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:1933"), {
+      code: "ECONNREFUSED",
+    });
+    expect(isConnectionDropped(new TypeError("fetch failed", { cause: refused }))).toBe(false);
+    expect(isConnectionDropped(new DOMException("This operation was aborted", "AbortError"))).toBe(false);
+    expect(isConnectionDropped(new Error("OpenViking request failed [NOT_FOUND]: x"))).toBe(false);
+    expect(isConnectionDropped("other side closed")).toBe(false);
   });
 
   it("глубина цепочки ограничена, кольцо не зацикливает", () => {

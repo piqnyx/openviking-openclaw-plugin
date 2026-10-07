@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { Zip, ZipDeflate } from "fflate";
 import { defaultHttpTransport } from "./adapters/http-transport.js";
-import { causeSuffix } from "./error-text.js";
+import { causeSuffix, isConnectionDropped } from "./error-text.js";
 import { defaultResourcePackager, } from "./adapters/resource-packager.js";
 function userSessionUri(sessionId) {
     return `viking://user/sessions/${encodeURIComponent(sessionId)}`;
@@ -87,12 +87,15 @@ function transportTrouble(trouble, method, path, timedOut, limitMs) {
         timeout.name = "TimeoutError";
         return timeout;
     }
-    const text = trouble instanceof Error ? `${trouble.message}${causeSuffix(trouble)}` : String(trouble);
-    const failure = new Error(`${request}: ${text}`, { cause: trouble });
+    const failure = new Error(`${request}: ${troubleText(trouble)}`, { cause: trouble });
     if (trouble instanceof Error) {
         failure.name = trouble.name;
     }
     return failure;
+}
+/** The error's own message with its causes, without the name in front. */
+function troubleText(trouble) {
+    return trouble instanceof Error ? `${trouble.message}${causeSuffix(trouble)}` : String(trouble);
 }
 export class OpenVikingClient {
     baseUrl;
@@ -103,6 +106,7 @@ export class OpenVikingClient {
     userId;
     routingDebugLog;
     transport;
+    warn;
     configuredHeaders;
     now;
     sleep;
@@ -123,6 +127,7 @@ export class OpenVikingClient {
             ? optionsOrLegacyUserScope
             : (legacyOptions ?? {});
         this.transport = options.transport ?? defaultHttpTransport;
+        this.warn = options.warn;
         this.configuredHeaders = options.headers ?? {};
         this.now = options.now ?? Date.now;
         this.sleep = options.sleep ?? sleep;
@@ -194,16 +199,34 @@ export class OpenVikingClient {
             if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
                 headers.set("Content-Type", "application/json");
             }
+            const method = init.method ?? "GET";
+            const send = () => this.transport(`${this.baseUrl}${path}`, {
+                ...init,
+                headers,
+                signal: controller.signal,
+            });
             let response;
             try {
-                response = await this.transport(`${this.baseUrl}${path}`, {
-                    ...init,
-                    headers,
-                    signal: controller.signal,
-                });
+                response = await send();
             }
             catch (trouble) {
-                throw transportTrouble(trouble, init.method ?? "GET", path, controller.signal.aborted, limitMs);
+                // A read is retried once when the connection was dropped under it: the
+                // server closes an idle keep-alive socket after 5 s, and a stalled event
+                // loop cannot notice in time (PLAN-gorizont 5-0, 07.10). The retry goes
+                // out on a fresh socket under the same time limit. A write is never
+                // retried (it could land twice); a second failure, a refused connection
+                // and our own timeout go up as they are.
+                const readOnly = method === "GET" || method === "HEAD";
+                if (!readOnly || controller.signal.aborted || !isConnectionDropped(trouble)) {
+                    throw transportTrouble(trouble, method, path, controller.signal.aborted, limitMs);
+                }
+                this.warn?.(`openviking: ${method} ${path} retried once after ${troubleText(trouble)}`);
+                try {
+                    response = await send();
+                }
+                catch (again) {
+                    throw transportTrouble(again, method, path, controller.signal.aborted, limitMs);
+                }
             }
             const payload = (await response.json().catch(() => ({})));
             if (!response.ok || payload.status === "error") {
