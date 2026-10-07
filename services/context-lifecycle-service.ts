@@ -177,6 +177,13 @@ export type AfterTurnOpenVikingSessionParams = {
   };
   /** How often a background task is asked about, ms; the tests shorten it. */
   pollIntervalMs?: number;
+  /**
+   * Which of the host's two paths this is. "afterTurn": the loop hook before a
+   * model call, with the new transcript messages (the question, then tool
+   * results); "commitTurn": the durable queue after the turn, with the closed
+   * turn whole. The queue adds only what the hook has not recorded.
+   */
+  path?: "afterTurn" | "commitTurn";
   getClient: (agentId: string | undefined) => Promise<AfterTurnClient>;
   logger: ContextEngineLifecycleLogger;
   resolveAgentId: (sessionId: string, sessionKey?: string, ovSessionId?: string) => string;
@@ -1421,6 +1428,89 @@ function messageDigest(messages: AgentMessage[], maxCharsPerMsg = 2000): Array<{
   });
 }
 
+type RecordedOvPart =
+  | { type: "text"; text: string }
+  | {
+      type: "tool";
+      tool_id?: string;
+      tool_name?: string;
+      tool_input?: Record<string, unknown>;
+      tool_output?: string;
+      tool_status?: string;
+    };
+
+/** The parts of one extracted message as the server stores them. */
+function toOvParts(msg: ExtractedTurnMessage): RecordedOvPart[] {
+  return msg.parts.map((part) => {
+    if (part.type === "text") {
+      const cleaned = part.text
+        .replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      return { type: "text" as const, text: cleaned };
+    }
+    return {
+      type: "tool" as const,
+      tool_id: part.toolCallId,
+      tool_name: part.toolName,
+      tool_input: part.toolInput,
+      tool_output: part.toolOutput,
+      tool_status: part.toolStatus,
+    };
+  });
+}
+
+/**
+ * One message as a line to compare: the role and its parts, as the server keeps
+ * them. A tool part is told by the call's id: the server keeps a large output as
+ * a preview (tool_output_truncated, tool_output_ref), so the output itself is no
+ * key; only a part without an id falls back to its name and output.
+ */
+function recordedMessageKey(role: string, parts: ReadonlyArray<Record<string, unknown>>): string {
+  const lines = parts.map((part) => {
+    if (part.type === "text") {
+      return `t:${typeof part.text === "string" ? part.text : ""}`;
+    }
+    if (part.type === "tool") {
+      const id = typeof part.tool_id === "string" && part.tool_id ? part.tool_id : "";
+      return id
+        ? `tool:${id}`
+        : `tool:?:${String(part.tool_name ?? "")}:${String(part.tool_output ?? "")}`;
+    }
+    return `${String(part.type)}:${JSON.stringify(part)}`;
+  });
+  return `${role}\n${lines.join("\n")}`;
+}
+
+/**
+ * How many of the messages about to be recorded already stand at the end of
+ * the server's live messages, in the same order: the loop hook's recording of
+ * this turn's beginning. Only a whole prefix counts, and only against the tail
+ * -- an earlier identical message ("да" a turn ago) is not a repeat.
+ */
+function recordedPrefixLength(
+  toRecord: ReadonlyArray<{ role: string; parts: ReadonlyArray<Record<string, unknown>> }>,
+  tail: ReadonlyArray<OVMessage>,
+): number {
+  const mine = toRecord.map((msg) => recordedMessageKey(msg.role, msg.parts));
+  const theirs = tail.map((msg) =>
+    recordedMessageKey(msg.role, msg.parts as ReadonlyArray<Record<string, unknown>>),
+  );
+  for (let k = Math.min(mine.length, theirs.length); k > 0; k -= 1) {
+    let same = true;
+    for (let i = 0; i < k; i += 1) {
+      if (mine[i] !== theirs[theirs.length - k + i]) {
+        same = false;
+        break;
+      }
+    }
+    if (same) {
+      return k;
+    }
+  }
+  return 0;
+}
+
 export async function afterTurnOpenVikingSession({
   sessionId,
   sessionKey,
@@ -1438,6 +1528,7 @@ export async function afterTurnOpenVikingSession({
   diag,
   priceHandle,
   pollIntervalMs,
+  path = "afterTurn",
 }: AfterTurnOpenVikingSessionParams): Promise<void> {
   if (!cfg.autoCapture) {
     return;
@@ -1533,40 +1624,48 @@ export async function afterTurnOpenVikingSession({
     const client = await getClient(agentId);
     const createdAt = pickLatestCreatedAt(turnMessages);
     const senderRoleId = toRoleId(sender.senderId);
-    for (const msg of extractedMessages) {
-      const ovParts = msg.parts.map((part) => {
-        if (part.type === "text") {
-          const cleaned = part.text
-            .replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-          return { type: "text" as const, text: cleaned };
-        }
-        return {
-          type: "tool" as const,
-          tool_id: part.toolCallId,
-          tool_name: part.toolName,
-          tool_input: part.toolInput,
-          tool_output: part.toolOutput,
-          tool_status: part.toolStatus,
-        };
-      });
+    const toRecord = extractedMessages
+      .map((msg) => ({ role: msg.role, parts: toOvParts(msg) }))
+      .filter((msg) => msg.parts.length > 0);
 
-      if (ovParts.length > 0) {
-        await client.addSessionMessage(
-          ovSessionId,
-          msg.role,
-          ovParts,
-          undefined,
-          createdAt,
-          resolveOpenVikingMessagePeerId({
-            peerRole: cfg.peer_role ?? "assistant",
-            role: msg.role,
-            personPeerId: senderRoleId,
-            assistantPeerId: agentId,
-          }),
+    // The queue hands the closed turn whole, and its beginning -- the question,
+    // then the tool results -- is what the loop hook recorded already, message by
+    // message, as the server's newest messages. That beginning is skipped: the
+    // truth is the server's tail, not this process's memory, so a restart or a
+    // replayed commit does not double it either. A server that gives no tail is
+    // warned about and the turn is recorded whole: a repeat costs less than a loss.
+    let skipped = 0;
+    if (path === "commitTurn" && toRecord.length > 0) {
+      try {
+        const tail = (await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET)).messages ?? [];
+        skipped = recordedPrefixLength(toRecord, tail);
+      } catch (err) {
+        logger.warn?.(
+          `openviking: could not read the server's tail for session=${ovSessionId} before recording the turn ` +
+            `(${String(err)}); recording it whole`,
         );
       }
+      diag("afterTurn_dedupe", ovSessionId, {
+        path,
+        skipped,
+        recorded: toRecord.length - skipped,
+      });
+    }
+
+    for (const msg of toRecord.slice(skipped)) {
+      await client.addSessionMessage(
+        ovSessionId,
+        msg.role,
+        msg.parts,
+        undefined,
+        createdAt,
+        resolveOpenVikingMessagePeerId({
+          peerRole: cfg.peer_role ?? "assistant",
+          role: msg.role,
+          personPeerId: senderRoleId,
+          assistantPeerId: agentId,
+        }),
+      );
     }
 
     // The pour-off by X (PLAN-gorizont 4б). The window's weight is the charge of
