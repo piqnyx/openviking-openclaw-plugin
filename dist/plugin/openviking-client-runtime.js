@@ -33,6 +33,7 @@ export function createOpenVikingClientRuntime(options) {
         headers: resolveOpenVikingRequestHeaders({
             headers: cfg.headers,
         }),
+        warn: (message) => logger.warn?.(message),
     });
     /**
      * Resolve the OpenViking client for one OpenClaw agent.

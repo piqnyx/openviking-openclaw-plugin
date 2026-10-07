@@ -8,7 +8,7 @@ import { basename, dirname, join, relative } from "node:path";
 import { Zip, ZipDeflate } from "fflate";
 
 import { defaultHttpTransport, type HttpTransport } from "./adapters/http-transport.js";
-import { causeSuffix } from "./error-text.js";
+import { causeSuffix, isConnectionDropped } from "./error-text.js";
 import {
   defaultResourcePackager,
   type ResourcePackager,
@@ -46,6 +46,8 @@ export type OpenVikingClientOptions = {
   resourcePackager?: ResourcePackager;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Told when a read is retried after the connection was dropped under it. */
+  warn?: (message: string) => void;
 };
 
 export type CommitSessionResult = {
@@ -334,16 +336,21 @@ function transportTrouble(
     timeout.name = "TimeoutError";
     return timeout;
   }
-  const text = trouble instanceof Error ? `${trouble.message}${causeSuffix(trouble)}` : String(trouble);
-  const failure = new Error(`${request}: ${text}`, { cause: trouble });
+  const failure = new Error(`${request}: ${troubleText(trouble)}`, { cause: trouble });
   if (trouble instanceof Error) {
     failure.name = trouble.name;
   }
   return failure;
 }
 
+/** The error's own message with its causes, without the name in front. */
+function troubleText(trouble: unknown): string {
+  return trouble instanceof Error ? `${trouble.message}${causeSuffix(trouble)}` : String(trouble);
+}
+
 export class OpenVikingClient {
   private readonly transport: HttpTransport;
+  private readonly warn: ((message: string) => void) | undefined;
   private readonly configuredHeaders: Record<string, string>;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -368,6 +375,7 @@ export class OpenVikingClient {
 	        ? optionsOrLegacyUserScope
 	        : (legacyOptions ?? {});
 	    this.transport = options.transport ?? defaultHttpTransport;
+    this.warn = options.warn;
     this.configuredHeaders = options.headers ?? {};
 	    this.now = options.now ?? Date.now;
 	    this.sleep = options.sleep ?? sleep;
@@ -459,15 +467,33 @@ export class OpenVikingClient {
         headers.set("Content-Type", "application/json");
       }
 
-      let response: Response;
-      try {
-        response = await this.transport(`${this.baseUrl}${path}`, {
+      const method = init.method ?? "GET";
+      const send = () =>
+        this.transport(`${this.baseUrl}${path}`, {
           ...init,
           headers,
           signal: controller.signal,
         });
+      let response: Response;
+      try {
+        response = await send();
       } catch (trouble) {
-        throw transportTrouble(trouble, init.method ?? "GET", path, controller.signal.aborted, limitMs);
+        // A read is retried once when the connection was dropped under it: the
+        // server closes an idle keep-alive socket after 5 s, and a stalled event
+        // loop cannot notice in time (PLAN-gorizont 5-0, 07.10). The retry goes
+        // out on a fresh socket under the same time limit. A write is never
+        // retried (it could land twice); a second failure, a refused connection
+        // and our own timeout go up as they are.
+        const readOnly = method === "GET" || method === "HEAD";
+        if (!readOnly || controller.signal.aborted || !isConnectionDropped(trouble)) {
+          throw transportTrouble(trouble, method, path, controller.signal.aborted, limitMs);
+        }
+        this.warn?.(`openviking: ${method} ${path} retried once after ${troubleText(trouble)}`);
+        try {
+          response = await send();
+        } catch (again) {
+          throw transportTrouble(again, method, path, controller.signal.aborted, limitMs);
+        }
       }
 
       const payload = (await response.json().catch(() => ({}))) as {

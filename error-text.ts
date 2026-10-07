@@ -45,3 +45,30 @@ export function describeError(trouble: unknown): string {
 export function causeSuffix(error: Error): string {
   return suffixAt(error, 0);
 }
+
+const DROPPED_CODES = new Set(["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"]);
+const DROPPED_MESSAGE_RE = /other side closed|socket hang up/i;
+
+function droppedAt(trouble: unknown, depth: number): boolean {
+  if (!(trouble instanceof Error)) {
+    return false;
+  }
+  const code = (trouble as { code?: unknown }).code;
+  if ((typeof code === "string" && DROPPED_CODES.has(code)) || DROPPED_MESSAGE_RE.test(trouble.message)) {
+    return true;
+  }
+  if (depth >= MAX_DEPTH) {
+    return false;
+  }
+  return causesOf(trouble).some((cause) => droppedAt(cause, depth + 1));
+}
+
+/**
+ * The connection was closed or reset under us while the request was in flight,
+ * anywhere down the cause chain: a keep-alive socket the server dropped while
+ * idle, a reset, a broken pipe. A refused connection (the server is down), our
+ * own timeout and the server's answers are not that.
+ */
+export function isConnectionDropped(trouble: unknown): boolean {
+  return droppedAt(trouble, 0);
+}
