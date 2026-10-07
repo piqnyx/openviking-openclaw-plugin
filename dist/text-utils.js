@@ -19,6 +19,9 @@ const METADATA_JSON_KEY_RE = /"(session|sessionid|sessionkey|conversationid|chan
 const LEADING_TIMESTAMP_PREFIX_RE = /^\s*(?!\[\[)\[(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+)?(?:\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{2,4})(?:[T\s]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{1,2}(?::\d{2})?)?(?:\s*[A-Z]{1,5}(?:[+-]\d{1,2})?)?)?\s*\]\s*/i;
 const COMPACTED_SYSTEM_MSG_RE = /^System:\s*\[.*?\]\s*Compacted\s*(.+)$/i;
 const COMMAND_TEXT_RE = /^\/[a-z0-9_-]{1,64}\b/i;
+// The host's inline reply directives (src/utils/directive-tags.ts of OpenClaw): they
+// steer delivery, not meaning, and have no place in memory.
+const REPLY_DIRECTIVE_TAG_RE = /\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+|audio_as_voice)\s*\]\]/gi;
 const NON_CONTENT_TEXT_RE = /^[\p{P}\p{S}\s]+$/u;
 const SUBAGENT_CONTEXT_RE = /^\s*\[Subagent Context\]/i;
 const MEMORY_INTENT_RE = /记住|记下|remember|save|store|偏好|preference|规则|rule|事实|fact/i;
@@ -53,6 +56,7 @@ export function sanitizeUserTextForCapture(text) {
         return "";
     }
     return text
+        .replace(REPLY_DIRECTIVE_TAG_RE, " ")
         .replace(OPENVIKING_CONTEXT_BLOCK_RE, " ")
         .replace(RELEVANT_MEMORIES_BLOCK_RE, " ")
         .replace(GRAPHITI_CONTEXT_BLOCK_RE, " ")
@@ -326,7 +330,11 @@ export function extractNewTurnMessages(messages, startIndex) {
         if (!msg || typeof msg !== "object")
             continue;
         const role = msg.role;
-        if (!role || role === "system")
+        // The host's "custom" messages are runtime-generated (its runtime context for
+        // the turn): the host hands them to the model with every prompt itself and
+        // strips them from the history it gives the engine; the loop hook leaks them.
+        // They are not the conversation and do not go to memory.
+        if (!role || role === "system" || role === "custom")
             continue;
         count++;
         // toolResult -> type: "tool"

@@ -45,10 +45,22 @@ function server(): Stand {
       });
     if (parsed.pathname.endsWith("/messages") && init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as { role: string; parts: OVMessagePart[]; created_at?: string };
+      // Как сервер 0.4.12: большой результат инструмента хранится превью со ссылкой.
+      const parts = body.parts.map((part) =>
+        part.type === "tool" && typeof part.tool_output === "string" && part.tool_output.length > 40
+          ? {
+              ...part,
+              tool_output: part.tool_output.slice(0, 20),
+              tool_output_truncated: true,
+              tool_output_ref: `viking://tool-results/${next}`,
+              tool_output_original_chars: part.tool_output.length,
+            }
+          : part,
+      );
       stored.push({
         id: `ov-${next++}`,
         role: body.role,
-        parts: body.parts,
+        parts,
         created_at: body.created_at ?? new Date().toISOString(),
       });
       return answer({ session_id: SESSION });
@@ -205,11 +217,12 @@ describe("ход записывается один раз", () => {
       content: [{ type: "toolCall", id: "call-1", name: "exec", arguments: { command: "date" } }],
       timestamp: 4,
     };
+    // Результат длиннее, чем сервер хранит целиком: на сервере останется превью.
     const toolResult = {
       role: "toolResult",
       toolCallId: "call-1",
       toolName: "exec",
-      content: [{ type: "text", text: "Tue Oct 7" }],
+      content: [{ type: "text", text: `Tue Oct 7 ${"x".repeat(200)}` }],
       timestamp: 5,
     };
     const question = user("какой сегодня день", 3);

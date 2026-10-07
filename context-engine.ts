@@ -492,6 +492,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         diag,
         priceHandle,
         pollIntervalMs,
+        path: "afterTurn",
       });
     },
 
@@ -537,6 +538,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         diag,
         priceHandle,
         pollIntervalMs,
+        path: "commitTurn",
       });
       return { status: "committed" };
     },
