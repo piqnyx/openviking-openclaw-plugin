@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { Zip, ZipDeflate } from "fflate";
 import { defaultHttpTransport } from "./adapters/http-transport.js";
+import { causeSuffix } from "./error-text.js";
 import { defaultResourcePackager, } from "./adapters/resource-packager.js";
 function userSessionUri(sessionId) {
     return `viking://user/sessions/${encodeURIComponent(sessionId)}`;
@@ -71,6 +72,27 @@ async function cleanupUploadTempPath(path) {
     }
     await rm(path, { force: true }).catch(() => undefined);
     await rm(dirname(path), { recursive: true, force: true }).catch(() => undefined);
+}
+/**
+ * A transport failure means no HTTP answer at all. What fetch throws names only
+ * its surface ("fetch failed", "This operation was aborted"), so the error for
+ * the caller names the request and the reason underneath, keeps the original in
+ * `cause`, and keeps its name for callers that tell errors apart by name. Our
+ * own timer firing is a timeout and is called one, with the limit in ms.
+ */
+function transportTrouble(trouble, method, path, timedOut, limitMs) {
+    const request = `OpenViking ${method} ${path}`;
+    if (timedOut) {
+        const timeout = new Error(`${request} timed out after ${limitMs} ms`, { cause: trouble });
+        timeout.name = "TimeoutError";
+        return timeout;
+    }
+    const text = trouble instanceof Error ? `${trouble.message}${causeSuffix(trouble)}` : String(trouble);
+    const failure = new Error(`${request}: ${text}`, { cause: trouble });
+    if (trouble instanceof Error) {
+        failure.name = trouble.name;
+    }
+    return failure;
 }
 export class OpenVikingClient {
     baseUrl;
@@ -146,7 +168,8 @@ export class OpenVikingClient {
     }
     async request(path, init = {}, requestTimeoutMs, actorPeerId) {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), requestTimeoutMs ?? this.timeoutMs);
+        const limitMs = requestTimeoutMs ?? this.timeoutMs;
+        const timer = setTimeout(() => controller.abort(), limitMs);
         try {
             const headers = new Headers(init.headers ?? {});
             const tenantHeaders = this.resolveTenantHeaders();
@@ -171,11 +194,17 @@ export class OpenVikingClient {
             if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
                 headers.set("Content-Type", "application/json");
             }
-            const response = await this.transport(`${this.baseUrl}${path}`, {
-                ...init,
-                headers,
-                signal: controller.signal,
-            });
+            let response;
+            try {
+                response = await this.transport(`${this.baseUrl}${path}`, {
+                    ...init,
+                    headers,
+                    signal: controller.signal,
+                });
+            }
+            catch (trouble) {
+                throw transportTrouble(trouble, init.method ?? "GET", path, controller.signal.aborted, limitMs);
+            }
             const payload = (await response.json().catch(() => ({})));
             if (!response.ok || payload.status === "error") {
                 const code = payload.error?.code ? ` [${payload.error.code}]` : "";
