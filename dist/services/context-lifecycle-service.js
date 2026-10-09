@@ -3,7 +3,7 @@ import { DEFAULT_PHASE2_POLL_TIMEOUT_MS } from "../client.js";
 import { buildAutoRecallContext, prepareRecallQuery } from "../auto-recall.js";
 import { toJsonLog } from "../memory-ranking.js";
 import { openClawSessionToOvStorageId, resolveOpenVikingActorPeerId, resolveOpenVikingMessagePeerId, sanitizeOpenVikingPeerId, } from "../routing/identity-routing.js";
-import { priceBodyOf, toOpenAiMessages } from "../price-handle.js";
+import { priceBodyOf, priceMessagesOf } from "../price-handle.js";
 import { floorTail, longestTailWithin, turnStarts } from "../tail-by-weight.js";
 import { extractNewTurnMessages } from "../text-utils.js";
 import { estimateAgentMessageTokens, estimateTextTokens } from "../token-estimator.js";
@@ -534,7 +534,7 @@ async function assembleWithoutFreshSummary(params) {
         ? async (messages) => {
             const verdict = await params.priceHandle.price({
                 model,
-                messages: [...toOpenAiMessages(messages), { role: "user", content: "x" }],
+                messages: priceMessagesOf(messages),
             });
             return verdict ? verdict.charge : null;
         }

@@ -174,10 +174,11 @@ describe("тело для ручки", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "call_7", type: "function", function: { name: "read", arguments: JSON.stringify({ path: "a.txt" }) } },
+            // The id in the strict form the gateway sends (letters and digits only).
+            { id: "call7", type: "function", function: { name: "read", arguments: JSON.stringify({ path: "a.txt" }) } },
           ],
         },
-        { role: "tool", tool_call_id: "call_7", content: "содержимое" },
+        { role: "tool", tool_call_id: "call7", content: "содержимое" },
         { role: "assistant", content: "в файле написано содержимое" },
         { role: "user", content: "x" },
       ],
