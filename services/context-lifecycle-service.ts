@@ -10,7 +10,7 @@ import {
   sanitizeOpenVikingPeerId,
   type OpenVikingPeerRole,
 } from "../routing/identity-routing.js";
-import { priceBodyOf, toOpenAiMessages, type PriceHandle } from "../price-handle.js";
+import { priceBodyOf, priceMessagesOf, type PriceHandle } from "../price-handle.js";
 import { floorTail, longestTailWithin, turnStarts } from "../tail-by-weight.js";
 import { extractNewTurnMessages } from "../text-utils.js";
 import { estimateAgentMessageTokens, estimateTextTokens } from "../token-estimator.js";
@@ -894,7 +894,7 @@ async function assembleWithoutFreshSummary(params: {
       ? async (messages: AgentMessage[]) => {
           const verdict = await params.priceHandle!.price({
             model,
-            messages: [...toOpenAiMessages(messages), { role: "user", content: "x" }],
+            messages: priceMessagesOf(messages),
           });
           return verdict ? verdict.charge : null;
         }

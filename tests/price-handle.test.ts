@@ -174,10 +174,11 @@ describe("тело для ручки", () => {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "call_7", type: "function", function: { name: "read", arguments: JSON.stringify({ path: "a.txt" }) } },
+            // The id in the strict form the gateway sends (letters and digits only).
+            { id: "call7", type: "function", function: { name: "read", arguments: JSON.stringify({ path: "a.txt" }) } },
           ],
         },
-        { role: "tool", tool_call_id: "call_7", content: "содержимое" },
+        { role: "tool", tool_call_id: "call7", content: "содержимое" },
         { role: "assistant", content: "в файле написано содержимое" },
         { role: "user", content: "x" },
       ],
@@ -198,6 +199,34 @@ describe("тело для ручки", () => {
     expect(assistant.tool_calls).toBeUndefined();
     expect(assistant.content).toContain("[read] (completed)");
     expect(assistant.content).toContain("ответ");
+  });
+
+  it("повторный номер вызова в хвосте получает свой, как в запросе шлюза, и ответ инструмента идёт за ним", () => {
+    // Разлив 09.10: ворота прокси отвечали ручке 400 «duplicate tool call id», потому что
+    // сервер хранит вызовы с одинаковыми номерами из разных ходов, а шлюз перед отправкой
+    // делает их разными; тело для оценки должно быть собрано так же, иначе поиск хвоста
+    // считает такие хвосты «не влезающими» и оставляет крохи (53 сообщения при K 150 000).
+    const call = (id: string, text: string) =>
+      ov(id, "assistant", [
+        { type: "tool", tool_id: "call_115472", tool_name: "read", tool_input: { path: text }, tool_output: text, tool_status: "completed" },
+      ]);
+    const messages = [
+      ov("u1", "user", [{ type: "text", text: "раз" }]),
+      call("a1", "первый"),
+      ov("u2", "user", [{ type: "text", text: "два" }]),
+      call("a2", "второй"),
+    ];
+
+    const body = priceBodyOf("m", messages);
+
+    const callIds = body.messages.flatMap((m) =>
+      "tool_calls" in m && m.tool_calls ? m.tool_calls.map((c) => c.id) : [],
+    );
+    const resultIds = body.messages.flatMap((m) => (m.role === "tool" ? [m.tool_call_id] : []));
+    expect(callIds).toHaveLength(2);
+    expect(new Set(callIds).size).toBe(2);
+    expect(resultIds).toEqual(callIds);
+    expect(callIds.every((id) => /^[A-Za-z0-9_]+$/.test(id))).toBe(true);
   });
 
   it("пустой список -- одно «x»", () => {

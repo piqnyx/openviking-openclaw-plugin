@@ -8,6 +8,7 @@ import {
   mergeConsecutiveAssistants,
   type AgentMessage,
 } from "./services/context-message-adapter.js";
+import { sanitizeToolCallIdsForCloudCodeAssist } from "./tool-call-id.js";
 
 /** What the handle answers: the counter's verdict for the body as it is. */
 export type PriceVerdict = {
@@ -203,5 +204,23 @@ export function priceBodyOf(
   messages: OVMessage[],
 ): { model: string; messages: OpenAiMessage[] } {
   const window = mergeConsecutiveAssistants(messages.flatMap((m) => convertToAgentMessages(m)));
-  return { model, messages: [...toOpenAiMessages(window), { role: "user", content: "x" }] };
+  return { model, messages: priceMessagesOf(window) };
+}
+
+/**
+ * The window's messages as the handle must see them: the tool call ids made
+ * unique and strict first, the way the gateway rewrites them before a send
+ * (transcript-policy: `sanitizeToolCallIds`, `toolCallIdMode: "strict"` for
+ * openai-completions; the same occurrence-aware resolver copied from core in
+ * tool-call-id.ts). The server keeps calls from different turns under one id,
+ * and the proxy's gate refuses a body that repeats one («duplicate tool call
+ * id», 400): on 09.10 that made every long tail «not fit» and the pour-off
+ * kept 53 messages of 667 under K 150 000.
+ */
+export function priceMessagesOf(window: AgentMessage[]): OpenAiMessage[] {
+  const unique = sanitizeToolCallIdsForCloudCodeAssist(
+    window as unknown as Parameters<typeof sanitizeToolCallIdsForCloudCodeAssist>[0],
+    "strict",
+  ) as unknown as AgentMessage[];
+  return [...toOpenAiMessages(unique), { role: "user", content: "x" }];
 }
