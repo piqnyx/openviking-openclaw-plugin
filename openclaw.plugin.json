@@ -243,6 +243,12 @@
       "advanced": true,
       "help": "How long the host's compaction waits for the archive's summary to stand on the server before it gives up. Keep it under the host's compaction timeout (agents.defaults.compaction.timeoutSeconds, 180 by default)."
     },
+    "holdForSummarySeconds": {
+      "label": "Hold For Summary (seconds)",
+      "placeholder": "600",
+      "advanced": true,
+      "help": "After a pour-off, how long the next turn waits for the archive's summary to stand on the server before it goes on with the raw messages; 0 disables the wait. Waited once per pending summary. While waiting the host shows its compaction (web composer, channel reaction and progress line)."
+    },
     "emitStandardDiagnostics": {
       "label": "Standard diagnostics (diag JSON lines)",
       "advanced": true,
@@ -446,6 +452,10 @@
       "compactWaitSeconds": {
         "type": "number",
         "minimum": 1
+      },
+      "holdForSummarySeconds": {
+        "type": "number",
+        "minimum": 0
       },
       "bypassSessionPatterns": {
         "type": "array",

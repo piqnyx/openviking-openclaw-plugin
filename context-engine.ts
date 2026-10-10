@@ -19,6 +19,7 @@ import {
   afterTurnOpenVikingSession,
   compactOpenVikingSession,
   commitOpenVikingSession,
+  type AnnounceCompaction,
 } from "./services/context-lifecycle-service.js";
 
 type ContextEngineInfo = {
@@ -456,6 +457,12 @@ export function createMemoryOpenVikingContextEngine(params: {
         extractAgentMessageText,
         hasAutoRecallBlock,
         prependRecallToLatestUserMessage,
+        pollIntervalMs,
+        // PLAN-gorizont 4д (файл 35 шлюза): the host's way of telling the clients of
+        // our hold for the summary; a host without the file passes nothing.
+        announceCompaction: (
+          assembleParams as { announceCompaction?: AnnounceCompaction }
+        ).announceCompaction,
       });
     },
 
