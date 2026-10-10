@@ -255,7 +255,12 @@ const contextEnginePlugin = {
         // for the weight of the window's tails. No address in the config -- no handle;
         // the engine then decides without a price and says so in the log.
         const priceHandle = cfg.priceUrl
-            ? new PriceHandle(cfg.priceUrl, { timeoutMs: cfg.priceTimeoutMs, logger: api.logger })
+            ? new PriceHandle(cfg.priceUrl, {
+                timeoutMs: cfg.priceTimeoutMs,
+                logger: api.logger,
+                // PLAN-gorizont 5а: one more question after three seconds before "no weight".
+                repeat: { times: 1, pauseMs: 3_000 },
+            })
             : undefined;
         if (!priceHandle) {
             api.logger.warn("openviking: priceUrl is empty -- the pour-off by weight has no price handle and decides by the floor alone");

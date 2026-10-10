@@ -82,6 +82,46 @@ describe("ручка цены", () => {
     expect(warned[0]).toContain("fetch failed");
   });
 
+  // PLAN-gorizont 5а (11.10): одиночный сбой весов не должен срывать разлив -- ручка
+  // переспрашивает один раз после паузы; молчит дважды -- вердикта нет.
+  it("молчит один раз -- переспрашивает после паузы и берёт ответ", async () => {
+    let calls = 0;
+    const transport: HttpTransport = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response("gateway down", { status: 503 });
+      }
+      return new Response(JSON.stringify(VERDICT), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const warned: string[] = [];
+    const price = new PriceHandle("http://127.0.0.1:8787/price", {
+      transport,
+      timeoutMs: 5_000,
+      logger: { info: () => {}, warn: (line) => warned.push(line) },
+      repeat: { times: 1, pauseMs: 1 },
+    });
+
+    expect(await price.price({ model: "m", messages: [] })).toEqual(VERDICT);
+    expect(calls).toBe(2);
+    expect(warned.join("\n")).toContain("503");
+  });
+
+  it("молчит дважды -- вердикта нет, спрошено два раза", async () => {
+    const transport: HttpTransport = vi.fn(async () => new Response("gateway down", { status: 503 }));
+    const price = new PriceHandle("http://127.0.0.1:8787/price", {
+      transport,
+      timeoutMs: 5_000,
+      logger: { info: () => {} },
+      repeat: { times: 1, pauseMs: 1 },
+    });
+
+    expect(await price.price({ model: "m", messages: [] })).toBeNull();
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
   it("ручка молчит -- причина сетевой ошибки в предупреждении", async () => {
     const socket = Object.assign(new Error("other side closed"), {
       name: "SocketError",

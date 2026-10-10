@@ -335,6 +335,8 @@ export function createMemoryOpenVikingContextEngine(params: {
   priceHandle?: Pick<PriceHandle, "price" | "url">;
   /** How often the server is asked while waiting or watching a task, ms; the tests shorten it. */
   pollIntervalMs?: number;
+  /** PLAN-gorizont 5а: how long the held turn waits between questions to the price handle, ms; the tests shorten it. */
+  pourRetryPauseMs?: number;
 }): ContextEngineWithCommit {
   const {
     id,
@@ -349,6 +351,7 @@ export function createMemoryOpenVikingContextEngine(params: {
     traceRecorder,
     priceHandle,
     pollIntervalMs,
+    pourRetryPauseMs,
   } = params;
 
   const diagEnabled = cfg.emitStandardDiagnostics;
@@ -462,6 +465,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         hasAutoRecallBlock,
         prependRecallToLatestUserMessage,
         pollIntervalMs,
+        ...(pourRetryPauseMs !== undefined ? { pourRetryPauseMs } : {}),
         // PLAN-gorizont 4д (файл 35 шлюза): the host's way of telling the clients of
         // our hold for the summary; a host without the file passes nothing.
         announceCompaction: (

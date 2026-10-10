@@ -94,14 +94,21 @@ describe("самый длинный хвост не тяжелее cap", () => {
     expect(asked).toBe(0);
   });
 
-  it("ручка не ответила про какой-то хвост -- этот хвост не годится, берётся тот, про который ответила", async () => {
-    const chosen = await longestTailWithin({
+  // PLAN-gorizont 5а (11.10): веса не от ручки нет -- хвост без веса не «не влезает», а
+  // обрывает поиск: решать за счётчик нельзя.
+  it("ручка не ответила про какой-то хвост -- поиск обрывается ошибкой, пола нет", async () => {
+    const search = longestTailWithin({
       starts: turnStarts(FIVE_TURNS),
       total,
       floor: 2,
       cap: 10_000,
-      weigh: async (start) => (start === 0 ? null : byHundreds(start)),
+      weigh: async (start) => {
+        if (start === 0) {
+          throw new Error("no weight");
+        }
+        return byHundreds(start);
+      },
     });
-    expect(chosen).toMatchObject({ start: 4, weight: 1000 });
+    await expect(search).rejects.toThrow("no weight");
   });
 });

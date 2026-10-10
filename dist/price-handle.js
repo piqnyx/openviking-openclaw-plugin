@@ -16,13 +16,27 @@ export class PriceHandle {
     transport;
     timeoutMs;
     logger;
+    repeat;
     constructor(url, options = {}) {
         this.url = url;
         this.transport = options.transport ?? defaultHttpTransport;
         this.timeoutMs = options.timeoutMs ?? DEFAULT_PRICE_TIMEOUT_MS;
         this.logger = options.logger ?? { info: () => { } };
+        this.repeat = options.repeat ?? { times: 0, pauseMs: 0 };
     }
+    /** The verdict, asking again after a pause when the handle gave none; null when it never did. */
     async price(body) {
+        for (let attempt = 0;; attempt += 1) {
+            const verdict = await this.ask(body);
+            if (verdict || attempt >= this.repeat.times) {
+                return verdict;
+            }
+            this.logger.info(`openviking: price handle ${this.url} gave no verdict; asking again in ${this.repeat.pauseMs} ms ` +
+                `(${attempt + 1} of ${this.repeat.times} repeats)`);
+            await new Promise((resolve) => setTimeout(resolve, this.repeat.pauseMs));
+        }
+    }
+    async ask(body) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), this.timeoutMs);
         let response;

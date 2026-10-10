@@ -169,7 +169,7 @@ function validTokenBudget(raw) {
     return undefined;
 }
 export function createMemoryOpenVikingContextEngine(params) {
-    const { id, name, version, cfg, logger, getClient, resolveAgentId, rememberSessionAgentId, queryConfigStore, traceRecorder, priceHandle, pollIntervalMs, } = params;
+    const { id, name, version, cfg, logger, getClient, resolveAgentId, rememberSessionAgentId, queryConfigStore, traceRecorder, priceHandle, pollIntervalMs, pourRetryPauseMs, } = params;
     const diagEnabled = cfg.emitStandardDiagnostics;
     const bypassSessionPatterns = compileSessionPatterns(cfg.bypassSessionPatterns);
     const diag = (stage, sessionId, data) => emitDiag(logger, stage, sessionId, data, diagEnabled);
@@ -256,6 +256,7 @@ export function createMemoryOpenVikingContextEngine(params) {
                 hasAutoRecallBlock,
                 prependRecallToLatestUserMessage,
                 pollIntervalMs,
+                ...(pourRetryPauseMs !== undefined ? { pourRetryPauseMs } : {}),
                 // PLAN-gorizont 4д (файл 35 шлюза): the host's way of telling the clients of
                 // our hold for the summary; a host without the file passes nothing.
                 announceCompaction: assembleParams.announceCompaction,

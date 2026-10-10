@@ -19,8 +19,8 @@ export function turnStarts(messages: ReadonlyArray<Pick<AgentMessage, "role">>):
 export type TailChoice = {
   /** The index the kept tail starts at. */
   start: number;
-  /** Its weight by the handle; null when the handle gave none for it. */
-  weight: number | null;
+  /** Its weight by the handle. */
+  weight: number;
   /** How many tails the handle was asked about. */
   asked: number;
 };
@@ -28,35 +28,37 @@ export type TailChoice = {
 /**
  * The longest tail, by whole turns and not shorter than the floor, whose weight is
  * not above the cap. The weight grows with the length, so the search is binary:
- * about log2 of the starts in questions to the handle. A tail the handle gave no
- * weight for does not fit. When even the shortest eligible tail is too heavy, it
- * is the one: the floor is stronger than the weight. No eligible tail -- null.
+ * about log2 of the starts in questions to the handle. A weight the handle did not
+ * give is no weight at all (PLAN-gorizont 5а, 11.10): `weigh` fails and so does the
+ * search -- nothing is decided for the counter. When even the shortest eligible tail
+ * is too heavy, it is the one: the floor is stronger than the weight. No eligible
+ * tail -- null.
  */
 export async function longestTailWithin(params: {
   starts: number[];
   total: number;
   floor: number;
   cap: number;
-  weigh: (start: number) => Promise<number | null>;
+  weigh: (start: number) => Promise<number>;
 }): Promise<TailChoice | null> {
   const { total, floor, cap, weigh } = params;
   const eligible = params.starts.filter((start) => start >= 0 && start < total && total - start >= floor);
   if (eligible.length === 0) {
     return null;
   }
-  const weights = new Map<number, number | null>();
+  const weights = new Map<number, number>();
   let asked = 0;
-  const weightOf = async (start: number): Promise<number | null> => {
-    if (!weights.has(start)) {
-      asked += 1;
-      weights.set(start, await weigh(start));
+  const weightOf = async (start: number): Promise<number> => {
+    const known = weights.get(start);
+    if (known !== undefined) {
+      return known;
     }
-    return weights.get(start) ?? null;
+    asked += 1;
+    const weight = await weigh(start);
+    weights.set(start, weight);
+    return weight;
   };
-  const fits = async (start: number): Promise<boolean> => {
-    const weight = await weightOf(start);
-    return weight !== null && weight <= cap;
-  };
+  const fits = async (start: number): Promise<boolean> => (await weightOf(start)) <= cap;
   // eligible[0] is the longest tail; the first that fits is the answer, and
   // the shortest eligible is the answer when none fits.
   let lo = 0;
