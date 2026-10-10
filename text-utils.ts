@@ -356,6 +356,16 @@ type ExtractedMessage = {
  * - 跳过 system 消息
  * - 清理时间戳前缀（如 [Fri 2026-04-10 17:20 GMT+8]）
  */
+function hasToolCallBlocks(content: unknown): boolean {
+  return (
+    Array.isArray(content) &&
+    content.some((block) => {
+      const type = (block as Record<string, unknown> | null)?.type;
+      return type === "toolCall" || type === "toolUse" || type === "tool_call";
+    })
+  );
+}
+
 export function extractNewTurnMessages(
   messages: unknown[],
   startIndex: number,
@@ -432,6 +442,16 @@ export function extractNewTurnMessages(
     // user/assistant -> type: "text"
     const content = msg.content;
     const text = extractPartText(content);
+
+    // A tool call without text: the model's turn to the tools. Nothing to record by
+    // itself (the results carry the call), but it is where a round of results starts:
+    // an empty message, so the results of two rounds are not glued into one (11.10:
+    // the queue's closed turn glued them, the hook had recorded them by rounds, and the
+    // turn went to the server twice).
+    if (!text && role === "assistant" && hasToolCallBlocks(content)) {
+      result.push({ role: "assistant", parts: [] });
+      continue;
+    }
 
     if (text) {
       // 使用 sanitizeUserTextForCapture 清理所有噪音（Sender 元数据、时间戳等）

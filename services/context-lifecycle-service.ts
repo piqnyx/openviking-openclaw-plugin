@@ -1765,6 +1765,11 @@ function coalesceConsecutiveToolMessages(messages: ExtractedTurnMessage[]): Extr
       continue;
     }
     flush();
+    // An empty message is the start of a round of tool results (a tool call without
+    // text, text-utils): a boundary only, nothing to keep.
+    if (msg.parts.length === 0) {
+      continue;
+    }
     result.push(msg);
   }
   flush();
