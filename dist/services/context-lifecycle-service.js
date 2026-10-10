@@ -1,5 +1,5 @@
 // Canonical ContextEngine lifecycle service: assemble / afterTurn / compact / commit orchestration.
-import { DEFAULT_PHASE2_POLL_TIMEOUT_MS } from "../client.js";
+import { DEFAULT_PHASE2_POLL_TIMEOUT_MS, } from "../client.js";
 import { buildAutoRecallContext, prepareRecallQuery } from "../auto-recall.js";
 import { toJsonLog } from "../memory-ranking.js";
 import { openClawSessionToOvStorageId, resolveOpenVikingActorPeerId, resolveOpenVikingMessagePeerId, sanitizeOpenVikingPeerId, } from "../routing/identity-routing.js";
@@ -640,7 +640,67 @@ async function assembleWithoutFreshSummary(params) {
         ...(instruction.text ? { systemPromptAddition: instruction.text } : {}),
     };
 }
-export async function assembleOpenVikingSession({ sessionId, sessionKey, messages, tokenBudget, runtimeContext, runtimeSettings, isMainAssemble, cfg, getClient, priceHandle, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, queryConfigStore, traceRecorder, diag, roughEstimate, messageDigest, extractAgentMessageText, hasAutoRecallBlock, prependRecallToLatestUserMessage, }) {
+/**
+ * Sessions whose hold for the summary ran out (PLAN-gorizont 4д): the turns of such a
+ * session go on without waiting until the server says nothing waits for a summary.
+ */
+const summaryHoldGivenUp = new Set();
+const DEFAULT_HOLD_FOR_SUMMARY_SECONDS = 600;
+/**
+ * The turn after a pour-off, held until the archive's summary stands (PLAN-gorizont
+ * 4д). The server hands the archive's messages out raw until then, and a turn on them
+ * runs at the ceiling. While the turn is held the host is told, so the clients see the
+ * host's own picture of compaction (file 35 of the gateway). The limit run out: the
+ * turn goes on as it was, and the session is not held again until that summary
+ * stands. Returns the context to assemble from: read again once the summary stands.
+ */
+async function holdForSummary(params) {
+    const { ctx, client, ovSessionId, cfg, logger, diag, announceCompaction } = params;
+    const waiting = ctx?.stats?.unsummarizedArchives;
+    if (typeof waiting !== "number" || waiting <= 0) {
+        summaryHoldGivenUp.delete(ovSessionId);
+        return ctx;
+    }
+    const holdSeconds = typeof cfg?.holdForSummarySeconds === "number" && Number.isFinite(cfg.holdForSummarySeconds)
+        ? Math.max(0, cfg.holdForSummarySeconds)
+        : DEFAULT_HOLD_FOR_SUMMARY_SECONDS;
+    if (holdSeconds <= 0) {
+        return ctx;
+    }
+    if (summaryHoldGivenUp.has(ovSessionId)) {
+        diag("hold_for_summary_skip", ovSessionId, { reason: "gave_up_before", unsummarizedArchives: waiting });
+        return ctx;
+    }
+    logger.info(`openviking: assemble session=${ovSessionId}: the summary of the last pour is still being written ` +
+        `(${waiting} archive(s) waiting); holding the turn for it up to ${holdSeconds} s`);
+    announceCompaction?.("start");
+    const started = Date.now();
+    const wait = await waitForSummary(client, ovSessionId, {
+        deadlineMs: holdSeconds * 1000,
+        pollMs: params.pollIntervalMs,
+        logger,
+    });
+    const stands = wait.outcome === "stands";
+    announceCompaction?.("end", { completed: stands });
+    const waitedMs = Date.now() - started;
+    diag("hold_for_summary", ovSessionId, {
+        unsummarizedArchives: waiting,
+        outcome: wait.outcome,
+        polls: wait.polls,
+        waitedMs,
+        holdSeconds,
+    });
+    if (!stands) {
+        summaryHoldGivenUp.add(ovSessionId);
+        logger.warn?.(`openviking: assemble session=${ovSessionId}: the summary did not stand within ${holdSeconds} s ` +
+            `(${wait.polls} polls); going on with the raw messages, and not holding again until it stands`);
+        return ctx;
+    }
+    logger.info(`openviking: assemble session=${ovSessionId}: the summary stands after ${waitedMs} ms (${wait.polls} polls); ` +
+        "reading the context again");
+    return await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+}
+export async function assembleOpenVikingSession({ sessionId, sessionKey, messages, tokenBudget, runtimeContext, runtimeSettings, isMainAssemble, cfg, getClient, priceHandle, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, queryConfigStore, traceRecorder, diag, roughEstimate, messageDigest, extractAgentMessageText, hasAutoRecallBlock, prependRecallToLatestUserMessage, announceCompaction, pollIntervalMs = PHASE2_POLL_INTERVAL_MS, }) {
     const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
     const sender = extractRuntimeSenderId(runtimeContext);
     const latestMessage = messages.at(-1);
@@ -765,7 +825,16 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
     }
     try {
         const client = await getClient(resolveAgentId(sessionId ?? sessionKey ?? ovSessionId, sessionKey, ovSessionId));
-        const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+        const ctx = await holdForSummary({
+            ctx: await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET),
+            client,
+            ovSessionId,
+            cfg,
+            logger,
+            diag,
+            announceCompaction,
+            pollIntervalMs,
+        });
         const preAbstracts = ctx?.pre_archive_abstracts ?? [];
         const hasArchives = !!ctx?.latest_archive_overview || preAbstracts.length > 0;
         const activeCount = ctx?.messages?.length ?? 0;

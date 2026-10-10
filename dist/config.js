@@ -18,6 +18,7 @@ const DEFAULT_POUR_OFF_AT_TOKENS = 245_000;
 const DEFAULT_KEEP_RECENT_TOKENS = 150_000;
 const DEFAULT_KEEP_RECENT_FLOOR = 20;
 const DEFAULT_COMPACT_WAIT_SECONDS = 150;
+const DEFAULT_HOLD_FOR_SUMMARY_SECONDS = 600;
 const DEFAULT_BYPASS_SESSION_PATTERNS = [];
 const DEFAULT_EMIT_STANDARD_DIAGNOSTICS = false;
 const DEFAULT_PEER_ROLE = "assistant";
@@ -311,6 +312,7 @@ export const OPENVIKING_CONFIG_KEYS = [
     "keepRecentTokens",
     "keepRecentFloor",
     "compactWaitSeconds",
+    "holdForSummarySeconds",
     "bypassSessionPatterns",
     "ingestReplyAssist",
     "ingestReplyAssistMinSpeakerTurns",
@@ -427,6 +429,7 @@ export const memoryOpenVikingConfigSchema = {
             keepRecentTokens: Math.max(1, Math.floor(toNumber(cfg.keepRecentTokens, DEFAULT_KEEP_RECENT_TOKENS))),
             keepRecentFloor: Math.max(0, Math.floor(toNumber(cfg.keepRecentFloor, DEFAULT_KEEP_RECENT_FLOOR))),
             compactWaitSeconds: Math.max(1, toNumber(cfg.compactWaitSeconds, DEFAULT_COMPACT_WAIT_SECONDS)),
+            holdForSummarySeconds: Math.max(0, toNumber(cfg.holdForSummarySeconds, DEFAULT_HOLD_FOR_SUMMARY_SECONDS)),
             bypassSessionPatterns: toStringArray(cfg.bypassSessionPatterns, toStringArray(cfg.ingestReplyAssistIgnoreSessionPatterns, DEFAULT_BYPASS_SESSION_PATTERNS)),
             emitStandardDiagnostics: typeof cfg.emitStandardDiagnostics === "boolean"
                 ? cfg.emitStandardDiagnostics
@@ -631,6 +634,14 @@ export const memoryOpenVikingConfigSchema = {
             advanced: true,
             help: "How long the host's compaction waits for the archive's summary to stand on the server before it gives up. " +
                 "Keep it under the host's compaction timeout (agents.defaults.compaction.timeoutSeconds, 180 by default).",
+        },
+        holdForSummarySeconds: {
+            label: "Hold For Summary (seconds)",
+            placeholder: String(DEFAULT_HOLD_FOR_SUMMARY_SECONDS),
+            advanced: true,
+            help: "After a pour-off, how long the next turn waits for the archive's summary to stand on the server " +
+                "before it goes on with the raw messages; 0 disables the wait. Waited once per pending summary. " +
+                "While waiting the host shows its compaction (web composer, channel reaction and progress line).",
         },
         emitStandardDiagnostics: {
             label: "Standard diagnostics (diag JSON lines)",
