@@ -242,6 +242,51 @@ describe("ход записывается один раз", () => {
     ]);
   });
 
+  // 11.10, по трассе и журналу (ход «еще заряжай» 10.10 21:02): два круга инструментов подряд.
+  // Хук пишет каждый круг отдельным сообщением (вызов -- граница круга); очередь получает
+  // ход целиком, и результаты обоих кругов слипались в одно сообщение -- сверка с хвостом
+  // ничего не находила, ход ложился второй раз без результатов, шлюз дорисовывал заглушки.
+  it("ход с двумя кругами инструментов: очередь дописывает только ответ, круги не слипаются", async () => {
+    const stand = server();
+    const { engine, diags } = engineOver(stand);
+    const history = [user("прошлый вопрос", 1), assistant("прошлый ответ", 2)];
+    const question = user("еще заряжай", 3);
+    const calls = (ids: string[], timestamp: number) => ({
+      role: "assistant",
+      content: ids.map((id) => ({ type: "toolCall", id, name: "mcp__firecrawl_search", arguments: { q: id } })),
+      timestamp,
+    });
+    const result = (id: string, timestamp: number) => ({
+      role: "toolResult",
+      toolCallId: id,
+      toolName: "mcp__firecrawl_search",
+      content: [{ type: "text", text: `{"success": true, "data": "${id}"}` }],
+      timestamp,
+    });
+    const round1 = [calls(["c1", "c2", "c3"], 4), result("c1", 5), result("c2", 6), result("c3", 7)];
+    const round2 = [calls(["c4", "c5", "c6"], 8), result("c4", 9), result("c5", 10), result("c6", 11)];
+
+    await hook(engine, [...history, RUNTIME_CONTEXT, question], history.length);
+    await hook(engine, [...history, RUNTIME_CONTEXT, question, ...round1], history.length + 2);
+    await hook(engine, [...history, RUNTIME_CONTEXT, question, ...round1, ...round2], history.length + 6);
+    expect(recorded(stand)).toEqual([
+      ["user", "еще заряжай"],
+      ["assistant", "tool:c1 | tool:c2 | tool:c3"],
+      ["assistant", "tool:c4 | tool:c5 | tool:c6"],
+    ]);
+
+    await queue(engine, [question, ...round1, ...round2, assistant("Заряжаем по полной!", 12)], "adv-two-rounds");
+    expect(recorded(stand)).toEqual([
+      ["user", "еще заряжай"],
+      ["assistant", "tool:c1 | tool:c2 | tool:c3"],
+      ["assistant", "tool:c4 | tool:c5 | tool:c6"],
+      ["assistant", "Заряжаем по полной!"],
+    ]);
+    expect(diags.filter((d) => d.stage === "afterTurn_dedupe").at(-1)?.data).toMatchObject({
+      path: "commitTurn", skipped: 3, recorded: 1,
+    });
+  });
+
   it("одинаковые ответы в разных ходах не считаются повтором: сверка идёт только по началу хода", async () => {
     const stand = server();
     const { engine } = engineOver(stand);
