@@ -210,6 +210,7 @@ describe("ручной /compact", () => {
     expect(result.reason).toBe("summary_stands");
     expect(result.result?.summary).toBe("СВОДКА-НОВАЯ");
     expect(stand.state.sessionPolls).toBeGreaterThanOrEqual(2);
+    expect(result.result?.tokensAfter).toBeUndefined();
   });
 
   it("серверу нечего сворачивать -- как раньше, без сжатия", async () => {
@@ -237,8 +238,11 @@ describe("автоматическое сжатие", () => {
     expect(result.reason).toBe("summary_stands");
     expect(result.result?.summary).toBe("СВОДКА-НОВАЯ");
     expect(result.result?.firstKeptEntryId).toBe("archive_007");
+    // Число после сжатия -- вес оставленного хвоста по весам, не оценка сервера (4 000).
+    expect(result.result?.tokensAfter).toBe(140_001);
     expect(diags.filter((d) => d.stage === "compact_result").at(-1)?.data).toMatchObject({
       ok: true, compacted: true, reason: "summary_stands", keptMessages: 28, keptWeight: 140_001, waitedPolls: 2,
+      tokensAfter: 140_001,
     });
   });
 
@@ -262,6 +266,8 @@ describe("автоматическое сжатие", () => {
     expect(result.reason).toBe("previous_pour_summary_stands");
     expect(result.result?.summary).toBe("СВОДКА-НОВАЯ");
     expect(stand.state.sessionPolls).toBeGreaterThanOrEqual(3);
+    // Хвост не взвешивали -- числа нет; оценка сервера числом не считается.
+    expect(result.result?.tokensAfter).toBeUndefined();
   });
 
   it("всё влезает под cap: «уже сжато», сервер не трогается", async () => {
@@ -314,6 +320,7 @@ describe("автоматическое сжатие", () => {
     expect(stand.commits).toEqual([{ keep_recent_count: 20 }]);
     expect(result.compacted).toBe(true);
     expect(warned.join("\n")).toMatch(/without a price/);
+    expect(result.result?.tokensAfter).toBeUndefined();
   });
 });
 

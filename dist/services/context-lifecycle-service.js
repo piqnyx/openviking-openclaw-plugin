@@ -1652,19 +1652,21 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
     const client = await getClient(agentId);
     const window = validTokenCount(currentTokenCount);
     const waitMs = Math.max(1, cfg.compactWaitSeconds) * 1000;
-    /** The summary that stands now, and the live messages beside it, for the answer to the host. */
+    /**
+     * The summary that stands now, for the answer to the host. The window after is not
+     * taken from here: `estimatedTokens` is the server's estimate, not the counter's
+     * number (PLAN-gorizont 5а: no number but the handle's); the caller has the kept
+     * tail's weight when the tail was priced, and nothing otherwise.
+     */
     const restored = async () => {
         try {
             const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
             const summary = typeof ctx.latest_archive_overview === "string" ? ctx.latest_archive_overview.trim() : "";
-            const tokensAfter = typeof ctx.estimatedTokens === "number" && Number.isFinite(ctx.estimatedTokens)
-                ? ctx.estimatedTokens
-                : undefined;
             logger.info(`openviking: compact restored session content for ${ovSessionId}: ` +
                 `messages=${ctx.messages?.length ?? 0}, ` +
                 `latestArchiveOverview=${summary.length > 0 ? "present" : "empty"} (${summary.length} chars), ` +
                 `estimatedTokens=${ctx.estimatedTokens}`);
-            return { summary, tokensAfter };
+            return { summary };
         }
         catch (ctxErr) {
             const error = String(ctxErr);
@@ -1674,8 +1676,8 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
     };
     try {
         const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
-        const tokensBefore = window ??
-            (typeof ctx.estimatedTokens === "number" && Number.isFinite(ctx.estimatedTokens) ? ctx.estimatedTokens : -1);
+        // The host's window or unknown (-1): the server's estimate is not a number of the counter.
+        const tokensBefore = window ?? -1;
         const pending = ctx.messages ?? [];
         let keepRecentCount = 0;
         let kept;
@@ -1708,7 +1710,7 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
                     reason: "previous_pour_summary_stands",
                     waitedPolls: wait.polls,
                     tokensBefore,
-                    tokensAfter: after.tokensAfter ?? null,
+                    tokensAfter: null,
                     summaryPresent: after.summary.length > 0,
                 });
                 return {
@@ -1719,7 +1721,6 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
                         summary: after.summary,
                         firstKeptEntryId: "",
                         tokensBefore,
-                        tokensAfter: after.tokensAfter,
                         details: { waitedPolls: wait.polls, ...(after.error ? { contextError: after.error } : {}) },
                     },
                 };
@@ -1877,8 +1878,11 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
         }
         const after = await restored();
         const firstKeptEntryId = commitResult.archive_uri?.split("/").pop() ?? "";
+        // The window after: the kept tail's weight by the handle (11.10: the server's estimate
+        // stood here and the host showed 104k for a window of 145k); unweighed -- unknown.
+        const tokensAfter = kept?.chosen?.priced && typeof kept.chosen.weight === "number" ? kept.chosen.weight : undefined;
         logger.info(`openviking: compact session=${ovSessionId}: the summary stands after ${wait.polls} polls; ` +
-            `tokensBefore=${tokensBefore}, tokensAfter=${after.tokensAfter ?? "unknown"}, latestArchiveId=${firstKeptEntryId || "none"}`);
+            `tokensBefore=${tokensBefore}, tokensAfter=${tokensAfter ?? "unknown"}, latestArchiveId=${firstKeptEntryId || "none"}`);
         diag("compact_result", ovSessionId, {
             ok: true,
             compacted: true,
@@ -1895,7 +1899,7 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
             model: kept?.model ?? null,
             waitedPolls: wait.polls,
             tokensBefore,
-            tokensAfter: after.tokensAfter ?? null,
+            tokensAfter: tokensAfter ?? null,
             latestArchiveId: firstKeptEntryId || null,
             summaryPresent: after.summary.length > 0,
         });
@@ -1907,7 +1911,7 @@ export async function compactOpenVikingSession({ sessionId, sessionKey, tokenBud
                 summary: after.summary,
                 firstKeptEntryId,
                 tokensBefore,
-                tokensAfter: after.tokensAfter,
+                ...(tokensAfter !== undefined ? { tokensAfter } : {}),
                 details: {
                     commit: commitResult,
                     waitedPolls: wait.polls,
