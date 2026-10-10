@@ -137,6 +137,8 @@ type ContextEngine = {
     isHeartbeat?: boolean;
     runtimeContext?: Record<string, unknown>;
     runtimeSettings?: unknown;
+    /** Gateway file 37: the host's ear for a pour-off while committing the turn. */
+    announceCompaction?: AnnounceCompaction;
   }) => Promise<{ status: "committed" | "duplicate" }>;
   afterTurn?: (params: {
     sessionId: string;
@@ -149,6 +151,8 @@ type ContextEngine = {
     runtimeContext?: Record<string, unknown>;
     runtimeSettings?: unknown;
     sessionKey?: string;
+    /** Gateway file 37: the host's ear for a pour-off in the loop hook. */
+    announceCompaction?: AnnounceCompaction;
   }) => Promise<void>;
   assemble: (params: {
     sessionId: string;
@@ -500,6 +504,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         priceHandle,
         pollIntervalMs,
         path: "afterTurn",
+        announceCompaction: afterTurnParams.announceCompaction,
       });
     },
 
@@ -546,6 +551,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         priceHandle,
         pollIntervalMs,
         path: "commitTurn",
+        announceCompaction: commitParams.announceCompaction,
       });
       return { status: "committed" };
     },

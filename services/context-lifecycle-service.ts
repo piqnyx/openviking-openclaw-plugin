@@ -82,7 +82,16 @@ type AssembleBuiltContext = {
  * engine's own compaction begins and ends; `completed: false` -- the engine stopped
  * waiting for it and went on as it was.
  */
-export type AnnounceCompaction = (phase: "start" | "end", info?: { completed?: boolean }) => void;
+/**
+ * The host's ear for the engine's own compaction (gateway file 35): a hold for the
+ * summary at assemble is told as start and end; a pour-off while recording a turn
+ * (gateway file 37) as a completed end with `tokensAfter`, the window's weight once
+ * the pour-off has settled, which the host takes for the session's freshest total.
+ */
+export type AnnounceCompaction = (
+  phase: "start" | "end",
+  info?: { completed?: boolean; tokensAfter?: number },
+) => void;
 
 export type AssembleOpenVikingSessionParams = {
   sessionId: string;
@@ -200,6 +209,8 @@ export type AfterTurnOpenVikingSessionParams = {
    * turn whole. The queue adds only what the hook has not recorded.
    */
   path?: "afterTurn" | "commitTurn";
+  /** Gateway file 37: where a pour-off is told to the host; absent when the host does not count it. */
+  announceCompaction?: AnnounceCompaction;
   getClient: (agentId: string | undefined) => Promise<AfterTurnClient>;
   logger: ContextEngineLifecycleLogger;
   resolveAgentId: (sessionId: string, sessionKey?: string, ovSessionId?: string) => string;
@@ -1635,6 +1646,7 @@ export async function afterTurnOpenVikingSession({
   priceHandle,
   pollIntervalMs,
   path = "afterTurn",
+  announceCompaction,
 }: AfterTurnOpenVikingSessionParams): Promise<void> {
   if (!cfg.autoCapture) {
     return;
@@ -1845,6 +1857,10 @@ export async function afterTurnOpenVikingSession({
       wait: false,
       keepRecentCount,
     });
+    // The window's weight once the pour-off has settled: the constant part and the kept
+    // tail. The summary that will stand beside them weighs a little more, which only keeps
+    // the host's gates closed a little longer. Unweighed (no price), there is no estimate.
+    const windowAfter = rest !== null && chosen.weight !== null ? rest + chosen.weight : null;
     logger.info(
       `openviking: poured session=${ovSessionId}: window ${window} by the counter, ` +
         `kept ${keepRecentCount} newest messages` +
@@ -1868,12 +1884,29 @@ export async function afterTurnOpenVikingSession({
       keptMessages: keepRecentCount,
       keptWeight: chosen.weight,
       archivedMessages: chosen.start,
+      windowAfter,
       status: commitResult.status,
       archived: commitResult.archived ?? false,
       taskId: commitResult.task_id ?? null,
       senderIdFound: sender.found,
       senderId: sender.senderId ?? null,
     });
+    // Gateway file 37 (PLAN-gorizont 2б): the pour-off is the session's compaction for
+    // the host -- it moves the host's compaction count (the memory flush runs once per
+    // cycle, before the pour-off) and takes windowAfter for the window's weight until the
+    // next call measures it. The server saying nothing was archived is no compaction.
+    if (announceCompaction && commitResult.archived === true) {
+      if (windowAfter === null) {
+        logger.warn?.(
+          `openviking: poured session=${ovSessionId} without a weight of the window after (no price): ` +
+            "the host learns the new weight only at the next turn's first call",
+        );
+      }
+      announceCompaction("end", {
+        completed: true,
+        ...(windowAfter !== null ? { tokensAfter: windowAfter } : {}),
+      });
+    }
     if (commitResult.task_id) {
       void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId, pollIntervalMs);
     }

@@ -1127,7 +1127,7 @@ function recordedPrefixLength(toRecord, tail) {
     }
     return 0;
 }
-export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, runtimeContext, runtimeSettings, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, priceHandle, pollIntervalMs, path = "afterTurn", }) {
+export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messages: rawMessages, prePromptMessageCount, isHeartbeat, runtimeContext, runtimeSettings, cfg, getClient, logger, resolveAgentId, rememberSessionAgentId, isBypassedSession, diag, priceHandle, pollIntervalMs, path = "afterTurn", announceCompaction, }) {
     if (!cfg.autoCapture) {
         return;
     }
@@ -1306,6 +1306,10 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
             wait: false,
             keepRecentCount,
         });
+        // The window's weight once the pour-off has settled: the constant part and the kept
+        // tail. The summary that will stand beside them weighs a little more, which only keeps
+        // the host's gates closed a little longer. Unweighed (no price), there is no estimate.
+        const windowAfter = rest !== null && chosen.weight !== null ? rest + chosen.weight : null;
         logger.info(`openviking: poured session=${ovSessionId}: window ${window} by the counter, ` +
             `kept ${keepRecentCount} newest messages` +
             (chosen.weight !== null ? ` weighing ${chosen.weight}` : " by the floor, unweighed") +
@@ -1326,12 +1330,27 @@ export async function afterTurnOpenVikingSession({ sessionId, sessionKey, messag
             keptMessages: keepRecentCount,
             keptWeight: chosen.weight,
             archivedMessages: chosen.start,
+            windowAfter,
             status: commitResult.status,
             archived: commitResult.archived ?? false,
             taskId: commitResult.task_id ?? null,
             senderIdFound: sender.found,
             senderId: sender.senderId ?? null,
         });
+        // Gateway file 37 (PLAN-gorizont 2б): the pour-off is the session's compaction for
+        // the host -- it moves the host's compaction count (the memory flush runs once per
+        // cycle, before the pour-off) and takes windowAfter for the window's weight until the
+        // next call measures it. The server saying nothing was archived is no compaction.
+        if (announceCompaction && commitResult.archived === true) {
+            if (windowAfter === null) {
+                logger.warn?.(`openviking: poured session=${ovSessionId} without a weight of the window after (no price): ` +
+                    "the host learns the new weight only at the next turn's first call");
+            }
+            announceCompaction("end", {
+                completed: true,
+                ...(windowAfter !== null ? { tokensAfter: windowAfter } : {}),
+            });
+        }
         if (commitResult.task_id) {
             void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId, pollIntervalMs);
         }

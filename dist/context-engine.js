@@ -291,6 +291,7 @@ export function createMemoryOpenVikingContextEngine(params) {
                 priceHandle,
                 pollIntervalMs,
                 path: "afterTurn",
+                announceCompaction: afterTurnParams.announceCompaction,
             });
         },
         /**
@@ -332,6 +333,7 @@ export function createMemoryOpenVikingContextEngine(params) {
                 priceHandle,
                 pollIntervalMs,
                 path: "commitTurn",
+                announceCompaction: commitParams.announceCompaction,
             });
             return { status: "committed" };
         },
