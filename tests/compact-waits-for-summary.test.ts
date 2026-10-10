@@ -142,7 +142,13 @@ function handle() {
 
 function engineOver(
   stand: Stand,
-  options: { priced?: boolean; keepRecentFloor?: number; compactWaitSeconds?: number } = {},
+  options: {
+    priced?: boolean;
+    keepRecentFloor?: number;
+    compactWaitSeconds?: number;
+    /** Свои весы вместо обычных (например, молчащие). */
+    handle?: ReturnType<typeof handle>;
+  } = {},
 ) {
   const warned: string[] = [];
   const diags: Array<{ stage: string; data: Record<string, unknown> }> = [];
@@ -171,7 +177,7 @@ function engineOver(
     },
     getClient: async () => stand.client,
     resolveAgentId: () => "main",
-    ...(options.priced === false ? {} : { priceHandle: handle() }),
+    ...(options.priced === false ? {} : { priceHandle: options.handle ?? handle() }),
     pollIntervalMs: 1,
   });
   return { engine, warned, diags };
@@ -278,6 +284,26 @@ describe("автоматическое сжатие", () => {
     expect(result.ok).toBe(true);
     expect(result.compacted).toBe(false);
     expect(String(result.reason)).toMatch(/already compacted/i);
+  });
+
+  // PLAN-gorizont 5а (11.10): весы молчат -- сжатия нет, провал с причиной; пола «не
+  // влезает» больше нет, число не от счётчика брать нельзя.
+  it("весы молчат -- провал сжатия с причиной no_weight, сервер не трогается", async () => {
+    const stand = server(20, 5_000);
+    const silent = {
+      url: "http://127.0.0.1:8787/price",
+      price: async (): Promise<PriceVerdict | null> => null,
+    };
+    const { engine, diags } = engineOver(stand, { handle: silent });
+    const result = await compact(engine, "budget");
+
+    expect(stand.commits).toEqual([]);
+    expect(result.ok).toBe(false);
+    expect(result.compacted).toBe(false);
+    expect(result.reason).toBe("no_weight");
+    expect(diags.filter((d) => d.stage === "compact_result").at(-1)?.data).toMatchObject({
+      ok: false, compacted: false, reason: "no_weight",
+    });
   });
 
   it("без ручки хвост по планке, с предупреждением", async () => {

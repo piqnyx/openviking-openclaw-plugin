@@ -44,18 +44,45 @@ export class PriceHandle {
   private readonly transport: HttpTransport;
   private readonly timeoutMs: number;
   private readonly logger: PriceHandleLogger;
+  private readonly repeat: { times: number; pauseMs: number };
 
   constructor(
     url: string,
-    options: { transport?: HttpTransport; timeoutMs?: number; logger?: PriceHandleLogger } = {},
+    options: {
+      transport?: HttpTransport;
+      timeoutMs?: number;
+      logger?: PriceHandleLogger;
+      /**
+       * PLAN-gorizont 5а (11.10): how many times to ask again after a pause when the
+       * handle gave no verdict, so a single hiccup does not stand for a storm. None
+       * by default; the plugin's wiring asks once more after three seconds.
+       */
+      repeat?: { times: number; pauseMs: number };
+    } = {},
   ) {
     this.url = url;
     this.transport = options.transport ?? defaultHttpTransport;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_PRICE_TIMEOUT_MS;
     this.logger = options.logger ?? { info: () => {} };
+    this.repeat = options.repeat ?? { times: 0, pauseMs: 0 };
   }
 
+  /** The verdict, asking again after a pause when the handle gave none; null when it never did. */
   async price(body: Record<string, unknown>): Promise<PriceVerdict | null> {
+    for (let attempt = 0; ; attempt += 1) {
+      const verdict = await this.ask(body);
+      if (verdict || attempt >= this.repeat.times) {
+        return verdict;
+      }
+      this.logger.info(
+        `openviking: price handle ${this.url} gave no verdict; asking again in ${this.repeat.pauseMs} ms ` +
+          `(${attempt + 1} of ${this.repeat.times} repeats)`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, this.repeat.pauseMs));
+    }
+  }
+
+  private async ask(body: Record<string, unknown>): Promise<PriceVerdict | null> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;

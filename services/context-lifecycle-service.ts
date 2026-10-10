@@ -90,7 +90,16 @@ type AssembleBuiltContext = {
  */
 export type AnnounceCompaction = (
   phase: "start" | "end",
-  info?: { completed?: boolean; tokensAfter?: number },
+  info?: {
+    completed?: boolean;
+    tokensAfter?: number;
+    /**
+     * Gateway file 38 (PLAN-gorizont 5а): this end is the engine's completed compaction
+     * -- a pour-off made while the turn was held -- which the host counts as the
+     * session's compaction even when the summary did not stand in time.
+     */
+    compacted?: boolean;
+  },
 ) => void;
 
 export type AssembleOpenVikingSessionParams = {
@@ -106,6 +115,8 @@ export type AssembleOpenVikingSessionParams = {
   announceCompaction?: AnnounceCompaction;
   /** How often the server is asked while the turn is held for the summary, ms; the tests shorten it. */
   pollIntervalMs?: number;
+  /** PLAN-gorizont 5а: the pause between questions to the price handle while the turn is held, ms. */
+  pourRetryPauseMs?: number;
   cfg: any;
   getClient: (agentId: string | undefined) => Promise<OpenVikingClient>;
   /** The proxy's price handle (PLAN-gorizont 4а); the recovery path cuts the live tail by it (4б). */
@@ -701,6 +712,20 @@ function modelOf(runtimeSettings: unknown): string | undefined {
   return typeof name === "string" && name.trim() ? name.trim() : undefined;
 }
 
+/**
+ * PLAN-gorizont 5а (11.10, решение Вита): the price handle gave no weight for a tail.
+ * No weight is made up for it -- the counter's word is the only number -- and the
+ * caller decides what a cut without a weight means where it stands.
+ */
+export class NoWeightFromTheHandle extends Error {
+  readonly tail: number;
+  constructor(tail: number) {
+    super(`the price handle gave no weight for the tail starting at ${tail}`);
+    this.name = "NoWeightFromTheHandle";
+    this.tail = tail;
+  }
+}
+
 type TailByWeight = {
   /** The index the kept tail starts at. */
   start: number;
@@ -743,15 +768,20 @@ async function chooseKeptTail(params: {
 }): Promise<KeptTail> {
   const { pending, window, priceHandle, cfg, logger, ovSessionId } = params;
   const model = modelOf(params.runtimeSettings);
-  const weighed = new Map<number, number | null>();
+  const weighed = new Map<number, number>();
   const weigh =
     priceHandle && model
-      ? async (start: number) => {
-          if (!weighed.has(start)) {
-            const verdict = await priceHandle.price(priceBodyOf(model, pending.slice(start)));
-            weighed.set(start, verdict ? verdict.charge : null);
+      ? async (start: number): Promise<number> => {
+          const known = weighed.get(start);
+          if (known !== undefined) {
+            return known;
           }
-          return weighed.get(start) ?? null;
+          const verdict = await priceHandle.price(priceBodyOf(model, pending.slice(start)));
+          if (!verdict) {
+            throw new NoWeightFromTheHandle(start);
+          }
+          weighed.set(start, verdict.charge);
+          return verdict.charge;
         }
       : null;
   if (!weigh) {
@@ -766,10 +796,8 @@ async function chooseKeptTail(params: {
   let cap = cfg.keepRecentTokens;
   if (weigh && window !== undefined && pending.length > 0) {
     const all = await weigh(0);
-    if (all !== null) {
-      rest = Math.max(0, window - all);
-      cap = Math.min(cfg.keepRecentTokens, Math.max(0, cfg.pourOffAtTokens - rest));
-    }
+    rest = Math.max(0, window - all);
+    cap = Math.min(cfg.keepRecentTokens, Math.max(0, cfg.pourOffAtTokens - rest));
   }
 
   const chosen = await tailByWeight({
@@ -854,7 +882,7 @@ async function tailByWeight(params: {
   total: number;
   floor: number;
   cap: number;
-  weigh: ((start: number) => Promise<number | null>) | null;
+  weigh: ((start: number) => Promise<number>) | null;
 }): Promise<TailByWeight | null> {
   const { total, floor, cap, weigh } = params;
   // The whole list is always a candidate: its first message may be the rest of
@@ -960,7 +988,15 @@ async function assembleWithoutFreshSummary(params: {
   // The tail by weight (PLAN-gorizont 4б): the live part of the window is never
   // heavier than K by the handle, whole turns, never fewer than the floor. The
   // estimate of characters cut here before; it is not in the counter's units.
-  const weigh = weighLive ? (start: number) => weighLive(tail.slice(start)) : null;
+  const weigh = weighLive
+    ? async (start: number): Promise<number> => {
+        const weight = await weighLive(tail.slice(start));
+        if (weight === null) {
+          throw new NoWeightFromTheHandle(start);
+        }
+        return weight;
+      }
+    : null;
   if (!weigh) {
     logger.warn?.(
       `openviking: no fresh summary for session=${ovSessionId} and no price ` +
@@ -968,13 +1004,22 @@ async function assembleWithoutFreshSummary(params: {
         `the live tail is cut by the floor of ${keepRecentFloor} messages alone`,
     );
   }
-  const chosen = await tailByWeight({
-    starts: turnStarts(tail),
-    total: tail.length,
-    floor: keepRecentFloor,
-    cap: keepRecentTokens,
-    weigh,
-  });
+  const tailCut = { starts: turnStarts(tail), total: tail.length, floor: keepRecentFloor, cap: keepRecentTokens };
+  let chosen: TailByWeight | null;
+  try {
+    chosen = await tailByWeight({ ...tailCut, weigh });
+  } catch (trouble) {
+    if (!(trouble instanceof NoWeightFromTheHandle)) {
+      throw trouble;
+    }
+    // PLAN-gorizont 5а: the handle gave no weight for the live tail. No weight is made
+    // up; this path has no turn to hold, so the floor alone cuts, as without a price.
+    logger.warn?.(
+      `openviking: no fresh summary for session=${ovSessionId} and the price handle gave no weight ` +
+        `for the live tail: cut by the floor of ${keepRecentFloor} messages alone`,
+    );
+    chosen = await tailByWeight({ ...tailCut, weigh: null });
+  }
   let kept = chosen ? tail.slice(chosen.start) : tail.slice();
   if (!archive) {
     // Nothing stands before the tail, so it has to open with the user's turn.
@@ -1047,7 +1092,24 @@ async function assembleWithoutFreshSummary(params: {
  */
 const summaryHoldGivenUp = new Set<string>();
 
+/**
+ * PLAN-gorizont 5а (11.10): the sessions whose pour-off the price handle's silence put
+ * off at the end of a turn, with the window's weight the turn ended at. The next turn
+ * is held at its start until the pour-off is made (settleWindow). Process memory: after
+ * a restart the mark is gone, and the end of the next turn tries the pour-off as usual.
+ */
+const pourDue = new Map<string, number>();
+
 const DEFAULT_HOLD_FOR_SUMMARY_SECONDS = 600;
+/** The pause between questions to the price handle while the turn is held (Вит, 11.10). */
+const POUR_RETRY_PAUSE_MS = 10_000;
+
+/** The hold's budget, seconds; `holdForSummarySeconds` of the config, 600 by default, 0 turns the hold off. */
+function holdSecondsOf(cfg: any): number {
+  return typeof cfg?.holdForSummarySeconds === "number" && Number.isFinite(cfg.holdForSummarySeconds)
+    ? Math.max(0, cfg.holdForSummarySeconds)
+    : DEFAULT_HOLD_FOR_SUMMARY_SECONDS;
+}
 
 /**
  * The turn after a pour-off, held until the archive's summary stands (PLAN-gorizont
@@ -1073,10 +1135,7 @@ async function holdForSummary(params: {
     summaryHoldGivenUp.delete(ovSessionId);
     return ctx;
   }
-  const holdSeconds =
-    typeof cfg?.holdForSummarySeconds === "number" && Number.isFinite(cfg.holdForSummarySeconds)
-      ? Math.max(0, cfg.holdForSummarySeconds)
-      : DEFAULT_HOLD_FOR_SUMMARY_SECONDS;
+  const holdSeconds = holdSecondsOf(cfg);
   if (holdSeconds <= 0) {
     return ctx;
   }
@@ -1120,6 +1179,200 @@ async function holdForSummary(params: {
   return await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
 }
 
+/**
+ * PLAN-gorizont 5а (11.10, решение Вита): what the held turn waits for before the model
+ * is asked. A pour-off the handle's silence put off at the end of the last turn is made
+ * here: the handle is asked again every pause until it answers or the hold runs out;
+ * answered -- the pour-off is committed, and the summary is waited for as after any
+ * pour (holdForSummary). The host is told once for the whole wait, the way it is told
+ * of the summary hold; the end carries `compacted` and `tokensAfter` when a pour-off was
+ * made, so the host counts it as the session's compaction (gateway files 37 and 38).
+ * The handle silent for the whole hold: the turn goes on with the window as it is --
+ * the proxy's gate weighs every request exactly and refuses what does not fit, so
+ * nothing unweighed reaches the door -- and the mark stays for the next turn.
+ */
+async function settleWindow(params: {
+  client: Pick<OpenVikingClient, "getSession" | "getTask" | "getSessionContext" | "commitSession">;
+  ovSessionId: string;
+  cfg: any;
+  logger: ContextEngineLifecycleLogger;
+  diag: (stage: string, sessionId: string, data: Record<string, unknown>) => void;
+  announceCompaction?: AnnounceCompaction;
+  pollIntervalMs: number;
+  pourRetryPauseMs: number;
+  runtimeSettings: unknown;
+  priceHandle?: Pick<PriceHandle, "price" | "url">;
+}): Promise<SessionContextResult | null | undefined> {
+  const { client, ovSessionId, cfg, logger, diag, announceCompaction } = params;
+  const due = pourDue.get(ovSessionId);
+  const holdSeconds = holdSecondsOf(cfg);
+  if (due === undefined || holdSeconds <= 0) {
+    return await holdForSummary({
+      ctx: await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET),
+      client,
+      ovSessionId,
+      cfg,
+      logger,
+      diag,
+      announceCompaction,
+      pollIntervalMs: params.pollIntervalMs,
+    });
+  }
+
+  // One announcement for the whole wait: a start here, an end once the summary stood
+  // (holdForSummary) or the wait is over; the end carries the pour-off when one was made.
+  let announced = false;
+  let pourFacts: { compacted: true; tokensAfter?: number } | undefined;
+  const announce: AnnounceCompaction = (phase, info) => {
+    if (phase === "start") {
+      if (!announced) {
+        announced = true;
+        announceCompaction?.("start");
+      }
+      return;
+    }
+    if (!announced) {
+      return;
+    }
+    announced = false;
+    announceCompaction?.("end", { ...info, ...(pourFacts ?? {}) });
+  };
+
+  logger.info(
+    `openviking: assemble session=${ovSessionId}: the pour-off put off at the end of the last turn ` +
+      `(window ${due} by the counter, no weight from the price handle) is made now; ` +
+      `asking the handle every ${params.pourRetryPauseMs} ms, up to ${holdSeconds} s`,
+  );
+  announce("start");
+  const started = Date.now();
+  const deadline = started + holdSeconds * 1000;
+  let attempts = 0;
+  let outcome: "poured" | "gave_up" | "nothing_to_pour" | "pending_elsewhere" = "gave_up";
+  for (;;) {
+    const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+    const waiting = ctx?.stats?.unsummarizedArchives;
+    if (typeof waiting === "number" && waiting > 0) {
+      // Poured meanwhile by another path of the host: nothing is due; the summary is
+      // waited for below.
+      pourDue.delete(ovSessionId);
+      outcome = "pending_elsewhere";
+      break;
+    }
+    const pending = ctx?.messages ?? [];
+    attempts += 1;
+    let kept: KeptTail;
+    try {
+      kept = await chooseKeptTail({
+        pending,
+        window: due,
+        runtimeSettings: params.runtimeSettings,
+        priceHandle: params.priceHandle,
+        cfg,
+        logger,
+        ovSessionId,
+        doing: "pouring (held turn)",
+      });
+    } catch (trouble) {
+      if (!(trouble instanceof NoWeightFromTheHandle)) {
+        throw trouble;
+      }
+      if (Date.now() >= deadline) {
+        outcome = "gave_up";
+        break;
+      }
+      diag("pour_hold_retry", ovSessionId, {
+        attempts,
+        failedTail: trouble.tail,
+        pauseMs: params.pourRetryPauseMs,
+      });
+      await sleep(params.pourRetryPauseMs);
+      continue;
+    }
+    if (!kept.chosen || kept.chosen.start === 0) {
+      pourDue.delete(ovSessionId);
+      outcome = "nothing_to_pour";
+      logger.warn?.(
+        `openviking: session=${ovSessionId}: the pour-off put off at the end of the last turn finds ` +
+          `nothing to pour now (${pending.length} messages on the server)`,
+      );
+      break;
+    }
+    const commitResult = await client.commitSession(ovSessionId, {
+      wait: false,
+      keepRecentCount: kept.keepRecentCount,
+    });
+    pourDue.delete(ovSessionId);
+    const windowAfter =
+      kept.rest !== null && kept.chosen.weight !== null ? kept.rest + kept.chosen.weight : null;
+    logger.info(
+      `openviking: poured session=${ovSessionId} at the start of the turn: window ${due} by the counter, ` +
+        `kept ${kept.keepRecentCount} newest messages` +
+        (kept.chosen.weight !== null ? ` weighing ${kept.chosen.weight}` : " by the floor, unweighed") +
+        ` under ${kept.cap}, archiving ${kept.chosen.start}; ` +
+        `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
+        `task_id=${commitResult.task_id ?? "none"}`,
+    );
+    diag("pour_off", ovSessionId, {
+      path: "assemble",
+      window: due,
+      pourOffAtTokens: cfg.pourOffAtTokens,
+      keepRecentTokens: cfg.keepRecentTokens,
+      keepRecentFloor: cfg.keepRecentFloor,
+      rest: kept.rest,
+      cap: kept.cap,
+      model: kept.model ?? null,
+      priced: kept.chosen.priced,
+      priceAsked: kept.chosen.asked,
+      pendingMessages: pending.length,
+      keptMessages: kept.keepRecentCount,
+      keptWeight: kept.chosen.weight,
+      archivedMessages: kept.chosen.start,
+      windowAfter,
+      status: commitResult.status,
+      archived: commitResult.archived ?? false,
+      taskId: commitResult.task_id ?? null,
+      attempts,
+    });
+    if (commitResult.archived === true) {
+      pourFacts = { compacted: true, ...(windowAfter !== null ? { tokensAfter: windowAfter } : {}) };
+    }
+    if (commitResult.task_id) {
+      void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId, params.pollIntervalMs);
+    }
+    outcome = "poured";
+    break;
+  }
+  diag("pour_hold", ovSessionId, {
+    outcome,
+    attempts,
+    waitedMs: Date.now() - started,
+    window: due,
+    holdSeconds,
+  });
+  if (outcome === "gave_up") {
+    logger.warn?.(
+      `openviking: session=${ovSessionId}: the price handle gave no weight for ${holdSeconds} s ` +
+        `(${attempts} attempts); the turn goes on with the window as it is -- the proxy's gate weighs ` +
+        "the request exactly and refuses what does not fit -- and the pour-off is due again at the next turn",
+    );
+  }
+  const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+  const settled = await holdForSummary({
+    ctx,
+    client,
+    ovSessionId,
+    cfg,
+    logger,
+    diag,
+    announceCompaction: announce,
+    pollIntervalMs: params.pollIntervalMs,
+  });
+  if (announced) {
+    announce("end", { completed: outcome !== "gave_up" });
+  }
+  return settled;
+}
+
 export async function assembleOpenVikingSession({
   sessionId,
   sessionKey,
@@ -1145,6 +1398,7 @@ export async function assembleOpenVikingSession({
   prependRecallToLatestUserMessage,
   announceCompaction,
   pollIntervalMs = PHASE2_POLL_INTERVAL_MS,
+  pourRetryPauseMs = POUR_RETRY_PAUSE_MS,
 }: AssembleOpenVikingSessionParams): Promise<AssembleOpenVikingSessionResult> {
   const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
   const sender = extractRuntimeSenderId(runtimeContext);
@@ -1281,8 +1535,7 @@ export async function assembleOpenVikingSession({
     const client = await getClient(
       resolveAgentId(sessionId ?? sessionKey ?? ovSessionId, sessionKey, ovSessionId),
     );
-    const ctx = await holdForSummary({
-      ctx: await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET),
+    const ctx = await settleWindow({
       client,
       ovSessionId,
       cfg,
@@ -1290,6 +1543,9 @@ export async function assembleOpenVikingSession({
       diag,
       announceCompaction,
       pollIntervalMs,
+      pourRetryPauseMs,
+      runtimeSettings,
+      priceHandle,
     });
 
     const preAbstracts = ctx?.pre_archive_abstracts ?? [];
@@ -1805,6 +2061,8 @@ export async function afterTurnOpenVikingSession({
       return;
     }
     if (window < cfg.pourOffAtTokens) {
+      // The window got under X by other means: no pour-off is due any more.
+      pourDue.delete(ovSessionId);
       skip("below_x");
       return;
     }
@@ -1825,16 +2083,35 @@ export async function afterTurnOpenVikingSession({
     }
 
     const pending = ctx?.messages ?? [];
-    const { chosen, cap, rest, model, keepRecentCount } = await chooseKeptTail({
-      pending,
-      window,
-      runtimeSettings,
-      priceHandle,
-      cfg,
-      logger,
-      ovSessionId,
-      doing: "pouring",
-    });
+    let kept: KeptTail;
+    try {
+      kept = await chooseKeptTail({
+        pending,
+        window,
+        runtimeSettings,
+        priceHandle,
+        cfg,
+        logger,
+        ovSessionId,
+        doing: "pouring",
+      });
+    } catch (trouble) {
+      if (!(trouble instanceof NoWeightFromTheHandle)) {
+        throw trouble;
+      }
+      // PLAN-gorizont 5а (11.10, решение Вита): the handle gave no weight (a storm). No
+      // weight is made up and the floor is not taken: the pour-off waits. The session is
+      // marked, and the next turn is held at its start until the handle answers.
+      pourDue.set(ovSessionId, window);
+      logger.warn?.(
+        `openviking: session=${ovSessionId} weighs ${window} by the counter, at or above ${cfg.pourOffAtTokens}, ` +
+          `and the price handle gave no weight for its tail (from ${trouble.tail}): not pouring now; ` +
+          "the next turn is held until the handle answers",
+      );
+      skip("no_weight", { failedTail: trouble.tail, pendingMessages: pending.length });
+      return;
+    }
+    const { chosen, cap, rest, model, keepRecentCount } = kept;
     if (!chosen || chosen.start === 0) {
       // Nothing to pour: fewer messages than the floor, or all of them fit under
       // the cap -- the window is at X because of its constant part, not them.
@@ -1857,6 +2134,7 @@ export async function afterTurnOpenVikingSession({
       wait: false,
       keepRecentCount,
     });
+    pourDue.delete(ovSessionId);
     // The window's weight once the pour-off has settled: the constant part and the kept
     // tail. The summary that will stand beside them weighs a little more, which only keeps
     // the host's gates closed a little longer. Unweighed (no price), there is no estimate.
@@ -2076,16 +2354,37 @@ export async function compactOpenVikingSession({
         };
       }
 
-      kept = await chooseKeptTail({
-        pending,
-        window,
-        runtimeSettings,
-        priceHandle,
-        cfg,
-        logger,
-        ovSessionId,
-        doing: "compacting",
-      });
+      try {
+        kept = await chooseKeptTail({
+          pending,
+          window,
+          runtimeSettings,
+          priceHandle,
+          cfg,
+          logger,
+          ovSessionId,
+          doing: "compacting",
+        });
+      } catch (trouble) {
+        if (!(trouble instanceof NoWeightFromTheHandle)) {
+          throw trouble;
+        }
+        // PLAN-gorizont 5а (11.10): no weight from the handle -- no compaction; the host
+        // is told why, and nothing is decided for the counter.
+        logger.warn?.(
+          `openviking: compact session=${ovSessionId}: the price handle gave no weight for the tail ` +
+            `(from ${trouble.tail}); not compacting without a weight`,
+        );
+        diag("compact_result", ovSessionId, {
+          ok: false,
+          compacted: false,
+          reason: "no_weight",
+          failedTail: trouble.tail,
+          pendingMessages: pending.length,
+          tokensBefore,
+        });
+        return compactFailureResult("no_weight", tokensBefore, { failedTail: trouble.tail });
+      }
       if (!kept.chosen || kept.chosen.start === 0) {
         // Nothing older than what fits under the cap: archiving the kept messages
         // would leave the model a summary alone. The host treats only "already

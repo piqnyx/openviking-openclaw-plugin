@@ -153,7 +153,12 @@ function charsHandle() {
   };
 }
 
-type Cut = { keepRecentTokens?: number; keepRecentFloor?: number; handle?: boolean };
+type Cut = { keepRecentTokens?: number; keepRecentFloor?: number; handle?: boolean | "silent" };
+
+/** Весы, которые молчат: вердикта нет ни на одно тело (шторм). */
+function silentHandle() {
+  return { url: "http://127.0.0.1:8787/price", price: async () => null };
+}
 
 function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVikingClient, cut: Cut = {}) {
   const seen: Array<{ stage: string; data: Record<string, unknown> }> = [];
@@ -168,7 +173,9 @@ function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVik
       keepRecentTokens: cut.keepRecentTokens ?? 30_000,
       keepRecentFloor: cut.keepRecentFloor ?? 20,
     },
-    ...(cut.handle === false ? {} : { priceHandle: charsHandle() }),
+    ...(cut.handle === false
+      ? {}
+      : { priceHandle: cut.handle === "silent" ? silentHandle() : charsHandle() }),
     runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite", requested: null } },
     getClient: async () => client,
     logger: { info: () => {}, warn: (line) => warned.push(line) },
@@ -413,6 +420,21 @@ describe("сборка, когда свежего пересказа нет", ()
     expect(outcome).toMatchObject({ recovered: true, droppedMessages: 32, priced: false, keptWeight: null });
     expect(warned.join("\n")).toContain("no price handle");
     expect(warned.join("\n")).toContain("dropped 32 oldest beyond the floor, unweighed");
+  });
+
+  // PLAN-gorizont 5а (11.10): весы молчат -- веса нет, и хвост без веса не «не влезает»;
+  // здесь, в сборке без свежего пересказа, остаётся одна планка, с предупреждением.
+  it("весы молчат: режет одна планка целыми ходами, с предупреждением о весе", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-9", lastMessageIndex: 9 } },
+    });
+    const { value, outcome, warned } = await assemble(live, 12_000, client, { handle: "silent" });
+
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 20 }, (_, k) => mark(40 + k)));
+    expect(outcome).toMatchObject({ recovered: true, droppedMessages: 32, priced: false, keptWeight: null });
+    expect(warned.join("\n")).toContain("gave no weight");
   });
 
   it("закрытого архива нет: хвост не тяжелее K, начинается с сообщения пользователя", async () => {
