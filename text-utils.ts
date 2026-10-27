@@ -18,6 +18,23 @@ const CONVERSATION_METADATA_BLOCK_RE =
   /(?:^|\n)\s*(?:Conversation info|Conversation metadata|会话信息|对话信息)\s*(?:\([^)]+\))?\s*:\s*```[\s\S]*?```/gi;
 /** Strips "Sender (untrusted metadata): ```json ... ```" so capture sends clean text to OpenViking extract. */
 const SENDER_METADATA_BLOCK_RE = /Sender\s*\([^)]*\)\s*:\s*```[\s\S]*?```/gi;
+/**
+ * Context the gateway injects for the model, recognised by its provenance marker: OpenClaw stamps
+ * every injected context header with `⟦openclaw:ctx⟧` and keys its own strippers on it, whatever the
+ * label (src/auto-reply/reply/inbound-context-marker.ts; the copy must stay equal, a drifted one
+ * silently stops stripping). A steered message carries such a block -- its number, the sender's
+ * name and handle -- in the text captured here; the label rules above know only the older labels.
+ */
+const MARKED_CONTEXT_BLOCK_RE = /^[^\n]*⟦openclaw:ctx⟧[ \t]*\n[ \t]*```json[ \t]*\n[\s\S]*?\n[ \t]*```[ \t]*$/gm;
+/**
+ * Prompt lines the gateway adds around a picture for the model: where the file lies, and how to send
+ * a picture back (src/auto-reply/reply/reply-media-hint.ts, kept equal). The picture's memory is its
+ * description and the words the person wrote with it, which stay; a path or a tool instruction stored
+ * as the person's words only feeds extraction false facts.
+ */
+const MEDIA_NOTE_LINE_RE = /^\[media attached(?: \d+\/\d+)?: [^\n]*\][ \t]*$/gm;
+const REPLY_MEDIA_HINT_LINE_RE =
+  /^To send an image back, use the message tool with structured media fields such as media, mediaUrl, path, or filePath\. Keep caption in the text body\.[ \t]*$/gm;
 const FENCED_JSON_BLOCK_RE = /```json\s*([\s\S]*?)```/gi;
 const METADATA_JSON_KEY_RE =
   /"(session|sessionid|sessionkey|conversationid|channel|sender|userid|agentid|timestamp|timezone)"\s*:/gi;
@@ -69,8 +86,11 @@ export function sanitizeUserTextForCapture(text: string): string {
     .replace(OPENVIKING_CONTEXT_BLOCK_RE, " ")
     .replace(RELEVANT_MEMORIES_BLOCK_RE, " ")
     .replace(GRAPHITI_CONTEXT_BLOCK_RE, " ")
+    .replace(MARKED_CONTEXT_BLOCK_RE, " ")
     .replace(CONVERSATION_METADATA_BLOCK_RE, " ")
     .replace(SENDER_METADATA_BLOCK_RE, " ")
+    .replace(MEDIA_NOTE_LINE_RE, " ")
+    .replace(REPLY_MEDIA_HINT_LINE_RE, " ")
     .replace(FENCED_JSON_BLOCK_RE, (full, inner) =>
       looksLikeMetadataJsonBlock(String(inner ?? "")) ? " " : full,
     )
