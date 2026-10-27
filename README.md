@@ -434,6 +434,24 @@ import = add_resource, add_skill
 
 This keeps destructive resource management separate from resource ingestion.
 
+## Recall from outside the gateway
+
+`dist/recall-cli.js` gives what auto-recall would put before a user message on a turn, for a
+caller that is not the gateway -- the news digest reads each post against memory this way. It
+takes the turn's steps with the turn's functions (`prepareRecallQuery`, the agent's client from
+the key file, the actor peer, the effective query config, `buildAutoRecallContext`), with the
+settings read from the gateway's `openclaw.json` and parsed the plugin's way. The turn's code is
+not changed by it.
+
+```bash
+echo '{"agentId": "main", "prompt": "...", "sessionKey": "agent:main:telegram:direct:..."}' \
+  | node dist/recall-cli.js --config ~/.openclaw/openclaw.json
+```
+
+On stdout, one JSON object: `query`, `block` (null when nothing is found), `memoryCount`,
+`estimatedTokens`. Log lines go to stderr; a failure exits 1. A session's own settings in the
+runtime query config are found by `sessionKey`.
+
 ## Post-start checks
 
 Confirm that per-agent credentials loaded:
