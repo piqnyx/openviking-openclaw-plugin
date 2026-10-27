@@ -57,6 +57,12 @@ function looksLikeMetadataJsonBlock(content) {
     return matchedKeys.size >= 3;
 }
 const TOOL_PLACEHOLDER_RE = /^\s*\[tool(?::\s*|Use:\s*)[^\]]+\]\s*$/i;
+// The news digest's service trigger (digest PLAN, stage 6): a user turn opening with this marker was
+// sent by a script only to start Eva's turn, and the rest names the kind of turn ("Эва спрашивает
+// Вита, рассказать ли новости дня" and three more). Memory keeps that phrase, not the marker -- as the
+// graphiti plugin's messageRules do; the web hides the same message by the same first line (gateway
+// fork patch 59). Matched after the cleaning, so injected blocks above it do not hide it.
+const DIGEST_TRIGGER_HEAD_RE = /^::digest-trigger::(?=\s|$)/;
 export function sanitizeUserTextForCapture(text) {
     // Drop legacy synthetic tool placeholders before they reach memory extraction.
     if (TOOL_PLACEHOLDER_RE.test(text)) {
@@ -71,7 +77,7 @@ export function sanitizeUserTextForCapture(text) {
         }
         return "";
     }
-    return text
+    const cleaned = text
         .replace(REPLY_DIRECTIVE_TAG_RE, " ")
         .replace(OPENVIKING_CONTEXT_BLOCK_RE, " ")
         .replace(RELEVANT_MEMORIES_BLOCK_RE, " ")
@@ -87,6 +93,7 @@ export function sanitizeUserTextForCapture(text) {
         .replace(/\u0000/g, "")
         .replace(/\s+/g, " ")
         .trim();
+    return cleaned.replace(DIGEST_TRIGGER_HEAD_RE, "").trim();
 }
 export function stripOpenVikingContextInjection(text) {
     return text
