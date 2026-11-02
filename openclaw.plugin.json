@@ -30,6 +30,29 @@
       "openviking_tool_result_list"
     ]
   },
+  "toolMetadata": {
+    "memory_recall": {
+      "recallsMemory": true
+    },
+    "ov_recall_trace": {
+      "recallsMemory": true
+    },
+    "ov_archive_search": {
+      "recallsMemory": true
+    },
+    "ov_archive_expand": {
+      "recallsMemory": true
+    },
+    "openviking_tool_result_read": {
+      "recallsMemory": true
+    },
+    "openviking_tool_result_search": {
+      "recallsMemory": true
+    },
+    "openviking_tool_result_list": {
+      "recallsMemory": true
+    }
+  },
   "commandAliases": [
     {
       "name": "setup",
