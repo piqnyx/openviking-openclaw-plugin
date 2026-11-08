@@ -64,19 +64,24 @@ export type PreparedRecallQuery = {
 };
 
 // The news digest's trigger (digest PLAN, stage 6) is a script's user turn: a marker line and a phrase
-// line. Since the gateway's model-only prompt context (digest PLAN-rasskaz, 08.11) the task and the paper
-// follow it in the message the turn's recall reads, so the search ends with the phrase line. The last
-// marker line counts: the gateway may put a queued message or another plugin's block in front. Only the
-// search: what the turn records comes from the transcript, which never holds the paper.
+// line. Since the gateway's model-only prompt context (digest PLAN-rasskaz, 08.11) the digest's task and
+// paper follow it in the message the turn's recall reads, so the search ends with the phrase line -- only
+// when the task follows it, by the task's first words (the digest's tests hold them; the proxy knows the
+// turn by the same line). Any other marker line -- an old trigger merged in front of Vit's next message,
+// one he pasted, one quoted in a memory block -- leaves the message as before. Only the search: what the
+// turn records comes from the transcript, which never holds the paper.
 const DIGEST_TRIGGER_LINE_RE =
   /^[^\S\r\n]*::digest-trigger::(?=\s|$)[^\S\r\n]*(?:(?:\r\n|\r|\n)[^\S\r\n]*)?[^\r\n]*/gm;
+const DIGEST_TELL_TASK_START = "Служебное задание на этот ход";
 
 function dropAfterDigestPhrase(text: string): string {
-  let end = -1;
   for (const match of text.matchAll(DIGEST_TRIGGER_LINE_RE)) {
-    end = match.index + match[0].length;
+    const end = match.index + match[0].length;
+    if (text.slice(end).trimStart().startsWith(DIGEST_TELL_TASK_START)) {
+      return text.slice(0, end);
+    }
   }
-  return end < 0 ? text : text.slice(0, end);
+  return text;
 }
 
 export function prepareRecallQuery(rawText: string): PreparedRecallQuery {

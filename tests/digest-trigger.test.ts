@@ -82,11 +82,14 @@ describe("digest service trigger", () => {
     expect(query(`${block}\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(TELL);
   });
 
-  it("does not cut at a marker glued to a word or inside a line", () => {
+  it("does not cut at a marker glued to a word or inside a line, task after it or not", () => {
     expect(query("::digest-trigger::рядом\nи ещё строка")).toBe("::digest-trigger::рядом и ещё строка");
     expect(query("а что за ::digest-trigger:: такой?\nи ещё строка")).toBe(
       "а что за ::digest-trigger:: такой? и ещё строка",
     );
+    for (const text of [`::digest-trigger::рядом\n\n${PAPER}`, `а что за ::digest-trigger:: такой?\n\n${PAPER}`]) {
+      expect(query(text)).toBe(text.replace(/\s+/g, " "));
+    }
   });
 
   // Only a trigger the digest's task follows is cut. An old trigger left unanswered and merged in front
