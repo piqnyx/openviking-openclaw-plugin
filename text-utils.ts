@@ -70,8 +70,11 @@ const TOOL_PLACEHOLDER_RE = /^\s*\[tool(?::\s*|Use:\s*)[^\]]+\]\s*$/i;
 // sent by a script only to start Eva's turn, and the rest names the kind of turn ("Эва спрашивает
 // Вита, рассказать ли новости дня" and three more). Memory keeps that phrase, not the marker -- as the
 // graphiti plugin's messageRules do; the web hides the same message by the same first line (gateway
-// fork patch 59). Matched after the cleaning, so injected blocks above it do not hide it.
-const DIGEST_TRIGGER_HEAD_RE = /^::digest-trigger::(?=\s|$)/;
+// fork patch 59). The phrase is the one line after the marker: since the gateway's model-only prompt
+// context (digest PLAN-rasskaz, 08.11) the task and the paper follow it in the same message for the
+// model, and recall would search by them. Matched after the injected blocks are cut (they do not hide
+// it) and before whitespace is folded (the phrase line still ends where it did).
+const DIGEST_TRIGGER_RE = /^\s*::digest-trigger::(?=\s|$)[ \t]*(?:\r?\n[ \t]*)*([^\r\n]*)/;
 
 export function sanitizeUserTextForCapture(text: string): string {
   // Drop legacy synthetic tool placeholders before they reach memory extraction.
@@ -87,7 +90,7 @@ export function sanitizeUserTextForCapture(text: string): string {
     }
     return "";
   }
-  const cleaned = text
+  const stripped = text
     .replace(REPLY_DIRECTIVE_TAG_RE, " ")
     .replace(OPENVIKING_CONTEXT_BLOCK_RE, " ")
     .replace(RELEVANT_MEMORIES_BLOCK_RE, " ")
@@ -102,10 +105,10 @@ export function sanitizeUserTextForCapture(text: string): string {
     )
     .replace(LEADING_TIMESTAMP_PREFIX_RE, "")
     .replace(SUBAGENT_CONTEXT_RE, "")
-    .replace(/\u0000/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return cleaned.replace(DIGEST_TRIGGER_HEAD_RE, "").trim();
+    .replace(/\u0000/g, "");
+  const digestTrigger = DIGEST_TRIGGER_RE.exec(stripped);
+  const kept = digestTrigger ? (digestTrigger[1] ?? "") : stripped;
+  return kept.replace(/\s+/g, " ").trim();
 }
 
 export function stripOpenVikingContextInjection(text: string): string {
