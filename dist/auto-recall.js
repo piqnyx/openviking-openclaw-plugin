@@ -16,10 +16,12 @@ const CASUAL_RE = /闲聊|翻译|总结当前对话|天气|笑话|hello|hi\b|你
 // The news digest's trigger (digest PLAN, stage 6) is a script's user turn: a marker line and a phrase
 // line. Since the gateway's model-only prompt context (digest PLAN-rasskaz, 08.11) the digest's task and
 // paper follow it in the message the turn's recall reads, so the search ends with the phrase line -- only
-// when the task follows it, by the task's first words (the digest's tests hold them; the proxy knows the
-// turn by the same line). Any other marker line -- an old trigger merged in front of Vit's next message,
-// one he pasted, one quoted in a memory block -- leaves the message as before. Only the search: what the
-// turn records comes from the transcript, which never holds the paper.
+// when the task follows it, known by the task's first words (the digest's tests hold them; the proxy keys
+// on another phrase of that line). A marker line with no task after it -- an old trigger merged in front of
+// Vit's next message, one he pasted, one quoted in a memory block -- leaves the message as before. If the
+// first words change, nothing is cut and the paper is back in the search: the over-long query shows as
+// "recall query truncated" in the log. Only the search: what the turn records comes from the transcript,
+// which never holds the paper.
 const DIGEST_TRIGGER_LINE_RE = /^[^\S\r\n]*::digest-trigger::(?=\s|$)[^\S\r\n]*(?:(?:\r\n|\r|\n)[^\S\r\n]*)?[^\r\n]*/gm;
 const DIGEST_TELL_TASK_START = "Служебное задание на этот ход";
 function dropAfterDigestPhrase(text) {
