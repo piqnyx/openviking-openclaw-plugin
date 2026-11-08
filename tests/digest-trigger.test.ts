@@ -5,6 +5,7 @@
 // and the web hides it by the same first line (gateway fork patch 59).
 import { describe, expect, it } from "vitest";
 
+import { prepareRecallQuery } from "../auto-recall.js";
 import { extractNewTurnMessages, sanitizeUserTextForCapture } from "../text-utils.js";
 
 const PHRASE = "Эва спрашивает Вита, рассказать ли новости дня";
@@ -32,58 +33,64 @@ describe("digest service trigger", () => {
   });
 
   // Since the gateway's model-only prompt context (digest PLAN-rasskaz, 08.11) the model sees the
-  // task and the paper after the trigger, in the same message -- and so does recall. Memory takes
-  // the phrase line only; what the script appended for the model stays out of the search.
+  // task and the paper after the trigger, in the same message -- and so does the turn's recall. The
+  // search takes the message up to the end of the phrase line; what the turn records comes from the
+  // transcript, which never holds the paper, and is cleaned as before.
   const TELL = "Эва по своей инициативе рассказывает Виту новости дня";
   const PAPER = "Служебное задание на этот ход.\n\n### Тема\n\nТекст. *[Канал](https://t.me/chan/1)*";
+  const QUEUED =
+    "[Queued user message from a previous active turn; preserved as context only. " +
+    "Continue with the active prompt below.]";
+  const query = (text: string) => prepareRecallQuery(text).query;
 
-  it("keeps only the phrase line when model-only context follows the trigger", () => {
-    expect(sanitizeUserTextForCapture(`::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(TELL);
+  it("searches by the phrase line, not by the model-only context after it", () => {
+    expect(query(`::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(TELL);
   });
 
-  it("keeps only the phrase line under injected memory blocks too", () => {
+  it("searches by the phrase under injected memory blocks and a timestamp too", () => {
     const injected =
-      `<relevant-memories>старое</relevant-memories>\n\n<graphiti-context>факты</graphiti-context>\n\n` +
-      `::digest-trigger::\n${TELL}\n\n${PAPER}`;
-    expect(sanitizeUserTextForCapture(injected)).toBe(TELL);
+      `[Sun 2026-11-08 13:00 GMT+4] <relevant-memories>старое</relevant-memories>\n\n` +
+      `<graphiti-context>факты</graphiti-context>\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`;
+    expect(query(injected)).toBe(TELL);
   });
 
-  it("leaves an ordinary message of several lines whole", () => {
-    expect(sanitizeUserTextForCapture("Привет\n\nкак дела?\nчто нового")).toBe("Привет как дела? что нового");
-  });
-
-  // The gateway may put more than known memory blocks in front of the trigger: a queued message of
-  // Vit's merged in, another plugin's block. What is in front stays as it was; the paper still goes.
+  // The gateway may put more than memory blocks in front of the trigger: a queued message of Vit's
+  // merged in, another plugin's block. The search keeps them as before; the paper still goes.
   it("cuts the paper after a trigger that follows text memory does not know", () => {
-    const queued =
-      "[Queued user message from a previous active turn; preserved as context only. " +
-      "Continue with the active prompt below.]\nну что там?";
-    expect(sanitizeUserTextForCapture(`${queued}\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(
-      `${queued.replace(/\s+/g, " ")} ${TELL}`,
+    const queued = `${QUEUED}\nну что там?`;
+    expect(query(`${queued}\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(
+      `${queued.replace(/\s+/g, " ")} ::digest-trigger:: ${TELL}`,
     );
     const block = "<standing_intents>\nнапоминать про лекарства\n</standing_intents>";
-    expect(sanitizeUserTextForCapture(`${block}\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(
-      `${block.replace(/\s+/g, " ")} ${TELL}`,
+    expect(query(`${block}\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(
+      `${block.replace(/\s+/g, " ")} ::digest-trigger:: ${TELL}`,
     );
   });
 
   it("takes the phrase from the line right after the marker, never from the paper", () => {
-    expect(sanitizeUserTextForCapture(`::digest-trigger::\n\n${PAPER}`)).toBe("");
-    expect(sanitizeUserTextForCapture(`::digest-trigger:: \n${TELL}\n\n${PAPER}`)).toBe(TELL);
+    expect(query(`::digest-trigger::\n\n${PAPER}`)).toBe("");
+    expect(query(`::digest-trigger::\u00a0\n${TELL}\n\n${PAPER}`)).toBe(TELL);
   });
 
-  it("leaves Eva's own words alone, marker or not", () => {
+  it("searches an ordinary message of several lines whole", () => {
+    expect(query("Привет\n\nкак дела?\nчто нового")).toBe("Привет как дела? что нового");
+  });
+
+  it("records every word of Vit's after a trigger merged in front, as before", () => {
+    const merged = `${QUEUED}\n::digest-trigger::\n${TELL}\n\nа расскажи про погоду`;
     const { messages } = extractNewTurnMessages(
-      [
-        { role: "user", content: [{ type: "text", text: `::digest-trigger::\n${TELL}` }] },
-        { role: "assistant", content: [{ type: "text", text: `::digest-trigger::\n${TELL}\n\nВот новости.` }] },
-      ],
+      [{ role: "user", content: [{ type: "text", text: merged }] }],
       0,
     );
-    expect(messages).toEqual([
-      { role: "user", parts: [{ type: "text", text: TELL }] },
-      { role: "assistant", parts: [{ type: "text", text: `::digest-trigger:: ${TELL} Вот новости.` }] },
-    ]);
+    expect(messages).toEqual([{ role: "user", parts: [{ type: "text", text: merged.replace(/\s+/g, " ") }] }]);
+  });
+
+  it("records Eva's answer as before: a leading marker dropped, nothing cut", () => {
+    const { messages } = extractNewTurnMessages(
+      [{ role: "assistant", content: [{ type: "text", text: `::digest-trigger::\n${TELL}\n\nВот новости.` }] }],
+      0,
+    );
+    expect(messages).toEqual([{ role: "assistant", parts: [{ type: "text", text: `${TELL} Вот новости.` }] }]);
   });
 
   it("records the phrase, not the marker, for the user turn of a digest", () => {
