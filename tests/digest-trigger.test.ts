@@ -33,9 +33,10 @@ describe("digest service trigger", () => {
   });
 
   // Since the gateway's model-only prompt context (digest PLAN-rasskaz, 08.11) the model sees the
-  // task and the paper after the trigger, in the same message -- and so does the turn's recall. The
-  // search takes the message up to the end of the phrase line; what the turn records comes from the
-  // transcript, which never holds the paper, and is cleaned as before.
+  // task and the paper after the trigger, in the same message -- and so does the turn's recall. When
+  // the digest's task follows the phrase line, the search ends with that line; every other message is
+  // searched as before. What the turn records comes from the transcript, which never holds the paper,
+  // and is cleaned as before.
   const TELL = "Эва по своей инициативе рассказывает Виту новости дня";
   const PAPER = "Служебное задание на этот ход.\n\n### Тема\n\nТекст. *[Канал](https://t.me/chan/1)*";
   const QUEUED =
@@ -76,7 +77,7 @@ describe("digest service trigger", () => {
     expect(query("Привет\n\nкак дела?\nчто нового")).toBe("Привет как дела? что нового");
   });
 
-  it("cuts after the last trigger, not inside a block in front of it", () => {
+  it("cuts after the trigger the task follows, not inside a block in front of it", () => {
     const block = "<graphiti-context>\n::digest-trigger::\nстарое\n</graphiti-context>";
     expect(query(`${block}\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(TELL);
   });
@@ -86,6 +87,24 @@ describe("digest service trigger", () => {
     expect(query("а что за ::digest-trigger:: такой?\nи ещё строка")).toBe(
       "а что за ::digest-trigger:: такой? и ещё строка",
     );
+  });
+
+  // Only a trigger the digest's task follows is cut. An old trigger left unanswered and merged in front
+  // of Vit's next message, a marker line Vit pasted, a marker quoted inside a memory block: the words
+  // after them are Vit's, and the search keeps them as before the paper moved after the trigger.
+  it("searches Vit's words after an unanswered trigger merged in front, as before", () => {
+    const merged = `${QUEUED}\n::digest-trigger::\n${TELL}\n\nа расскажи про погоду в Батуми`;
+    expect(query(merged)).toBe(merged.replace(/\s+/g, " "));
+  });
+
+  it("searches a pasted marker line and what follows it, as before", () => {
+    const pasted = "что это за метка?\n::digest-trigger::\nстрока журнала\nи почему она тут";
+    expect(query(pasted)).toBe(pasted.replace(/\s+/g, " "));
+  });
+
+  it("searches an ordinary message under a memory block quoting a marker line, as before", () => {
+    const block = "<graphiti-context>\n::digest-trigger::\nстарое\n</graphiti-context>";
+    expect(query(`${block}\n\nкак дела в Батуми?`)).toBe("как дела в Батуми?");
   });
 
   it("records every word of Vit's after a trigger merged in front, as before", () => {
