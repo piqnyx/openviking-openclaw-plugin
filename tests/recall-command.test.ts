@@ -178,6 +178,25 @@ describe("the recall command", () => {
     expect(JSON.stringify(calls)).not.toContain("старая память");
   });
 
+  // The digest's turn (PLAN-rasskaz, 08.11): the gateway appends the task and the paper after the
+  // trigger for the model only, and the turn's assemble sees them. The search and the rerank must
+  // still get the trigger's phrase alone, as before the paper moved there.
+  it("searches a digest turn by its phrase, not by the paper appended for the model", async () => {
+    const phrase = "Эва по своей инициативе рассказывает Виту новости дня";
+    const message =
+      `<graphiti-context>факты</graphiti-context>\n\n::digest-trigger::\n${phrase}\n\n` +
+      `Служебное задание на этот ход.\n\n### ${POST}\n\nТекст. *[Канал](https://t.me/chan/1)*`;
+    const calls = fakeFetch();
+
+    await turnRecall(message, {});
+
+    const asked = calls.filter((call) => call.url === "/api/v1/search/find" || call.url === "/v2/rerank");
+    expect(asked.length).toBeGreaterThan(1);
+    for (const call of asked) {
+      expect((call.body as { query?: string }).query).toBe(phrase);
+    }
+  });
+
   it("does not search a query under five characters, an empty one, or with recall off", async () => {
     const calls = fakeFetch();
     for (const [prompt, config] of [["ок", rawConfig()], ["    ", rawConfig()], [POST, rawConfig({ autoRecall: false })]] as const) {
