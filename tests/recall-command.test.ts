@@ -191,7 +191,8 @@ describe("the recall command", () => {
     await turnRecall(message, {});
 
     const asked = calls.filter((call) => call.url === "/api/v1/search/find" || call.url === "/v2/rerank");
-    expect(asked.length).toBeGreaterThan(1);
+    expect(asked.some((call) => call.url === "/api/v1/search/find")).toBe(true);
+    expect(asked.some((call) => call.url === "/v2/rerank")).toBe(true);
     for (const call of asked) {
       expect((call.body as { query?: string }).query).toBe(phrase);
     }

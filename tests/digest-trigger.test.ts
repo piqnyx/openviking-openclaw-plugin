@@ -52,6 +52,40 @@ describe("digest service trigger", () => {
     expect(sanitizeUserTextForCapture("Привет\n\nкак дела?\nчто нового")).toBe("Привет как дела? что нового");
   });
 
+  // The gateway may put more than known memory blocks in front of the trigger: a queued message of
+  // Vit's merged in, another plugin's block. What is in front stays as it was; the paper still goes.
+  it("cuts the paper after a trigger that follows text memory does not know", () => {
+    const queued =
+      "[Queued user message from a previous active turn; preserved as context only. " +
+      "Continue with the active prompt below.]\nну что там?";
+    expect(sanitizeUserTextForCapture(`${queued}\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(
+      `${queued.replace(/\s+/g, " ")} ${TELL}`,
+    );
+    const block = "<standing_intents>\nнапоминать про лекарства\n</standing_intents>";
+    expect(sanitizeUserTextForCapture(`${block}\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(
+      `${block.replace(/\s+/g, " ")} ${TELL}`,
+    );
+  });
+
+  it("takes the phrase from the line right after the marker, never from the paper", () => {
+    expect(sanitizeUserTextForCapture(`::digest-trigger::\n\n${PAPER}`)).toBe("");
+    expect(sanitizeUserTextForCapture(`::digest-trigger:: \n${TELL}\n\n${PAPER}`)).toBe(TELL);
+  });
+
+  it("leaves Eva's own words alone, marker or not", () => {
+    const { messages } = extractNewTurnMessages(
+      [
+        { role: "user", content: [{ type: "text", text: `::digest-trigger::\n${TELL}` }] },
+        { role: "assistant", content: [{ type: "text", text: `::digest-trigger::\n${TELL}\n\nВот новости.` }] },
+      ],
+      0,
+    );
+    expect(messages).toEqual([
+      { role: "user", parts: [{ type: "text", text: TELL }] },
+      { role: "assistant", parts: [{ type: "text", text: `::digest-trigger:: ${TELL} Вот новости.` }] },
+    ]);
+  });
+
   it("records the phrase, not the marker, for the user turn of a digest", () => {
     const { messages } = extractNewTurnMessages(
       [
