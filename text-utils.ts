@@ -70,22 +70,10 @@ const TOOL_PLACEHOLDER_RE = /^\s*\[tool(?::\s*|Use:\s*)[^\]]+\]\s*$/i;
 // sent by a script only to start Eva's turn, and the rest names the kind of turn ("Эва спрашивает
 // Вита, рассказать ли новости дня" and three more). Memory keeps that phrase, not the marker -- as the
 // graphiti plugin's messageRules do; the web hides the same message by the same first line (gateway
-// fork patch 59). The phrase is the line right after the marker: since the gateway's model-only prompt
-// context (digest PLAN-rasskaz, 08.11) the task and the paper follow it in the same message for the
-// model, and recall would search by them -- they are cut, what stands before the marker stays. The
-// marker opens a line, not necessarily the message: the gateway can put a queued message or another
-// plugin's block in front. Matched before whitespace is folded, so lines still end where they did.
-const DIGEST_TRIGGER_RE =
-  /^[^\S\r\n]*::digest-trigger::(?=\s|$)[^\S\r\n]*(?:(?:\r\n|\r|\n)[^\S\r\n]*)?([^\r\n]*)/m;
+// fork patch 59). Matched after the cleaning, so injected blocks above it do not hide it.
+const DIGEST_TRIGGER_HEAD_RE = /^::digest-trigger::(?=\s|$)/;
 
-/**
- * @param options.digestTrigger -- the digest trigger rule (default on): a script's user turn. Off for
- *   Eva's own words, which no trigger opens.
- */
-export function sanitizeUserTextForCapture(
-  text: string,
-  options: { digestTrigger?: boolean } = {},
-): string {
+export function sanitizeUserTextForCapture(text: string): string {
   // Drop legacy synthetic tool placeholders before they reach memory extraction.
   if (TOOL_PLACEHOLDER_RE.test(text)) {
     return "";
@@ -99,7 +87,7 @@ export function sanitizeUserTextForCapture(
     }
     return "";
   }
-  const stripped = text
+  const cleaned = text
     .replace(REPLY_DIRECTIVE_TAG_RE, " ")
     .replace(OPENVIKING_CONTEXT_BLOCK_RE, " ")
     .replace(RELEVANT_MEMORIES_BLOCK_RE, " ")
@@ -114,12 +102,10 @@ export function sanitizeUserTextForCapture(
     )
     .replace(LEADING_TIMESTAMP_PREFIX_RE, "")
     .replace(SUBAGENT_CONTEXT_RE, "")
-    .replace(/\u0000/g, "");
-  const digestTrigger = options.digestTrigger === false ? null : DIGEST_TRIGGER_RE.exec(stripped);
-  const kept = digestTrigger
-    ? `${stripped.slice(0, digestTrigger.index)} ${digestTrigger[1] ?? ""}`
-    : stripped;
-  return kept.replace(/\s+/g, " ").trim();
+    .replace(/\u0000/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.replace(DIGEST_TRIGGER_HEAD_RE, "").trim();
 }
 
 export function stripOpenVikingContextInjection(text: string): string {
@@ -496,7 +482,7 @@ export function extractNewTurnMessages(
 
     if (text) {
       // 使用 sanitizeUserTextForCapture 清理所有噪音（Sender 元数据、时间戳等）
-      const cleanedText = sanitizeUserTextForCapture(text, { digestTrigger: role !== "assistant" });
+      const cleanedText = sanitizeUserTextForCapture(text);
       if (cleanedText) {
         // 保持原始 role，assistant 保持 assistant，user 保持 user
         const ovRole: "user" | "assistant" = role === "assistant" ? "assistant" : "user";

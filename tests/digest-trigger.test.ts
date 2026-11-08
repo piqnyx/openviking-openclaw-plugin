@@ -76,6 +76,18 @@ describe("digest service trigger", () => {
     expect(query("Привет\n\nкак дела?\nчто нового")).toBe("Привет как дела? что нового");
   });
 
+  it("cuts after the last trigger, not inside a block in front of it", () => {
+    const block = "<graphiti-context>\n::digest-trigger::\nстарое\n</graphiti-context>";
+    expect(query(`${block}\n\n::digest-trigger::\n${TELL}\n\n${PAPER}`)).toBe(TELL);
+  });
+
+  it("does not cut at a marker glued to a word or inside a line", () => {
+    expect(query("::digest-trigger::рядом\nи ещё строка")).toBe("::digest-trigger::рядом и ещё строка");
+    expect(query("а что за ::digest-trigger:: такой?\nи ещё строка")).toBe(
+      "а что за ::digest-trigger:: такой? и ещё строка",
+    );
+  });
+
   it("records every word of Vit's after a trigger merged in front, as before", () => {
     const merged = `${QUEUED}\n::digest-trigger::\n${TELL}\n\nа расскажи про погоду`;
     const { messages } = extractNewTurnMessages(

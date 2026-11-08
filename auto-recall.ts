@@ -63,8 +63,24 @@ export type PreparedRecallQuery = {
   finalChars: number;
 };
 
+// The news digest's trigger (digest PLAN, stage 6) is a script's user turn: a marker line and a phrase
+// line. Since the gateway's model-only prompt context (digest PLAN-rasskaz, 08.11) the task and the paper
+// follow it in the message the turn's recall reads, so the search ends with the phrase line. The last
+// marker line counts: the gateway may put a queued message or another plugin's block in front. Only the
+// search: what the turn records comes from the transcript, which never holds the paper.
+const DIGEST_TRIGGER_LINE_RE =
+  /^[^\S\r\n]*::digest-trigger::(?=\s|$)[^\S\r\n]*(?:(?:\r\n|\r|\n)[^\S\r\n]*)?[^\r\n]*/gm;
+
+function dropAfterDigestPhrase(text: string): string {
+  let end = -1;
+  for (const match of text.matchAll(DIGEST_TRIGGER_LINE_RE)) {
+    end = match.index + match[0].length;
+  }
+  return end < 0 ? text : text.slice(0, end);
+}
+
 export function prepareRecallQuery(rawText: string): PreparedRecallQuery {
-  const sanitized = sanitizeUserTextForCapture(rawText).trim();
+  const sanitized = sanitizeUserTextForCapture(dropAfterDigestPhrase(rawText)).trim();
   const originalChars = sanitized.length;
 
   if (!sanitized) {
