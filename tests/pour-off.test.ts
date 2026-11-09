@@ -102,7 +102,12 @@ function handle() {
   return { price, bodies };
 }
 
-function engineOver(stand: Stand, priceHandle: ReturnType<typeof handle>["price"] | undefined, keepRecentFloor = 20) {
+function engineOver(
+  stand: Stand,
+  priceHandle: ReturnType<typeof handle>["price"] | undefined,
+  keepRecentFloor = 20,
+  extraCfg: Record<string, unknown> = {},
+) {
   const diags: Array<{ stage: string; data: Record<string, unknown> }> = [];
   const warned: string[] = [];
   const engine = createMemoryOpenVikingContextEngine({
@@ -115,6 +120,7 @@ function engineOver(stand: Stand, priceHandle: ReturnType<typeof handle>["price"
       pourOffAtTokens: X,
       keepRecentTokens: K,
       keepRecentFloor,
+      ...extraCfg,
     }),
     logger: {
       info: (line) => {
@@ -419,11 +425,11 @@ function serverOf(messages: OVMessage[]): Stand {
  * PLAN-krug 7в.Р2а: новейший архив сорван до записи сводки -- сервер не даёт сводки и ничего не ждёт (случай (б)
  * Р2). Слив заводит новый архив, и до его сводки сервер считает его ждущим; `summaryStood` -- сводка встала.
  */
-function serverWithFailedSummary(turns: number, chars: number) {
+function serverWithFailedSummary(turns: number, chars: number, waiting = 0) {
   const commits: Array<Record<string, unknown>> = [];
   const asked: string[] = [];
   const messages = Array.from({ length: turns * 2 }, (_, i) => ovMessage(i, chars));
-  const state = { waiting: 0, overview: "" };
+  const state = { waiting, overview: "" };
   const transport: HttpTransport = vi.fn(async (url, init) => {
     const parsed = new URL(url);
     asked.push(`${init?.method ?? "GET"} ${parsed.pathname}`);
@@ -482,17 +488,17 @@ async function assembleTurn(engine: ReturnType<typeof engineOver>["engine"], tag
 // archive into the next one's summary, so the turn's end pours below X while that is so.
 describe("слив при сорванной сводке (PLAN-krug 7в.Р2а)", () => {
   it("ниже X, остаток тяжелее K -- слив с хвостом под K", async () => {
-    // 20 ходов по два сообщения в 10 000 знаков: не тяжелее 150 000 -- 7 ходов (140 001 с «x»).
-    const stand = serverWithFailedSummary(20, 10_000);
+    // 20 ходов по два сообщения в 5 000 знаков (все -- 200 001 с «x»): не тяжелее 150 000 -- 14 ходов (140 001).
+    const stand = serverWithFailedSummary(20, 5_000);
     const { price } = handle();
     const { engine, diags } = engineOver(stand, price);
 
     await assembleTurn(engine, "failed");
     await afterTurn(engine, "failed", 160_000);
 
-    expect(stand.commits).toEqual([{ keep_recent_count: 14 }]);
+    expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
     expect(lastDiag(diags, "pour_off")).toMatchObject({
-      trigger: "failed_summary", window: 160_000, cap: K, keptMessages: 14, archivedMessages: 26,
+      trigger: "failed_summary", window: 160_000, rest: 0, cap: K, keptMessages: 28, archivedMessages: 12,
     });
   });
 
@@ -521,6 +527,32 @@ describe("слив при сорванной сводке (PLAN-krug 7в.Р2а)"
     expect(stand.commits).toEqual([]);
     expect(lastDiag(diags, "pour_skip")).toMatchObject({ reason: "no_weight", failedSummary: true });
     expect(diags.filter((d) => d.stage === "pour_hold")).toEqual([]);
+  });
+
+  it("сводка встала между сборкой и концом хода -- слив решает ответ на конец хода", async () => {
+    const stand = serverWithFailedSummary(20, 5_000);
+    const { price } = handle();
+    const { engine, diags } = engineOver(stand, price);
+
+    await assembleTurn(engine, "stale-mark");
+    stand.summaryStood();
+    await afterTurn(engine, "stale-mark", 160_000);
+
+    expect(stand.commits).toEqual([]);
+    expect(lastDiag(diags, "pour_skip")).toMatchObject({ reason: "below_x" });
+  });
+
+  it("архив ждёт своей сводки -- это не сорванная: ниже X ответ в конце хода не читается", async () => {
+    const stand = serverWithFailedSummary(20, 5_000, 1);
+    const { price } = handle();
+    const { engine, diags } = engineOver(stand, price, 20, { holdForSummarySeconds: 0 });
+
+    await assembleTurn(engine, "waiting");
+    const readsBefore = stand.asked.filter((line) => line.endsWith("/context")).length;
+    await afterTurn(engine, "waiting", 160_000);
+
+    expect(stand.asked.filter((line) => line.endsWith("/context")).length).toBe(readsBefore);
+    expect(lastDiag(diags, "pour_skip")).toMatchObject({ reason: "below_x" });
   });
 
   it("сводка встала -- ниже X ответ сервера в конце хода снова не читается", async () => {

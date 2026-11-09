@@ -1153,6 +1153,26 @@ const summaryHoldGivenUp = new Set<string>();
  */
 const pourDue = new Map<string, number>();
 
+/**
+ * PLAN-krug 7в.Р2а: the sessions whose newest archive failed before its summary was written, as the
+ * main assembly last saw them. Their window is cut to K by the fallback path and never reaches X, so
+ * the end of their turn pours below X: the server rolls a failed archive into the next one's summary.
+ * Process memory: after a restart the next assembly marks the session again.
+ */
+const summaryFailedSessions = new Set<string>();
+
+/** Archives, no summary in the answer and none waiting for one: the newest archive's summary failed. */
+function newestSummaryFailed(ctx: SessionContextResult | null | undefined): boolean {
+  const total = ctx?.stats?.totalArchives;
+  return (
+    !!ctx &&
+    typeof total === "number" &&
+    total > 0 &&
+    ctx.stats?.unsummarizedArchives === 0 &&
+    standingSummaryOf(ctx) === undefined
+  );
+}
+
 const DEFAULT_HOLD_FOR_SUMMARY_SECONDS = 600;
 /** The pause between questions to the price handle while the turn is held (Вит, 11.10). */
 const POUR_RETRY_PAUSE_MS = 10_000;
@@ -1604,6 +1624,13 @@ export async function assembleOpenVikingSession({
       runtimeSettings,
       priceHandle,
     });
+    if (ctx) {
+      if (newestSummaryFailed(ctx)) {
+        summaryFailedSessions.add(ovSessionId);
+      } else {
+        summaryFailedSessions.delete(ovSessionId);
+      }
+    }
     // PLAN-krug Р1, шаг 7б: rows the gateway holds and Viking does not (a turn whose write at its end
     // failed, or that closed without the queue) are caught up before the window is built, checked
     // against the live messages just read; the window is read again only when any went in.
@@ -2180,14 +2207,23 @@ export async function afterTurnOpenVikingSession({
       skip("no_window_weight");
       return;
     }
-    if (window < cfg.pourOffAtTokens) {
+    const belowX = window < cfg.pourOffAtTokens;
+    if (belowX) {
       // The window got under X by other means: no pour-off is due any more.
       pourDue.delete(ovSessionId);
-      skip("below_x");
-      return;
+      if (!summaryFailedSessions.has(ovSessionId)) {
+        skip("below_x");
+        return;
+      }
     }
 
     const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+    // PLAN-krug 7в.Р2а: below X only while the newest archive's summary is still failed, by the answer now.
+    if (belowX && !newestSummaryFailed(ctx)) {
+      summaryFailedSessions.delete(ovSessionId);
+      skip("below_x");
+      return;
+    }
     const unsummarized = ctx?.stats?.unsummarizedArchives;
     if (typeof unsummarized !== "number") {
       logger.warn?.(
@@ -2219,6 +2255,15 @@ export async function afterTurnOpenVikingSession({
       if (!(trouble instanceof NoWeightFromTheHandle)) {
         throw trouble;
       }
+      if (belowX) {
+        // PLAN-krug 7в.Р2а: the window is under K already; the next turn is not held, its end tries again.
+        logger.warn?.(
+          `openviking: session=${ovSessionId}: the newest archive's summary failed and the price handle gave ` +
+            `no weight for the tail (from ${trouble.tail}): not pouring now; the end of the next turn tries again`,
+        );
+        skip("no_weight", { failedTail: trouble.tail, pendingMessages: pending.length, failedSummary: true });
+        return;
+      }
       // PLAN-gorizont 5а (11.10, решение Вита): the handle gave no weight (a storm). No
       // weight is made up and the floor is not taken: the pour-off waits. The session is
       // marked, and the next turn is held at its start until the handle answers.
@@ -2233,6 +2278,12 @@ export async function afterTurnOpenVikingSession({
     }
     const { chosen, cap, rest, model, keepRecentCount } = kept;
     if (!chosen || chosen.start === 0) {
+      if (belowX) {
+        // PLAN-krug 7в.Р2а: nothing older than the tail yet -- the usual state of the turns after a failed
+        // summary until the tail outgrows K; said in diagnostics only, not at every turn.
+        skip("nothing_to_pour", { pendingMessages: pending.length, rest, cap, failedSummary: true });
+        return;
+      }
       // Nothing to pour: fewer messages than the floor, or all of them fit under
       // the cap -- the window is at X because of its constant part, not them.
       logger.warn?.(
@@ -2260,8 +2311,11 @@ export async function afterTurnOpenVikingSession({
     // the host's gates closed a little longer. Unweighed (no price), there is no estimate.
     const windowAfter = rest !== null && chosen.weight !== null ? rest + chosen.weight : null;
     logger.info(
-      `openviking: poured session=${ovSessionId}: window ${window} by the counter, ` +
-        `kept ${keepRecentCount} newest messages` +
+      `openviking: poured session=${ovSessionId}: window ${window} by the counter` +
+        (belowX
+          ? ", below X: the newest archive's summary failed and the server rolls it into this archive's summary"
+          : "") +
+        `, kept ${keepRecentCount} newest messages` +
         (chosen.weight !== null ? ` weighing ${chosen.weight}` : " by the floor, unweighed") +
         ` under ${cap}, archiving ${chosen.start}; ` +
         `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
@@ -2269,6 +2323,7 @@ export async function afterTurnOpenVikingSession({
     );
 
     diag("pour_off", ovSessionId, {
+      trigger: belowX ? "failed_summary" : "x",
       window,
       pourOffAtTokens: cfg.pourOffAtTokens,
       keepRecentTokens: cfg.keepRecentTokens,
