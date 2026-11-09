@@ -2043,6 +2043,9 @@ export async function afterTurnOpenVikingSession({
     return;
   }
 
+  // PLAN-krug 7в.3а-2: once the pour-off has started for the host, every way out of this call -- a skip,
+  // a throw -- tells it the end; only a written archive is a finished compaction.
+  let endPour: ((info: { completed: boolean; tokensAfter?: number }) => void) | undefined;
   try {
     const sender = extractRuntimeSenderId(runtimeContext);
     const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
@@ -2243,6 +2246,30 @@ export async function afterTurnOpenVikingSession({
       }
     }
 
+    // PLAN-krug 7в.3а-2: the host shows the work from here -- the read of the server, the weighing and the
+    // archive -- so the turn's end does not look hung (web = Telegram). The gateway counts every end not
+    // marked unfinished as the session's compaction (its files 37 and 38), so no end goes without
+    // `completed`. A failing ear costs the picture, not the pour-off.
+    const tellHost = (phase: "start" | "end", info?: { completed: boolean; tokensAfter?: number }) => {
+      try {
+        if (info) {
+          announceCompaction?.(phase, info);
+        } else {
+          announceCompaction?.(phase);
+        }
+      } catch (err) {
+        logger.warn?.(`openviking: session=${ovSessionId}: the host's compaction ear failed: ${String(err)}`);
+      }
+    };
+    let pourEnded = false;
+    endPour = (info) => {
+      if (!pourEnded) {
+        pourEnded = true;
+        tellHost("end", info);
+      }
+    };
+    tellHost("start");
+
     const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
     // PLAN-krug 7в.Р2а: below X only while the newest archive's summary is still failed, by the answer now.
     if (belowX && !newestSummaryFailed(ctx)) {
@@ -2376,14 +2403,14 @@ export async function afterTurnOpenVikingSession({
     // the host -- it moves the host's compaction count (the memory flush runs once per
     // cycle, before the pour-off) and takes windowAfter for the window's weight until the
     // next call measures it. The server saying nothing was archived is no compaction.
-    if (announceCompaction && commitResult.archived === true) {
-      if (windowAfter === null && !belowX) {
+    if (commitResult.archived === true) {
+      if (announceCompaction && windowAfter === null && !belowX) {
         logger.warn?.(
           `openviking: poured session=${ovSessionId} without a weight of the window after (no price): ` +
             "the host learns the new weight only at the next turn's first call",
         );
       }
-      announceCompaction("end", {
+      endPour({
         completed: true,
         ...(windowAfter !== null ? { tokensAfter: windowAfter } : {}),
       });
@@ -2399,6 +2426,8 @@ export async function afterTurnOpenVikingSession({
       senderIdFound: sender.found,
       senderId: sender.senderId ?? null,
     });
+  } finally {
+    endPour?.({ completed: false });
   }
 }
 
