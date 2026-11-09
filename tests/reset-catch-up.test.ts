@@ -142,6 +142,17 @@ describe("сброс беседы", () => {
     expect(warned).toEqual([]);
   });
 
+  it("снимок шлюза не прочитался (сообщений нет) -- только архив, без ложной тревоги (PLAN-krug К13в)", async () => {
+    const stand = server([held("u1", "user", "привет"), held("a1", "assistant", "здравствуй")]);
+    const { engine, warned } = engineOver(stand);
+
+    // The gateway swallows a failed read of the reset session and hands empty messages, rule and all.
+    await hooksOver(engine)(resetEvent([]));
+
+    expect(stand.events).toEqual(["commit"]);
+    expect(warned).toEqual([]);
+  });
+
   it("шлюз старее: в событии только сообщения, правила нет -- только архив, ничего не пишется", async () => {
     const stand = server([held("u1", "user", "привет")]);
     const { engine } = engineOver(stand);
