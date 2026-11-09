@@ -19,8 +19,11 @@ export function toRoleId(senderId: string | undefined): string | undefined {
  * For assistant messages with ToolParts, this produces:
  * 1. The assistant message with canonical toolCall blocks in its content array
  * 2. A separate toolResult message per ToolPart (carrying tool_output)
+ *
+ * Each carries the time the message was written with (PLAN-krug 7в.6): the gateway stamps every user
+ * message by its `timestamp` (attempt-llm-boundary.ts), the current one and the historical ones alike.
  */
-export function convertToAgentMessages(msg: { role: string; parts: unknown[] }): AgentMessage[] {
+export function convertToAgentMessages(msg: { role: string; parts: unknown[]; created_at?: unknown }): AgentMessage[] {
   const parts = msg.parts ?? [];
   const contentBlocks: Record<string, unknown>[] = [];
   const toolCallBlocks: Record<string, unknown>[] = [];
@@ -111,7 +114,8 @@ export function convertToAgentMessages(msg: { role: string; parts: unknown[] }):
     }
   }
 
-  return result;
+  const writtenAt = typeof msg.created_at === "string" ? Date.parse(msg.created_at) : Number.NaN;
+  return Number.isFinite(writtenAt) ? result.map((message) => ({ ...message, timestamp: writtenAt })) : result;
 }
 
 export function formatMessageFaithful(msg: OVMessage): string {
