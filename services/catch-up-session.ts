@@ -19,7 +19,22 @@ export type CatchUpOutcome =
 // Two memories of reading (PLAN-krug П2): the fenced one serves only the main assemble -- its cursor
 // stays before the current question, so the next turns' fences are ahead of it; the open one serves
 // the reads without a fence (mid-turn, the queue), whose cursor may pass the current question.
-type SessionState = { fenced?: BranchMemory; open?: BranchMemory; held: Set<string> };
+// `dirty`: a write stopped or the catch-up failed -- what Viking holds is asked of the server next
+// time, not of this memory (a write answered late may have landed meanwhile; PLAN-krug П1').
+type SessionState = { fenced?: BranchMemory; open?: BranchMemory; held: Set<string>; dirty?: boolean };
+
+type CatchUpParams = {
+  client: CatchUpClient;
+  ovSessionId: string;
+  reader: SessionTranscriptReader;
+  place: "settled" | "working";
+  /** Which memory of reading: the main assemble's fenced one, the open one, or none (a reset). */
+  memory: "fenced" | "open" | "none";
+  /** The session's live messages the caller has just read (the main assemble reads them anyway). */
+  remainder?: { messages?: OVMessage[]; totalArchives?: number };
+  peerIdOf: (role: "user" | "assistant") => string | undefined;
+  logger: { info: (message: string) => void; warn?: (message: string) => void };
+};
 
 // The server cuts nothing at this budget (as NO_TRIM_TOKEN_BUDGET of the lifecycle service).
 const WHOLE_REMAINDER = 1_000_000_000;
@@ -76,71 +91,108 @@ export function createSessionCatchUp() {
     }
   };
 
-  return async function catchUpSession(params: {
-    client: CatchUpClient;
-    ovSessionId: string;
-    reader: SessionTranscriptReader;
-    place: "settled" | "working";
-    /** Which memory of reading: the main assemble's fenced one, the open one, or none (a reset). */
-    memory: "fenced" | "open" | "none";
-    /** The session's live messages the caller has just read (the main assemble reads them anyway). */
-    remainder?: { messages?: OVMessage[]; totalArchives?: number };
-    peerIdOf: (role: "user" | "assistant") => string | undefined;
-    logger: { info: (message: string) => void; warn?: (message: string) => void };
-  }): Promise<CatchUpOutcome> {
+  return async function catchUpSession(params: CatchUpParams): Promise<CatchUpOutcome> {
     return await exclusive(params.ovSessionId, async () => {
       const state = stateOf(params.ovSessionId);
-      const held = await heldIds(params, state);
-      if (held.kind === "skipped") {
-        params.logger.warn?.(
-          `openviking: catch-up of session=${params.ovSessionId} skipped (${held.reason}): ` +
-            "Viking holds none of the gateway's rows by id, and the whole conversation is never written again",
-        );
-        return held;
+      try {
+        const outcome = await catchUpUnderLock(params, state);
+        state.dirty = outcome.kind === "stopped";
+        return outcome;
+      } catch (error) {
+        state.dirty = true;
+        throw error;
       }
-      // An open read with no memory of its own starts where the fenced one stopped: that cursor is
-      // before the current question, good for a read without a fence (not the other way round).
-      const memoryIn =
-        params.memory === "fenced" ? state.fenced : params.memory === "open" ? (state.open ?? state.fenced) : undefined;
-      const read = await readBranchSinceBookmark({
-        reader: params.reader,
-        seenIds: held.ids,
-        ...(memoryIn ? { memory: memoryIn } : {}),
-      });
-      if (read.kind !== "rows") {
-        const reason = read.kind === "missing" ? "transcript_missing" : `transcript_unavailable:${read.reason}`;
-        return { kind: "skipped", reason };
-      }
-      const plan = planTranscriptCatchUp({ rows: read.visible, seenIds: held.ids, place: params.place });
-      const written = await writeInOrder(params, plan.messages, held.ids);
-      if (params.memory !== "none") {
-        state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
-      }
-      state.held = new Set([...held.ids].slice(-MAX_HELD_IDS));
-      return written;
     });
   };
 }
 
+async function catchUpUnderLock(params: CatchUpParams, state: SessionState): Promise<CatchUpOutcome> {
+  let held = await heldIds(params, state, { fromServer: state.dirty === true });
+  if (held.kind === "skipped") {
+    return skippedLoudly(params, held.reason);
+  }
+  // An open read with no memory of its own starts where the fenced one stopped: that cursor is
+  // before the current question, good for a read without a fence (not the other way round).
+  const memoryIn =
+    params.memory === "fenced" ? state.fenced : params.memory === "open" ? (state.open ?? state.fenced) : undefined;
+  const read = await readBranchSinceBookmark({
+    reader: params.reader,
+    seenIds: held.ids,
+    ...(memoryIn ? { memory: memoryIn } : {}),
+  });
+  if (read.kind !== "rows") {
+    const reason = read.kind === "missing" ? "transcript_missing" : `transcript_unavailable:${read.reason}`;
+    return { kind: "skipped", reason };
+  }
+  // Viking holds rows, yet none of them is on the branch: this memory may be out of date (the rows it
+  // knows left the branch) -- the server says what it holds; when not even its rows are on the branch,
+  // nothing is written: never the whole conversation again (PLAN-krug П1', П5).
+  if (held.ids.size > 0 && !holdsAnyOf(read.visible, held.ids)) {
+    if (!held.fromServer) {
+      held = await heldIds(params, state, { fromServer: true });
+      if (held.kind === "skipped") {
+        return skippedLoudly(params, held.reason);
+      }
+    }
+    if (held.ids.size > 0 && !holdsAnyOf(read.visible, held.ids)) {
+      return skippedLoudly(params, "bookmark_not_on_branch");
+    }
+  }
+  const plan = planTranscriptCatchUp({ rows: read.visible, seenIds: held.ids, place: params.place });
+  const written = await writeInOrder(params, plan.messages, held.ids);
+  if (params.memory !== "none") {
+    state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
+  }
+  state.held = new Set([...held.ids].slice(-MAX_HELD_IDS));
+  return written;
+}
+
+function holdsAnyOf(rows: readonly { firstEntryId: string }[], ids: ReadonlySet<string>): boolean {
+  return rows.some((row) => ids.has(row.firstEntryId));
+}
+
+function skippedLoudly(params: Pick<CatchUpParams, "ovSessionId" | "logger">, reason: string): CatchUpOutcome {
+  params.logger.warn?.(
+    `openviking: catch-up of session=${params.ovSessionId} skipped (${reason}): ` +
+      "Viking holds none of the gateway's rows by id, and the whole conversation is never written again",
+  );
+  return { kind: "skipped", reason };
+}
+
 async function heldIds(
-  params: { client: CatchUpClient; ovSessionId: string; remainder?: { messages?: OVMessage[]; totalArchives?: number } },
+  params: Pick<CatchUpParams, "client" | "ovSessionId" | "remainder" | "logger">,
   state: SessionState,
-): Promise<{ kind: "held"; ids: Set<string> } | { kind: "skipped"; reason: string }> {
-  // What this process wrote is current; the server is asked only when the process knows nothing,
-  // or when the caller has read it anyway.
-  if (!params.remainder && state.held.size > 0) {
-    return { kind: "held", ids: new Set(state.held) };
+  options: { fromServer: boolean },
+): Promise<{ kind: "held"; ids: Set<string>; fromServer: boolean } | { kind: "skipped"; reason: string }> {
+  // What this process wrote is current while its memory is clean; the server is asked when the
+  // process knows nothing, when the memory is dirty or out of date, or when the caller read it anyway.
+  if (!params.remainder && state.held.size > 0 && !options.fromServer) {
+    return { kind: "held", ids: new Set(state.held), fromServer: false };
   }
   const remainder = params.remainder ?? (await readServerRemainder(params.client, params.ovSessionId));
   const messages = remainder.messages ?? [];
   const ids = new Set(state.held);
+  const seenTwice = new Set<string>();
+  const seenOnce = new Set<string>();
   for (const message of messages) {
     for (const id of message.source_message_ids ?? []) {
+      if (seenOnce.has(id)) {
+        seenTwice.add(id);
+      }
+      seenOnce.add(id);
       ids.add(id);
     }
   }
+  if (seenTwice.size > 0) {
+    // A write answered after the client gave up may have landed and then been written again (the
+    // server waits up to 30 s for the session lock; PLAN-krug Р1, «отложено до замера»).
+    params.logger.warn?.(
+      `openviking: Viking holds gateway rows twice in session=${params.ovSessionId} (${[...seenTwice].join(",")}): ` +
+        "a write answered late was written again",
+    );
+  }
   if (ids.size > 0) {
-    return { kind: "held", ids };
+    return { kind: "held", ids, fromServer: true };
   }
   if (messages.length > 0) {
     return { kind: "skipped", reason: "live_messages_without_row_ids" };
@@ -152,7 +204,7 @@ async function heldIds(
   if (remainder.totalArchives > 0) {
     return { kind: "skipped", reason: "empty_remainder_with_archives" };
   }
-  return { kind: "held", ids };
+  return { kind: "held", ids, fromServer: true };
 }
 
 async function readServerRemainder(

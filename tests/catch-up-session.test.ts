@@ -24,16 +24,22 @@ function row(id: string, role: "user" | "assistant", text: string, at: number): 
 }
 
 /**
- * As the gateway's reader: the cursor names the last row read; under a fence (the current
- * question's position) only rows before it are visible, and a cursor on the fence or past it is an
- * error, not a reset (session-accessor.sqlite-active-events.ts 228-235).
+ * As the gateway's reader: the cursor names the last row read (its position and id); a cursor whose
+ * row is no longer there is answered with a reset to the branch's start (anchor_missing); under a
+ * fence (the current question's position) only rows before it are visible, and a cursor on the fence
+ * or past it is an error, not a reset (session-accessor.sqlite-active-events.ts 207-235).
  */
 function reader(branch: BranchRow[], options: { fence?: number } = {}) {
   const cursors: Array<string | undefined> = [];
+  const cursorAt = (index: number) => (index < 0 ? "-1:" : `${index}:${branch[index]?.firstEntryId ?? ""}`);
   const value: SessionTranscriptReader = {
     readVisiblePage: async (limits) => {
       cursors.push(limits?.cursor);
-      const last = limits?.cursor !== undefined ? Number(limits.cursor) : -1;
+      const [position, anchor] = (limits?.cursor ?? "-1:").split(":");
+      const last = Number(position);
+      if (last >= 0 && branch[last]?.firstEntryId !== anchor) {
+        return { kind: "reset", cursor: "-1:", reason: "anchor_missing" };
+      }
       if (options.fence !== undefined && last >= options.fence) {
         throw Object.assign(new Error("Transcript read cursor has crossed the current-turn admission fence"), {
           name: "SessionTranscriptReadFenceError",
@@ -41,7 +47,7 @@ function reader(branch: BranchRow[], options: { fence?: number } = {}) {
       }
       const end = options.fence !== undefined ? Math.min(options.fence, branch.length) : branch.length;
       const rows = branch.slice(last + 1, end);
-      return { kind: "page", cursor: String(last + rows.length), rows, hasMore: false };
+      return { kind: "page", cursor: cursorAt(last + rows.length), rows, hasMore: false };
     },
     selectModelVisible: (rows) => rows,
   };
@@ -295,7 +301,7 @@ describe("«догнать» для сессии", () => {
     await catchUp({ ...base, memory: "fenced", reader: reader(turn, { fence: 2 }), remainder: { messages: [...stored], totalArchives: 0 } });
     await catchUp({ ...base, memory: "open", reader: open });
 
-    expect(open.cursors[0]).toBe("1");
+    expect(open.cursors[0]).toBe("1:a0");
   });
 
   it("после останова записи следующее «догнать» сверяется с сервером: поздно принятая запись второй раз не пишется", async () => {
