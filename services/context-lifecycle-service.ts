@@ -1128,8 +1128,9 @@ function holdSecondsOf(cfg: any): number {
  * 4д). The server hands the archive's messages out raw until then, and a turn on them
  * runs at the ceiling. While the turn is held the host is told, so the clients see the
  * host's own picture of compaction (file 35 of the gateway). The limit run out: the
- * turn goes on as it was, and the session is not held again until that summary
- * stands. Returns the context to assemble from: read again once the summary stands.
+ * turn's window is assembled by the fallback path while archives wait for their summary
+ * (PLAN-krug 7в.2), and the session is not held again until that summary stands.
+ * Returns the context to assemble from: read again once the summary stands.
  */
 async function holdForSummary(params: {
   ctx: SessionContextResult | null | undefined;
@@ -1180,7 +1181,7 @@ async function holdForSummary(params: {
     summaryHoldGivenUp.add(ovSessionId);
     logger.warn?.(
       `openviking: assemble session=${ovSessionId}: the summary did not stand within ${holdSeconds} s ` +
-        `(${wait.polls} polls); going on with the raw messages, and not holding again until it stands`,
+        `(${wait.polls} polls); going on by the fallback path until it stands, and not holding again`,
     );
     return ctx;
   }
@@ -1564,6 +1565,8 @@ export async function assembleOpenVikingSession({
     // against the live messages just read; the window is read again only when any went in.
     // Nothing is written with autoCapture off (PLAN-krug П10), as the turn's end does not write.
     const reader = catchUp && cfg?.autoCapture !== false ? transcriptReaderOf(runtimeContext) : undefined;
+    // Viking holds every row of the branch before the current question once the catch-up wrote here.
+    let caughtUp = false;
     if (catchUp && reader && ctx) {
       const senderRoleId = toRoleId(sender.senderId);
       let outcome: CatchUpOutcome | { kind: "failed"; error: string };
@@ -1610,6 +1613,7 @@ export async function assembleOpenVikingSession({
           extra: { catchUp: outcome },
         });
       }
+      caughtUp = true;
       if (outcome.written > 0) {
         ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
       }
@@ -1635,7 +1639,34 @@ export async function assembleOpenVikingSession({
         extra: { archiveCount: 0, activeCount: 0 },
       });
     }
-    if (!hasArchives && ctx.messages.length < messages.length) {
+    // PLAN-krug 7в.2 (Р2): the path by what the server says, not by counting messages of two forms (a
+    // tool round is one message in Viking, several in the gateway). Archives without the newest one's
+    // summary (the 28.09 storm), or archives still waiting for theirs after the hold, go by the fallback
+    // path; otherwise the window is Viking's own.
+    const totalArchives = ctx.stats?.totalArchives;
+    const waitingSummaries = ctx.stats?.unsummarizedArchives;
+    if (
+      (typeof totalArchives === "number" && totalArchives > 0 && !ctx.latest_archive_overview) ||
+      (typeof waitingSummaries === "number" && waitingSummaries > 0)
+    ) {
+      return await assembleWithoutFreshSummary({
+        ...recoveryBits,
+        diag,
+        logger,
+        roughEstimate,
+        ovSessionId,
+        reason: "no_fresh_summary",
+        liveMessages: messages,
+        originalTokens,
+        tokenBudget,
+        client,
+        totalArchives,
+        extra: { archiveCount: totalArchives ?? 0, activeCount, unsummarizedArchives: waitingSummaries ?? null },
+      });
+    }
+    // Where no catch-up ran here (an older gateway hands no reader; autoCapture off) Viking may lag
+    // behind the gateway, and the count is all there is to go by, as before.
+    if (!caughtUp && !hasArchives && ctx.messages.length < messages.length) {
       return await assembleWithoutFreshSummary({
         ...recoveryBits,
         diag,
