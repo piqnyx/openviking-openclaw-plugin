@@ -1968,8 +1968,11 @@ export async function afterTurnOpenVikingSession({
           client,
           ovSessionId,
           reader,
-          // The hook mid-turn (and a turn end with no queue: the next assemble writes it then).
-          holdTrailingQuestion: path === "afterTurn",
+          // A lone question at the branch's end waits on every path that reads past the turn (PLAN-krug
+          // 7в.4, Н2): mid-turn it is the running turn's; read from the queue at a turn's start or in the
+          // background it may be the next turn's own, which comes as the prompt. The next assemble's fenced
+          // read writes a question whose turn ended unanswered.
+          holdTrailingQuestion: true,
           memory: "open",
           peerIdOf: (role) =>
             resolveOpenVikingMessagePeerId({
