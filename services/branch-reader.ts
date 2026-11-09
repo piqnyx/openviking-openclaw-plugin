@@ -134,7 +134,8 @@ export function fromBookmarkTurn(rows: BranchRow[], seenIds: ReadonlySet<string>
  * the reset, each named by its transcript row (`__openclaw.id`; `originalEntryId` when the gateway
  * re-appended it), and the gateway's model view of them. A reset keeps the session id, so the
  * transcript is not read later: the new conversation is already writing into it. None from an older
- * gateway (no model view) -- the reset then only archives.
+ * gateway (no model view), nor without a row to write (the gateway failed to take the messages) -- the
+ * reset then only archives.
  */
 export function resetEventReader(event: Record<string, unknown> | undefined): SessionTranscriptReader | undefined {
   const messages = event?.messages;
@@ -150,6 +151,9 @@ export function resetEventReader(event: Record<string, unknown> | undefined): Se
     const firstEntryId = typeof meta.originalEntryId === "string" && meta.originalEntryId ? meta.originalEntryId : meta.id;
     return [{ entryId: meta.id, firstEntryId, message }];
   });
+  if (rows.length === 0) {
+    return undefined;
+  }
   return {
     readVisiblePage: async () => ({ kind: "page", cursor: "", rows, hasMore: false }),
     selectModelVisible: select as SessionTranscriptReader["selectModelVisible"],
