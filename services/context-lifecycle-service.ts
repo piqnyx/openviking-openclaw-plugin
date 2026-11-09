@@ -71,8 +71,8 @@ export type AssembleOpenVikingSessionResult = {
   estimatedTokens: number;
   systemPromptAddition?: string;
   /**
-   * PLAN-krug 7в.3в: the window went by the fallback path not whole -- a summary and a cut tail -- so part of
-   * the conversation is out of the model's sight; the engine tells the host "whole" for any other main assembly.
+   * PLAN-krug 7в.3в: the window went by the fallback path and old messages were cut, so part of the
+   * conversation is out of the model's sight; the engine tells the host "whole" for any other main assembly.
    */
   contextWindow?: "partial" | "whole";
 };
@@ -1152,7 +1152,9 @@ async function assembleWithoutFreshSummary(params: {
     messages,
     estimatedTokens,
     ...(instruction.text ? { systemPromptAddition: instruction.text } : {}),
-    contextWindow: "partial",
+    // PLAN-krug 7в.3в: partial only when old messages were cut -- a summary and the whole tail after the
+    // archive leave nothing out of the model's sight (the engine says "whole" then).
+    ...(droppedMessages > 0 ? { contextWindow: "partial" as const } : {}),
   };
 }
 
