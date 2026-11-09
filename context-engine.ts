@@ -21,7 +21,7 @@ import {
   commitOpenVikingSession,
   type AnnounceCompaction,
 } from "./services/context-lifecycle-service.js";
-import { createSessionCatchUp } from "./services/catch-up-session.js";
+import { createSessionCatchUp, type SessionCatchUp } from "./services/catch-up-session.js";
 import { fixedBranchReader, rowsOfTranscriptMessages } from "./services/branch-reader.js";
 
 type ContextEngineInfo = {
@@ -344,6 +344,8 @@ export function createMemoryOpenVikingContextEngine(params: {
   pollIntervalMs?: number;
   /** PLAN-gorizont 5а: how long the held turn waits between questions to the price handle, ms; the tests shorten it. */
   pourRetryPauseMs?: number;
+  /** PLAN-krug К18: the registration's «догнать» memory -- it outlives this engine, built for one turn. */
+  catchUp?: SessionCatchUp;
 }): ContextEngineWithCommit {
   const {
     id,
@@ -361,8 +363,9 @@ export function createMemoryOpenVikingContextEngine(params: {
     pourRetryPauseMs,
   } = params;
 
-  // PLAN-krug 7б: the turns written by the gateway's row ids; its memory lives with this engine.
-  const catchUp = createSessionCatchUp();
+  // PLAN-krug 7б: the turns written by the gateway's row ids. К18: its memory is the registration's;
+  // an engine built on its own (tests) keeps its own.
+  const catchUp = params.catchUp ?? createSessionCatchUp();
   const diagEnabled = cfg.emitStandardDiagnostics;
   const bypassSessionPatterns = compileSessionPatterns(cfg.bypassSessionPatterns);
   const diag = (stage: string, sessionId: string, data: Record<string, unknown>) =>

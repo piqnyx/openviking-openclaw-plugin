@@ -57,7 +57,8 @@ const MAX_HELD_IDS = 4096;
  * nothing) or live messages with no row ids (a session written before row ids) give no bookmark --
  * a loud skip, as long as this process knows nothing of the session (7г handles both).
  *
- * The state lives with the engine that made this function: one per gateway process.
+ * The state lives with this function, made once per plugin registration (PLAN-krug К18): the gateway
+ * builds an engine for each logical turn, the registration hands each the same memory.
  */
 export function createSessionCatchUp() {
   const states = new Map<string, SessionState>();

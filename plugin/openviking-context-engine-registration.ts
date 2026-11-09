@@ -1,5 +1,6 @@
 import { agentIdFromFactoryContext, type ContextEngineFactoryContext } from "../routing/factory-agent-id.js";
 import { SYSTEM_AGENT_ID } from "../agent-keys.js";
+import { createSessionCatchUp, type SessionCatchUp } from "../services/catch-up-session.js";
 
 export type OpenVikingContextEngineRegistrationApi = {
   registerContextEngine?: (
@@ -43,6 +44,8 @@ export type OpenVikingContextEngineCreateParams<
   traceRecorder: TTraceRecorder;
   /** The proxy's price handle (PLAN-gorizont 4а); none when the config names no address. */
   priceHandle?: TPriceHandle;
+  /** PLAN-krug К18: the «догнать» memory of this registration, the same for every engine it builds. */
+  catchUp: SessionCatchUp;
 };
 
 export type OpenVikingContextEngineRegistrationDeps<
@@ -87,6 +90,9 @@ export function registerOpenVikingContextEngine<
     return;
   }
 
+  // PLAN-krug К18: the gateway builds an engine for each logical turn; the «догнать» memory is one per
+  // registration and handed to each, or every turn reads the gateway's branch from its start again.
+  const catchUp = createSessionCatchUp();
   deps.api.registerContextEngine(deps.plugin.id, (factoryCtx) => {
     // OpenClaw resolves the engine once per agent run and hands the factory
     // that agent's directories. Session hooks do not always carry agentId or an
@@ -129,6 +135,7 @@ export function registerOpenVikingContextEngine<
       queryConfigStore: deps.queryConfigStore,
       traceRecorder: deps.traceRecorder,
       ...(deps.priceHandle !== undefined ? { priceHandle: deps.priceHandle } : {}),
+      catchUp,
     });
     deps.setContextEngineRef(contextEngine);
     return contextEngine;
