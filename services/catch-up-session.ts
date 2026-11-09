@@ -279,5 +279,5 @@ async function writeInOrder(
   return { kind: "wrote", written, lost };
 }
 
-/** The engine's «догнать», one per engine (one per gateway process). */
+/** The «догнать» of one plugin registration, shared by every engine it builds (PLAN-krug К18). */
 export type SessionCatchUp = ReturnType<typeof createSessionCatchUp>;
