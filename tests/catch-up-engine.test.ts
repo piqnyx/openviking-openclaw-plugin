@@ -84,13 +84,13 @@ function server(options: { failWrites?: () => boolean } = {}) {
   return { client, stored, commits, transport: transport as unknown as ReturnType<typeof vi.fn> };
 }
 
-function engineOver(stand: ReturnType<typeof server>) {
+function engineOver(stand: ReturnType<typeof server>, overrides: Record<string, unknown> = {}) {
   const warned: string[] = [];
   const diags: Array<{ stage: string; data: Record<string, unknown> }> = [];
   const engine = createMemoryOpenVikingContextEngine({
     id: "openviking",
     name: "OpenViking",
-    cfg: memoryOpenVikingConfigSchema.parse({ baseUrl: "http://127.0.0.1:1933", autoRecall: false, emitStandardDiagnostics: true }),
+    cfg: memoryOpenVikingConfigSchema.parse({ baseUrl: "http://127.0.0.1:1933", autoRecall: false, emitStandardDiagnostics: true, ...overrides }),
     logger: {
       info: (line) => {
         const found = /^openviking: diag (.*)$/.exec(line);
@@ -379,5 +379,29 @@ describe("запись хода через «догнать», как зовёт
       window: 1_000,
       hostTokenBudget: 249_000,
     });
+  });
+
+  it("autoCapture: false -- сборка и сброс в Викинг ничего не пишут", async () => {
+    const stand = server();
+    // The session exists in Viking, with the earlier turn written by hand.
+    await stand.client.addSessionMessage(SESSION, "user", [{ type: "text", text: "привет" }], undefined, undefined, undefined, ["u0"]);
+    const { engine } = engineOver(stand, { autoCapture: false });
+    const branch = [u0, a0, question, reply];
+
+    await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: branch.map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch) },
+    } as never);
+    await engine.commitOVSession({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      transcriptMessages: branch.map((candidate) => ({ ...candidate.message, __openclaw: { id: candidate.entryId } })),
+    } as never);
+
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"]]);
   });
 });
