@@ -832,6 +832,17 @@ async function chooseKeptTail(params: {
     const all = await weigh(0);
     rest = Math.max(0, window - all);
     cap = Math.min(cfg.keepRecentTokens, Math.max(0, cfg.pourOffAtTokens - rest));
+    if (all <= cap && pending.length >= cfg.keepRecentFloor) {
+      // PLAN-krug 7в.Р2а (НР-3): all of it under the cap stays -- the search would ask the handle about
+      // shorter tails only to find the same; at every turn's end of a failed summary that is the usual case.
+      return {
+        chosen: { start: 0, weight: all, priced: true, asked: 1 },
+        cap,
+        rest,
+        model,
+        keepRecentCount: pending.length,
+      };
+    }
   }
 
   const chosen = await tailByWeight({
@@ -2324,7 +2335,9 @@ export async function afterTurnOpenVikingSession({
     // The window's weight once the pour-off has settled: the constant part and the kept
     // tail. The summary that will stand beside them weighs a little more, which only keeps
     // the host's gates closed a little longer. Unweighed (no price), there is no estimate.
-    const windowAfter = rest !== null && chosen.weight !== null ? rest + chosen.weight : null;
+    // PLAN-krug 7в.Р2а (НР-4): below X the window held a tail cut to K, not the server's messages, so the
+    // window less them is not its constant part; the host keeps its own measure, which stays about right.
+    const windowAfter = !belowX && rest !== null && chosen.weight !== null ? rest + chosen.weight : null;
     logger.info(
       `openviking: poured session=${ovSessionId}: window ${window} by the counter` +
         (belowX
@@ -2364,7 +2377,7 @@ export async function afterTurnOpenVikingSession({
     // cycle, before the pour-off) and takes windowAfter for the window's weight until the
     // next call measures it. The server saying nothing was archived is no compaction.
     if (announceCompaction && commitResult.archived === true) {
-      if (windowAfter === null) {
+      if (windowAfter === null && !belowX) {
         logger.warn?.(
           `openviking: poured session=${ovSessionId} without a weight of the window after (no price): ` +
             "the host learns the new weight only at the next turn's first call",
