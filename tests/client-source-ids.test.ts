@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { HttpTransport } from "../adapters/http-transport.js";
-import { OpenVikingClient } from "../client.js";
+import { OpenVikingClient, OpenVikingRequestError } from "../client.js";
 
 /*
  * PLAN-krug Р1, шаг 7б: сообщение пишется с номерами строк шлюза, из которых оно собрано
@@ -57,5 +57,26 @@ describe("запись сообщения с номерами строк", () =>
     await client(transport).addSessionMessage("s1", "user", [{ type: "text", text: "вопрос" }]);
 
     expect(bodies).toEqual([{ role: "user", parts: [{ type: "text", text: "вопрос" }] }]);
+  });
+});
+
+describe("отказ сервера несёт число ответа и код", () => {
+  it("ошибка записи знает HTTP-ответ и код сервера, текст прежний", async () => {
+    const transport: HttpTransport = async () =>
+      new Response(
+        JSON.stringify({ status: "error", error: { code: "INVALID_ARGUMENT", message: "parts must not be empty" } }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+
+    const failure = await client(transport)
+      .addSessionMessage("s1", "user", [])
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    expect(failure).toBeInstanceOf(OpenVikingRequestError);
+    expect(failure).toMatchObject({ status: 400, code: "INVALID_ARGUMENT" });
+    expect((failure as Error).message).toBe("OpenViking request failed [INVALID_ARGUMENT]: parts must not be empty");
   });
 });

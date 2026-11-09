@@ -118,6 +118,21 @@ export type OVMessagePart = {
   tool_output_group_budget_chars?: number;
 };
 
+/**
+ * The server answered with an error: its HTTP status and its own code, for a caller that tells a
+ * refused request (the same request will never pass) from a passing trouble.
+ */
+export class OpenVikingRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "OpenVikingRequestError";
+  }
+}
+
 export type OVMessage = {
   id: string;
   role: string;
@@ -507,7 +522,11 @@ export class OpenVikingClient {
       if (!response.ok || payload.status === "error") {
         const code = payload.error?.code ? ` [${payload.error.code}]` : "";
         const message = payload.error?.message ?? `HTTP ${response.status}`;
-        throw new Error(`OpenViking request failed${code}: ${message}`);
+        throw new OpenVikingRequestError(
+          `OpenViking request failed${code}: ${message}`,
+          response.status,
+          payload.error?.code,
+        );
       }
 
       return (payload.result ?? payload) as T;
