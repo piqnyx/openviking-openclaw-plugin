@@ -121,4 +121,24 @@ describe("чтение ветки шлюза", () => {
     expect(transcriptReaderOf({ readSessionTranscript: { readVisiblePage: 1 } })).toBeUndefined();
     expect(transcriptReaderOf(undefined)).toBeUndefined();
   });
+
+  it("между страницами отдаёт цикл событий: чтение шлюза синхронное, без этого шлюз стоит всё чтение", async () => {
+    const branch = [row("u1", "user"), row("a1", "assistant"), row("u2", "user"), row("a2", "assistant")];
+    const events: string[] = [];
+    const paged: SessionTranscriptReader = {
+      readVisiblePage: async (limits) => {
+        const start = limits?.cursor ? Number(limits.cursor.slice(1)) : 0;
+        events.push(`page@${start}`);
+        const rows = branch.slice(start, start + 1);
+        return { kind: "page", cursor: `c${start + rows.length}`, rows, hasMore: start + rows.length < branch.length };
+      },
+      selectModelVisible: (rows) => rows,
+    };
+    setImmediate(() => events.push("other work"));
+
+    await readBranchSinceBookmark({ reader: paged, seenIds: new Set() });
+
+    expect(events.indexOf("other work")).toBeGreaterThan(-1);
+    expect(events.indexOf("other work")).toBeLessThan(events.indexOf("page@3"));
+  });
 });
