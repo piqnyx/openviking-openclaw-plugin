@@ -23,17 +23,57 @@ function row(id: string, role: "user" | "assistant", text: string, at: number): 
   };
 }
 
-function reader(branch: BranchRow[]): SessionTranscriptReader {
-  return {
+/**
+ * As the gateway's reader: the cursor names the last row read; under a fence (the current
+ * question's position) only rows before it are visible, and a cursor on the fence or past it is an
+ * error, not a reset (session-accessor.sqlite-active-events.ts 228-235).
+ */
+function reader(branch: BranchRow[], options: { fence?: number } = {}) {
+  const cursors: Array<string | undefined> = [];
+  const value: SessionTranscriptReader = {
     readVisiblePage: async (limits) => {
-      const start = limits?.cursor ? Number(limits.cursor) : 0;
-      return { kind: "page", cursor: String(branch.length), rows: branch.slice(start), hasMore: false };
+      cursors.push(limits?.cursor);
+      const last = limits?.cursor !== undefined ? Number(limits.cursor) : -1;
+      if (options.fence !== undefined && last >= options.fence) {
+        throw Object.assign(new Error("Transcript read cursor has crossed the current-turn admission fence"), {
+          name: "SessionTranscriptReadFenceError",
+        });
+      }
+      const end = options.fence !== undefined ? Math.min(options.fence, branch.length) : branch.length;
+      const rows = branch.slice(last + 1, end);
+      return { kind: "page", cursor: String(last + rows.length), rows, hasMore: false };
     },
     selectModelVisible: (rows) => rows,
   };
+  return Object.assign(value, { cursors });
 }
 
 type Stored = OVMessage;
+
+function toolCall(id: string, callId: string, at: number): BranchRow {
+  return {
+    entryId: id,
+    firstEntryId: id,
+    message: {
+      role: "assistant",
+      content: [{ type: "toolCall", id: callId, name: "web_search", arguments: { query: "погода" } }],
+      timestamp: at,
+    },
+  };
+}
+
+function toolResult(id: string, callId: string, text: string, at: number): BranchRow {
+  return {
+    entryId: id,
+    firstEntryId: id,
+    message: { role: "toolResult", toolCallId: callId, toolName: "web_search", content: [{ type: "text", text }], timestamp: at },
+  };
+}
+
+/** A message Viking already holds, written from the gateway row `id`. */
+function held(id: string, role: string, text: string): Stored {
+  return { id: `ov-${id}`, role, parts: [{ type: "text", text }], created_at: "", source_message_ids: [id] };
+}
 
 function server(
   options: {
@@ -103,8 +143,8 @@ describe("«догнать» для сессии", () => {
     const catchUp = createSessionCatchUp();
     const log = logger();
 
-    const first = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: log });
-    const second = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: log });
+    const first = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: log });
+    const second = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: log });
 
     expect(first).toEqual({ kind: "wrote", written: 2, lost: 0 });
     expect(second).toEqual({ kind: "wrote", written: 0, lost: 0 });
@@ -119,10 +159,10 @@ describe("«догнать» для сессии", () => {
       row("a2", "assistant", "хорошо", T0 + 61_000),
     ];
     const { client, stored } = server();
-    await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch.slice(0, 2)), place: "settled", peerIdOf: () => undefined, logger: logger() });
+    await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch.slice(0, 2)), place: "settled", memory: "open", peerIdOf: () => undefined, logger: logger() });
 
     const restarted = createSessionCatchUp();
-    const outcome = await restarted({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: logger() });
+    const outcome = await restarted({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: logger() });
 
     expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0 });
     expect(textsOf(stored)).toEqual(["привет", "здравствуй", "как дела?", "хорошо"]);
@@ -134,8 +174,8 @@ describe("«догнать» для сессии", () => {
     const catchUp = createSessionCatchUp();
     const log = logger();
 
-    const first = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: log });
-    await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: log });
+    const first = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: log });
+    await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: log });
 
     expect(first).toEqual({ kind: "wrote", written: 1, lost: 1 });
     expect(textsOf(stored)).toEqual(["ответ"]);
@@ -149,9 +189,9 @@ describe("«догнать» для сессии", () => {
     const { client, stored } = server({ refuse: (text) => (down && text === "здравствуй" ? 503 : undefined) });
     const catchUp = createSessionCatchUp();
 
-    const first = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: logger() });
+    const first = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: logger() });
     down = false;
-    const second = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: logger() });
+    const second = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: logger() });
 
     expect(first).toMatchObject({ kind: "stopped", written: 1 });
     expect(second).toEqual({ kind: "wrote", written: 1, lost: 0 });
@@ -169,7 +209,7 @@ describe("«догнать» для сессии", () => {
     const { client } = server(setup);
     const log = logger();
 
-    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: log });
+    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: log });
 
     expect(outcome).toMatchObject({ kind: "skipped" });
     expect(client.addSessionMessage).not.toHaveBeenCalled();
@@ -180,7 +220,7 @@ describe("«догнать» для сессии", () => {
     const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
     const { client, stored } = server({ unknownUntilWritten: true });
 
-    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: logger() });
+    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: logger() });
 
     expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0 });
     expect(textsOf(stored)).toEqual(["привет", "здравствуй"]);
@@ -191,18 +231,72 @@ describe("«догнать» для сессии", () => {
     const { client } = server({ contextBody: {} });
     const log = logger();
 
-    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: log });
+    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: log });
 
     expect(outcome).toMatchObject({ kind: "skipped" });
     expect(client.addSessionMessage).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalled();
   });
 
+  it("огороженная сборка после открытого чтения своего же хода не упирается в ограду", async () => {
+    const branch = [
+      row("u0", "user", "привет", T0),
+      row("a0", "assistant", "здравствуй", T0 + 1_000),
+      row("q", "user", "погода?", T0 + 60_000),
+      row("a", "assistant", "дождь", T0 + 61_000),
+    ];
+    const { client, stored } = server({ stored: [held("u0", "user", "привет"), held("a0", "assistant", "здравствуй")] });
+    const catchUp = createSessionCatchUp();
+    const base = { client, ovSessionId: "s1", place: "settled" as const, peerIdOf: () => undefined, logger: logger() };
+
+    await catchUp({ ...base, memory: "open", reader: reader(branch) });
+    const fenced = await catchUp({
+      ...base,
+      memory: "fenced",
+      reader: reader(branch, { fence: 2 }),
+      remainder: { messages: [...stored], totalArchives: 0 },
+    });
+
+    expect(fenced).toEqual({ kind: "wrote", written: 0, lost: 0 });
+  });
+
+  it("повтор попытки после круга инструментов не пишет вопрос и круг второй раз", async () => {
+    const before = [row("u0", "user", "привет", T0), row("a0", "assistant", "здравствуй", T0 + 1_000), row("q", "user", "погода?", T0 + 60_000)];
+    const firstAttempt = [...before, toolCall("c1", "call-1", T0 + 61_000), toolResult("r1", "call-1", "дождь", T0 + 62_000)];
+    const secondAttempt = [...firstAttempt, toolCall("c2", "call-2", T0 + 63_000), toolResult("r2", "call-2", "ветер", T0 + 64_000)];
+    const { client, stored } = server({ stored: [held("u0", "user", "привет"), held("a0", "assistant", "здравствуй")] });
+    const catchUp = createSessionCatchUp();
+    const base = { client, ovSessionId: "s1", place: "settled" as const, peerIdOf: () => undefined, logger: logger() };
+    const assemble = () =>
+      catchUp({ ...base, memory: "fenced", reader: reader(secondAttempt, { fence: 2 }), remainder: { messages: [...stored], totalArchives: 0 } });
+
+    await assemble();
+    await catchUp({ ...base, memory: "open", reader: reader(firstAttempt) });
+    await assemble();
+    await catchUp({ ...base, memory: "open", reader: reader(secondAttempt) });
+
+    expect(stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"], ["q"], ["r1"], ["r2"]]);
+  });
+
+  it("открытое чтение без своей памяти начинает с огороженной: после перезапуска ветка не читается целиком дважды", async () => {
+    const before = [row("u0", "user", "привет", T0), row("a0", "assistant", "здравствуй", T0 + 1_000), row("q", "user", "погода?", T0 + 60_000)];
+    const turn = [...before, toolCall("c1", "call-1", T0 + 61_000), toolResult("r1", "call-1", "дождь", T0 + 62_000)];
+    const { client, stored } = server({ stored: [held("u0", "user", "привет"), held("a0", "assistant", "здравствуй")] });
+    const catchUp = createSessionCatchUp();
+    const base = { client, ovSessionId: "s1", place: "settled" as const, peerIdOf: () => undefined, logger: logger() };
+    const open = reader(turn);
+
+    await catchUp({ ...base, memory: "fenced", reader: reader(turn, { fence: 2 }), remainder: { messages: [...stored], totalArchives: 0 } });
+    await catchUp({ ...base, memory: "open", reader: open });
+
+    expect(open.cursors[0]).toBe("1");
+  });
+
   it("свежая сессия без архивов -- пишет ветку целиком", async () => {
     const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
     const { client, stored } = server();
 
-    await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: logger() });
+    await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", peerIdOf: () => undefined, logger: logger() });
 
     expect(textsOf(stored)).toEqual(["привет", "здравствуй"]);
   });
@@ -212,7 +306,7 @@ describe("«догнать» для сессии", () => {
     const { client } = server();
     const remainder = { messages: [] as Stored[], totalArchives: 0 };
 
-    await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", remainder, peerIdOf: () => undefined, logger: logger() });
+    await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", memory: "open", remainder, peerIdOf: () => undefined, logger: logger() });
 
     expect(client.getSessionContext).not.toHaveBeenCalled();
   });
