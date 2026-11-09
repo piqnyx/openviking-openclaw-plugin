@@ -27,8 +27,8 @@ type SessionState = {
   open?: BranchMemory;
   held: Set<string>;
   dirty?: boolean;
-  /** The rows whose write failed last, and how many times in a row (PLAN-krug К15). */
-  failing?: { ids: string; times: number };
+  /** The rows whose write failed last, how many times in a row, and since when (PLAN-krug К15, К15б). */
+  failing?: { ids: string; times: number; since: number };
 };
 
 type CatchUpParams = {
@@ -53,9 +53,12 @@ const MAX_SESSIONS = 256;
 // What the session's rows Viking holds, by id, newest last: shared by both memories and not cut to
 // either one's rows -- a retry's fenced read must not forget what the open read wrote.
 const MAX_HELD_IDS = 4096;
-// A write that fails this many times in a row on the same rows is lost loudly, and the rest go on:
-// rows the server always fails on must not hold every row after them (PLAN-krug П9', К15).
+// A write that fails this many times in a row on the same rows, over at least this long, is lost
+// loudly, and the rest go on: rows the server always fails on must not hold every row after them
+// (PLAN-krug П9', К15) -- yet the catch-up runs before every model call of a turn, so five failures
+// can come within seconds; a short failure of the server's writes must lose nothing (Вит 09.11, К15б).
 const MAX_TRIES = 5;
+const LOSS_AFTER_MS = 30 * 60_000;
 // The server takes up to this many messages a request, appended under one lock, all or none
 // (routers/sessions.py 110-114, 541-590).
 const MAX_BATCH = 100;
@@ -74,7 +77,8 @@ const MAX_BATCH = 100;
  * The state lives with this function, made once per plugin registration (PLAN-krug К18): the gateway
  * builds an engine for each logical turn, the registration hands each the same memory.
  */
-export function createSessionCatchUp() {
+export function createSessionCatchUp(options: { now?: () => number } = {}) {
+  const now = options.now ?? Date.now;
   const states = new Map<string, SessionState>();
   const locks = new Map<string, Promise<unknown>>();
 
@@ -111,7 +115,7 @@ export function createSessionCatchUp() {
     return await exclusive(params.ovSessionId, async () => {
       const state = stateOf(params.ovSessionId);
       try {
-        const outcome = await catchUpUnderLock(params, state);
+        const outcome = await catchUpUnderLock(params, state, now);
         // PLAN-krug К19: only a call that wrote took the server's ids into memory; a skip leaves the
         // memory as it was, dirty included, or a write the server accepted late goes in again. К13: a
         // reset (no memory) leaves it dirty -- its session is archived next.
@@ -126,7 +130,7 @@ export function createSessionCatchUp() {
   };
 }
 
-async function catchUpUnderLock(params: CatchUpParams, state: SessionState): Promise<CatchUpOutcome> {
+async function catchUpUnderLock(params: CatchUpParams, state: SessionState, now: () => number): Promise<CatchUpOutcome> {
   // A reset (no memory) takes the server's ids always (PLAN-krug К13).
   let held = await heldIds(params, state, { fromServer: state.dirty === true || params.memory === "none" });
   if (held.kind === "skipped") {
@@ -160,7 +164,7 @@ async function catchUpUnderLock(params: CatchUpParams, state: SessionState): Pro
     }
   }
   const plan = planTranscriptCatchUp({ rows: read.visible, seenIds: held.ids, holdTrailingQuestion: params.holdTrailingQuestion });
-  const written = await writeInOrder(params, plan.messages, held.ids, state);
+  const written = await writeInOrder(params, plan.messages, held.ids, state, now);
   if (params.memory !== "none") {
     state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
   }
@@ -251,6 +255,7 @@ async function writeInOrder(
   messages: CatchUpMessage[],
   held: Set<string>,
   state: Pick<SessionState, "failing">,
+  now: () => number,
 ): Promise<CatchUpOutcome> {
   let written = 0;
   let lost = 0;
@@ -281,7 +286,7 @@ async function writeInOrder(
       } catch (error) {
         if (!isRefusal(error)) {
           const text = error instanceof Error ? error.message : String(error);
-          state.failing = { ids: firstIds, times: 1 };
+          state.failing = { ids: firstIds, times: 1, since: now() };
           params.logger.warn?.(
             `openviking: catch-up of session=${params.ovSessionId} stopped at the chunk of gateway rows from ` +
               `${firstIds} (${text}); the next catch-up writes it one by one`,
@@ -291,7 +296,7 @@ async function writeInOrder(
         // The server refused something in it before writing any: one by one, loud only for the bad.
       }
     }
-    const one = await writeOneByOne(params, chunk, held, state);
+    const one = await writeOneByOne(params, chunk, held, state, now);
     written += one.written;
     lost += one.lost;
     if (one.error !== undefined) {
@@ -306,6 +311,7 @@ async function writeOneByOne(
   messages: CatchUpMessage[],
   held: Set<string>,
   state: Pick<SessionState, "failing">,
+  now: () => number,
 ): Promise<{ written: number; lost: number; error?: string }> {
   let written = 0;
   let lost = 0;
@@ -331,9 +337,13 @@ async function writeOneByOne(
         lost += 1;
       } else {
         const ids = message.sourceIds.join(",");
-        const times = state.failing?.ids === ids ? state.failing.times + 1 : 1;
-        if (times < MAX_TRIES) {
-          state.failing = { ids, times };
+        const at = now();
+        const failing =
+          state.failing?.ids === ids
+            ? { ids, times: state.failing.times + 1, since: state.failing.since }
+            : { ids, times: 1, since: at };
+        if (failing.times < MAX_TRIES || at - failing.since < LOSS_AFTER_MS) {
+          state.failing = failing;
           params.logger.warn?.(
             `openviking: catch-up of session=${params.ovSessionId} stopped at gateway rows ` +
               `${ids} (${text}); the next catch-up resumes there`,
@@ -342,8 +352,9 @@ async function writeOneByOne(
         }
         state.failing = undefined;
         params.logger.warn?.(
-          `openviking: the server failed gateway rows ${ids} of session=${params.ovSessionId} ${MAX_TRIES} times ` +
-            `in a row (${text}); they are not in Viking and are not tried again`,
+          `openviking: the server failed gateway rows ${ids} of session=${params.ovSessionId} ${failing.times} times ` +
+            `in a row over ${Math.round((at - failing.since) / 60_000)} minutes (${text}); they are not in Viking ` +
+            "and are not tried again",
         );
         lost += 1;
       }
