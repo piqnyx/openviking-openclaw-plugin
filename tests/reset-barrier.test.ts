@@ -31,11 +31,24 @@ function deferred() {
   return { promise, release };
 }
 
-/** As the server: writes go live; a commit moves the live messages into an archive (phase 1), then extracts (phase 2). */
-function server(options: { commitGate?: Promise<void>; commitFails?: boolean; phaseTwo?: () => boolean } = {}) {
+/**
+ * As the server (openviking/session/session.py 3304-3333; routers/sessions.py 440): writes go live; a
+ * commit archives the live messages at once (phase 1); until the archive's summary stands (phase 2) the
+ * context gives the archive's messages raw, with the live ones, and counts the archive unsummarized.
+ * The summary stands once the plugin's hold asks about the session, or when the test says so.
+ */
+function server(options: { commitGate?: Promise<void>; commitFails?: boolean; summaryOnAsk?: boolean } = {}) {
   const live: Stored[] = [];
   const events: string[] = [];
-  let archives = 0;
+  let pending: Stored[] | null = null;
+  let summarized = 0;
+  const finishSummary = () => {
+    if (pending) {
+      pending = null;
+      summarized += 1;
+      events.push("summary");
+    }
+  };
   const answer = (body: unknown) =>
     new Response(JSON.stringify({ status: "ok", result: body }), { status: 200, headers: { "Content-Type": "application/json" } });
   const transport: HttpTransport = vi.fn(async (url, init) => {
@@ -58,31 +71,43 @@ function server(options: { commitGate?: Promise<void>; commitFails?: boolean; ph
           headers: { "Content-Type": "application/json" },
         });
       }
+      pending = [...live];
       live.length = 0;
-      archives += 1;
       events.push("commit");
       return answer({ session_id: "s", status: "accepted", archived: true, task_id: "task-1" });
     }
     if (parsed.pathname.includes("/tasks/")) {
-      return answer({ task_id: "task-1", status: options.phaseTwo?.() === false ? "running" : "completed", result: {} });
+      return answer({ task_id: "task-1", status: pending ? "running" : "completed", result: {} });
     }
     if (parsed.pathname.endsWith("/context")) {
       events.push("context");
       return answer({
-        latest_archive_overview: archives > 0 ? "сводка архива" : "",
+        latest_archive_overview: summarized > 0 ? "сводка старой беседы" : "",
         pre_archive_abstracts: [],
-        messages: [...live],
+        messages: [...(pending ?? []), ...live],
         estimatedTokens: 1,
-        stats: { totalArchives: archives, includedArchives: archives, droppedArchives: 0, failedArchives: 0, activeTokens: 1, archiveTokens: 0, unsummarizedArchives: 0 },
+        stats: {
+          totalArchives: summarized + (pending ? 1 : 0),
+          includedArchives: summarized,
+          droppedArchives: 0,
+          failedArchives: 0,
+          activeTokens: 1,
+          archiveTokens: 0,
+          unsummarizedArchives: pending ? 1 : 0,
+        },
       });
     }
-    return answer({ pending_tokens: 0, unsummarized_archives: 0 });
+    // A question about the session (the plugin's hold for the summary asks here).
+    if (options.summaryOnAsk !== false) {
+      finishSummary();
+    }
+    return answer({ pending_tokens: 0, unsummarized_archives: pending ? 1 : 0 });
   });
   const client = new OpenVikingClient("http://127.0.0.1:1933", "ov-key", "main", 5_000, "", "", undefined, {
     transport,
     sleep: () => new Promise((resolve) => setTimeout(resolve, 1)),
   });
-  return { client, live, events };
+  return { client, live, events, finishSummary };
 }
 
 function row(id: string, role: "user" | "assistant", text: string, at: number): BranchRow {
@@ -102,14 +127,14 @@ function readerOver(branch: BranchRow[], options: { fence?: number } = {}): Sess
 }
 
 /** The plugin as the gateway runs it: one registration, an engine per logical turn, the lifecycle hooks. */
-function pluginOver(stand: ReturnType<typeof server>) {
+function pluginOver(stand: ReturnType<typeof server>, settings: Record<string, unknown> = {}) {
   let factory: (() => unknown) | undefined;
   let latest: ReturnType<typeof createMemoryOpenVikingContextEngine> | undefined;
   registerOpenVikingContextEngine({
     api: { registerContextEngine: (_id, registered) => void (factory = registered) },
     plugin: { id: "openviking", name: "OpenViking" },
     version: "test",
-    cfg: memoryOpenVikingConfigSchema.parse({ baseUrl: "http://127.0.0.1:1933", autoRecall: false }),
+    cfg: memoryOpenVikingConfigSchema.parse({ baseUrl: "http://127.0.0.1:1933", autoRecall: false, ...settings }),
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     getClient: async () => stand.client,
     resolveAgentId: () => "main",
@@ -176,7 +201,8 @@ async function within<T>(promise: Promise<T>, ms: number): Promise<T | "timed ou
 }
 
 describe("сброс: первые шаги новой беседы ждут архива старой (PLAN-krug К20)", () => {
-  it("окно и первая запись новой беседы -- после архива старой; старой беседы в окне нет", async () => {
+  // Вит 09.11 (Н-ж): the first turn after /new waits for the old conversation's summary -- the hold the pour has.
+  it("окно и первая запись новой беседы -- после архива старой; в окне сводка старой беседы, не она сама", async () => {
     const gate = deferred();
     const stand = server({ commitGate: gate.promise });
     const sessionId = randomUUID();
@@ -197,11 +223,15 @@ describe("сброс: первые шаги новой беседы ждут а�
     setTimeout(() => gate.release(), 20);
     const assembled = await assembling;
     await writing;
+    // The server writes the summary on its own; the reset waits for it (phase 2) and is done then.
+    await vi.waitFor(() => expect(stand.events).toContain("commit"));
+    stand.finishSummary();
     await resetting;
 
     expect(stand.events.indexOf("commit")).toBeGreaterThan(-1);
     expect(stand.events.indexOf("commit")).toBeLessThan(stand.events.indexOf("write:u1"));
     expect(JSON.stringify(assembled.messages)).not.toContain("старая беседа");
+    expect(JSON.stringify(assembled.messages)).toContain("сводка старой беседы");
   });
 
   it("конец первого хода через очередь (телега, веб) пишется после архива старой беседы", async () => {
@@ -222,22 +252,25 @@ describe("сброс: первые шаги новой беседы ждут а�
     } as never);
     setTimeout(() => gate.release(), 20);
     await committing;
+    // The server writes the summary on its own; the reset waits for it (phase 2) and is done then.
+    await vi.waitFor(() => expect(stand.events).toContain("commit"));
+    stand.finishSummary();
     await resetting;
 
     expect(stand.events.indexOf("commit")).toBeGreaterThan(-1);
     expect(stand.events.indexOf("commit")).toBeLessThan(stand.events.indexOf("write:u1"));
   });
 
-  it("барьер снят, как только сервер принял архив; извлечение памяти ход не держит", async () => {
-    let extracted = false;
-    const stand = server({ phaseTwo: () => extracted });
+  it("барьер снят, как только сервер принял архив, -- не держит ход до конца второй фазы", async () => {
+    const stand = server({ summaryOnAsk: false });
     const sessionId = randomUUID();
-    const plugin = pluginOver(stand);
+    // The hold for the summary off: what is measured is the barrier alone.
+    const plugin = pluginOver(stand, { holdForSummarySeconds: 0 });
     await oldConversation(plugin, sessionId);
 
     const resetting = plugin.fireReset(sessionId, old);
     const assembled = await within(assembleTurn(plugin.engineOfTurn(), sessionId, [...old, asked], 2), 2_000);
-    extracted = true;
+    stand.finishSummary();
     await resetting;
 
     expect(stand.events).toContain("commit");
