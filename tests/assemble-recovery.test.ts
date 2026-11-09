@@ -296,7 +296,10 @@ describe("путь окна по фактам сервера (PLAN-krug 7в.2)",
     });
     const { outcome } = await assemble(live, 12_000, client, { holdForSummarySeconds: 0 });
 
-    expect(outcome).toMatchObject({ recovered: true, reason: "no_fresh_summary" });
+    // PLAN-krug 7в.7а: the closed archive found is the one the answer stands on -- its summary and its boundary.
+    expect(outcome).toMatchObject({
+      recovered: true, reason: "no_fresh_summary", summaryFrom: "archive", archiveId: "archive_002",
+    });
   });
 
   it("без читателя шлюза, архивов нет, у Викинга сообщений меньше -- проверка счёта как была", async () => {
