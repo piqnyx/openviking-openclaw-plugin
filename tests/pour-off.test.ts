@@ -529,6 +529,37 @@ describe("слив при сорванной сводке (PLAN-krug 7в.Р2а)"
     expect(diags.filter((d) => d.stage === "pour_hold")).toEqual([]);
   });
 
+  // НР-3: the whole remainder under the cap is the answer already -- the search would ask the handle about shorter
+  // tails at every turn's end only to find the same.
+  it("остаток не тяжелее K -- ручку спрашивают один раз", async () => {
+    // 12 ходов по два сообщения в 5 000 знаков: все -- 120 001, планка 20 пройдена.
+    const stand = serverWithFailedSummary(12, 5_000);
+    const { price, bodies } = handle();
+    const { engine } = engineOver(stand, price);
+
+    await assembleTurn(engine, "one-ask");
+    await afterTurn(engine, "one-ask", 160_000);
+
+    expect(stand.commits).toEqual([]);
+    expect(bodies).toHaveLength(1);
+  });
+
+  // НР-4: the window holds a tail cut to K, not the server's remainder, so the window less the remainder is not
+  // the window's constant part; the host keeps its own measure of the window.
+  it("слив объявляется хосту без веса окна после", async () => {
+    const stand = serverWithFailedSummary(20, 5_000);
+    const { price } = handle();
+    const { engine, warned } = engineOver(stand, price);
+    const announce = vi.fn();
+
+    await assembleTurn(engine, "announce-failed");
+    await afterTurn(engine, "announce-failed", 160_000, "gemini-3.5-flash-lite", announce);
+
+    expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
+    expect(announce.mock.calls).toEqual([["end", { completed: true }]]);
+    expect(warned.join("\n")).not.toMatch(/without a weight of the window after/);
+  });
+
   it("сводка встала между сборкой и концом хода -- слив решает ответ на конец хода", async () => {
     const stand = serverWithFailedSummary(20, 5_000);
     const { price } = handle();
