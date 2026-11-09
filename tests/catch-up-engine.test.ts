@@ -366,4 +366,16 @@ describe("запись хода через «догнать», как зовёт
 
     expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"], ["u1"]]);
   });
+
+  it("журнал afterTurn_entry (опись З7) пишется и на пути с читателем", async () => {
+    const stand = server();
+    const { engine, diags } = engineOver(stand);
+
+    await queueWith(engine, [question, reply], "turn-journal", { currentTokenCount: 1_000, tokenBudget: 249_000 });
+
+    expect(diags.find((entry) => entry.stage === "afterTurn_entry")?.data).toMatchObject({
+      window: 1_000,
+      hostTokenBudget: 249_000,
+    });
+  });
 });
