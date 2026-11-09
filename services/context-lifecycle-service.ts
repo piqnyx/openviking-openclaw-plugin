@@ -20,7 +20,7 @@ import { floorTail, longestTailWithin, turnStarts } from "../tail-by-weight.js";
 import { extractNewTurnMessages } from "../text-utils.js";
 import { coalesceConsecutiveToolMessages, normalizeTimestamp, toOvParts } from "./capture-form.js";
 import { transcriptReaderOf } from "./branch-reader.js";
-import type { SessionCatchUp } from "./catch-up-session.js";
+import type { CatchUpOutcome, SessionCatchUp } from "./catch-up-session.js";
 import { estimateAgentMessageTokens, estimateTextTokens } from "../token-estimator.js";
 import {
   convertToAgentMessages,
@@ -1561,24 +1561,51 @@ export async function assembleOpenVikingSession({
     const reader = catchUp ? transcriptReaderOf(runtimeContext) : undefined;
     if (catchUp && reader && ctx) {
       const senderRoleId = toRoleId(sender.senderId);
-      const outcome = await catchUp({
-        client,
-        ovSessionId,
-        reader,
-        place: "settled",
-        memory: "fenced",
-        remainder: { messages: ctx.messages, totalArchives: ctx.stats?.totalArchives },
-        peerIdOf: (role) =>
-          resolveOpenVikingMessagePeerId({
-            peerRole: cfg.peer_role ?? "assistant",
-            role,
-            personPeerId: senderRoleId,
-            assistantPeerId: agentId,
-          }),
-        logger,
-      });
+      let outcome: CatchUpOutcome | { kind: "failed"; error: string };
+      try {
+        outcome = await catchUp({
+          client,
+          ovSessionId,
+          reader,
+          place: "settled",
+          memory: "fenced",
+          remainder: { messages: ctx.messages, totalArchives: ctx.stats?.totalArchives },
+          peerIdOf: (role) =>
+            resolveOpenVikingMessagePeerId({
+              peerRole: cfg.peer_role ?? "assistant",
+              role,
+              personPeerId: senderRoleId,
+              assistantPeerId: agentId,
+            }),
+          logger,
+        });
+      } catch (err) {
+        outcome = { kind: "failed", error: String(err) };
+      }
       diag("assemble_catch_up", ovSessionId, outcome);
-      if (outcome.kind !== "skipped" && outcome.written > 0) {
+      // PLAN-krug Р1, Р2(а), П6': Viking may lack rows the gateway holds -- this turn's window is
+      // built by the fallback path (the last archive's summary and the live tail), said loudly.
+      if (outcome.kind !== "wrote") {
+        logger.warn?.(
+          `openviking: assemble session=${ovSessionId}: catch-up did not complete (${outcome.kind}); ` +
+            "this turn's window is built from the live transcript",
+        );
+        return await assembleWithoutFreshSummary({
+          ...recoveryBits,
+          diag,
+          logger,
+          roughEstimate,
+          ovSessionId,
+          reason: `catch_up_${outcome.kind}`,
+          liveMessages: messages,
+          originalTokens,
+          tokenBudget,
+          client,
+          totalArchives: ctx.stats?.totalArchives,
+          extra: { catchUp: outcome },
+        });
+      }
+      if (outcome.written > 0) {
         ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
       }
     }
@@ -1914,22 +1941,30 @@ export async function afterTurnOpenVikingSession({
     if (catchUp && reader) {
       client = await getClient(agentId);
       const senderRoleId = toRoleId(sender.senderId);
-      const outcome = await catchUp({
-        client,
-        ovSessionId,
-        reader,
-        place: path === "commitTurn" ? "settled" : "working",
-        memory: "open",
-        peerIdOf: (role) =>
-          resolveOpenVikingMessagePeerId({
-            peerRole: cfg.peer_role ?? "assistant",
-            role,
-            personPeerId: senderRoleId,
-            assistantPeerId: agentId,
-          }),
-        logger,
-      });
-      diag("afterTurn_catch_up", ovSessionId, { path, ...outcome });
+      // PLAN-krug П6': a failed catch-up is said and does not cancel the pour-off check below.
+      try {
+        const outcome = await catchUp({
+          client,
+          ovSessionId,
+          reader,
+          place: path === "commitTurn" ? "settled" : "working",
+          memory: "open",
+          peerIdOf: (role) =>
+            resolveOpenVikingMessagePeerId({
+              peerRole: cfg.peer_role ?? "assistant",
+              role,
+              personPeerId: senderRoleId,
+              assistantPeerId: agentId,
+            }),
+          logger,
+        });
+        diag("afterTurn_catch_up", ovSessionId, { path, ...outcome });
+      } catch (err) {
+        logger.warn?.(
+          `openviking: catch-up of session=${ovSessionId} failed (${String(err)}); the pour-off is checked as usual`,
+        );
+        diag("afterTurn_catch_up", ovSessionId, { path, kind: "failed", error: String(err) });
+      }
     } else {
       if (catchUp && !warnedOfNoTranscriptReader) {
         warnedOfNoTranscriptReader = true;
