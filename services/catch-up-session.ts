@@ -5,6 +5,7 @@ import { planTranscriptCatchUp, type CatchUpMessage } from "./transcript-catch-u
 /** What «догнать» needs of the server: the write, and the session's live messages with their row ids. */
 export type CatchUpClient = {
   addSessionMessage: OpenVikingClient["addSessionMessage"];
+  addSessionMessages: OpenVikingClient["addSessionMessages"];
   getSessionContext(
     sessionId: string,
     tokenBudget?: number,
@@ -55,6 +56,9 @@ const MAX_HELD_IDS = 4096;
 // A write that fails this many times in a row on the same rows is lost loudly, and the rest go on:
 // rows the server always fails on must not hold every row after them (PLAN-krug П9', К15).
 const MAX_TRIES = 5;
+// The server takes up to this many messages a request, appended under one lock, all or none
+// (routers/sessions.py 110-114, 541-590).
+const MAX_BATCH = 100;
 
 /**
  * PLAN-krug Р1, шаг 7б: «догнать» for one session -- what Viking holds (the row ids of its live
@@ -243,16 +247,66 @@ async function readServerRemainder(
 }
 
 async function writeInOrder(
-  params: {
-    client: CatchUpClient;
-    ovSessionId: string;
-    peerIdOf: (role: "user" | "assistant") => string | undefined;
-    logger: { warn?: (message: string) => void };
-  },
+  params: WriteParams,
   messages: CatchUpMessage[],
   held: Set<string>,
   state: Pick<SessionState, "failing">,
 ): Promise<CatchUpOutcome> {
+  let written = 0;
+  let lost = 0;
+  for (let start = 0; start < messages.length; start += MAX_BATCH) {
+    const chunk = messages.slice(start, start + MAX_BATCH);
+    const firstIds = chunk[0]!.sourceIds.join(",");
+    // One request a chunk (PLAN-krug К17); a chunk that failed before goes one by one, where the rows
+    // that fail are counted on their own (К15).
+    if (chunk.length > 1 && state.failing?.ids !== firstIds) {
+      try {
+        await params.client.addSessionMessages(
+          params.ovSessionId,
+          chunk.map((message) => ({
+            role: message.role,
+            parts: message.parts,
+            createdAt: message.createdAt,
+            peerId: params.peerIdOf(message.role),
+            sourceMessageIds: message.sourceIds,
+          })),
+        );
+        written += chunk.length;
+        for (const message of chunk) {
+          for (const id of message.sourceIds) {
+            held.add(id);
+          }
+        }
+        continue;
+      } catch (error) {
+        if (!isRefusal(error)) {
+          const text = error instanceof Error ? error.message : String(error);
+          state.failing = { ids: firstIds, times: 1 };
+          params.logger.warn?.(
+            `openviking: catch-up of session=${params.ovSessionId} stopped at the chunk of gateway rows from ` +
+              `${firstIds} (${text}); the next catch-up writes it one by one`,
+          );
+          return { kind: "stopped", written, error: text };
+        }
+        // The server refused something in it before writing any: one by one, loud only for the bad.
+      }
+    }
+    const one = await writeOneByOne(params, chunk, held, state);
+    written += one.written;
+    lost += one.lost;
+    if (one.error !== undefined) {
+      return { kind: "stopped", written, error: one.error };
+    }
+  }
+  return { kind: "wrote", written, lost };
+}
+
+async function writeOneByOne(
+  params: WriteParams,
+  messages: CatchUpMessage[],
+  held: Set<string>,
+  state: Pick<SessionState, "failing">,
+): Promise<{ written: number; lost: number; error?: string }> {
   let written = 0;
   let lost = 0;
   for (const message of messages) {
@@ -269,7 +323,7 @@ async function writeInOrder(
       written += 1;
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
-      if (error instanceof OpenVikingRequestError && REFUSED_STATUSES.has(error.status)) {
+      if (isRefusal(error)) {
         params.logger.warn?.(
           `openviking: the server refused gateway rows ${message.sourceIds.join(",")} of session=` +
             `${params.ovSessionId} (${text}); they are not in Viking and are not tried again`,
@@ -284,7 +338,7 @@ async function writeInOrder(
             `openviking: catch-up of session=${params.ovSessionId} stopped at gateway rows ` +
               `${ids} (${text}); the next catch-up resumes there`,
           );
-          return { kind: "stopped", written, error: text };
+          return { written, lost, error: text };
         }
         state.failing = undefined;
         params.logger.warn?.(
@@ -298,7 +352,19 @@ async function writeInOrder(
       held.add(id);
     }
   }
-  return { kind: "wrote", written, lost };
+  return { written, lost };
+}
+
+type WriteParams = {
+  client: CatchUpClient;
+  ovSessionId: string;
+  peerIdOf: (role: "user" | "assistant") => string | undefined;
+  logger: { warn?: (message: string) => void };
+};
+
+/** A refusal on the merits (the request itself is bad): not tried again. */
+function isRefusal(error: unknown): boolean {
+  return error instanceof OpenVikingRequestError && REFUSED_STATUSES.has(error.status);
 }
 
 /** The «догнать» of one plugin registration, shared by every engine it builds (PLAN-krug К18). */

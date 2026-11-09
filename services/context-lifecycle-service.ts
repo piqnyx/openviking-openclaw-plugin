@@ -197,7 +197,7 @@ export type CompactOpenVikingSessionParams = {
 
 type AfterTurnClient = Pick<
   OpenVikingClient,
-  "addSessionMessage" | "getSession" | "getSessionContext" | "commitSession" | "getTask"
+  "addSessionMessage" | "addSessionMessages" | "getSession" | "getSessionContext" | "commitSession" | "getTask"
 >;
 
 export type AfterTurnOpenVikingSessionParams = {

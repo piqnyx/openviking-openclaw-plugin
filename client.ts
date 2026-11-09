@@ -959,6 +959,37 @@ export class OpenVikingClient {
     );
   }
 
+  /**
+   * PLAN-krug К17: several messages in one request -- the server appends them under one session
+   * lock, all or none (routers/sessions.py 541-590); up to 100 a request (110-114).
+   */
+  async addSessionMessages(
+    sessionId: string,
+    messages: ReadonlyArray<{
+      role: string;
+      parts: Parameters<OpenVikingClient["addSessionMessage"]>[2];
+      createdAt?: string;
+      peerId?: string;
+      sourceMessageIds?: readonly string[];
+    }>,
+    actorPeerId?: string,
+  ): Promise<void> {
+    const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages/batch`;
+    const body = {
+      messages: messages.map((message) => ({
+        role: message.role,
+        parts: message.parts,
+        ...(message.createdAt ? { created_at: message.createdAt } : {}),
+        ...(message.peerId ? { peer_id: message.peerId } : {}),
+        ...(message.sourceMessageIds && message.sourceMessageIds.length > 0
+          ? { source_message_ids: [...message.sourceMessageIds] }
+          : {}),
+      })),
+    };
+    await this.emitRoutingDebug("session messages batch POST", { path, sessionId, count: messages.length }, actorPeerId);
+    await this.request<{ session_id: string }>(path, { method: "POST", body: JSON.stringify(body) }, undefined, actorPeerId);
+  }
+
   /** GET session — server auto-creates if absent; returns session meta including message stats and token usage. */
   async getSession(sessionId: string, actorPeerId?: string): Promise<{
     message_count?: number;
