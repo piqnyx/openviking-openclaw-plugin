@@ -36,8 +36,10 @@ export function transcriptReaderOf(
     : undefined;
 }
 
-const PAGE_MESSAGES = 200;
-const PAGE_BYTES = 4 * 1024 * 1024;
+// Small pages, and the event loop handed back between them (PLAN-krug П7): the gateway's read is
+// synchronous inside its promise, so a long branch read at once would hold the whole gateway.
+const PAGE_MESSAGES = 64;
+const PAGE_BYTES = 1024 * 1024;
 // A branch that keeps moving while it is read: give up for this call, read again on the next one.
 const MAX_RESETS_PER_READ = 2;
 
@@ -96,6 +98,7 @@ export async function readBranchSinceBookmark(params: {
     if (!page.hasMore) {
       break;
     }
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
   return {
     kind: "rows",
