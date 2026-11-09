@@ -350,6 +350,26 @@ describe("«догнать» для сессии", () => {
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("twice"));
   });
 
+  it("память сессий вытесняется по давности: главный чат, тронутый недавно, не вылетает первым", async () => {
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
+    const { client } = server();
+    const catchUp = createSessionCatchUp();
+    const touch = (ovSessionId: string) =>
+      catchUp({ client, ovSessionId, holdTrailingQuestion: false, memory: "open", reader: reader(branch), peerIdOf: () => undefined, logger: logger() });
+
+    await touch("main");
+    for (let other = 0; other < 255; other += 1) {
+      await touch(`other-${other}`);
+    }
+    await touch("main");
+    await touch("one-more");
+    client.getSessionContext.mockClear();
+    await touch("main");
+
+    // Its memory survived: what Viking holds came from it, not from the server.
+    expect(client.getSessionContext).not.toHaveBeenCalled();
+  });
+
   it("свежая сессия без архивов -- пишет ветку целиком", async () => {
     const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
     const { client, stored } = server();
