@@ -1,4 +1,4 @@
-import { transcriptReaderOf, type SessionTranscriptReader } from "../services/branch-reader.js";
+import { resetEventReader, type SessionTranscriptReader } from "../services/branch-reader.js";
 
 export type OpenVikingHookContext = {
   agentId?: string;
@@ -54,7 +54,7 @@ export function registerOpenVikingLifecycleHooks(deps: OpenVikingLifecycleHooksD
     const contextEngine = deps.getContextEngine();
     if (sessionId && contextEngine) {
       try {
-        const reader = transcriptReaderOf(event as Record<string, unknown> | undefined);
+        const reader = resetEventReader(event as Record<string, unknown> | undefined);
         const ok = await contextEngine.commitOVSession({
           sessionId,
           sessionKey: ctx?.sessionKey,

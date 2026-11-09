@@ -128,3 +128,30 @@ export function fromBookmarkTurn(rows: BranchRow[], seenIds: ReadonlySet<string>
   }
   return rows;
 }
+
+/**
+ * PLAN-krug К13б: the reader for a reset, made of the before_reset event -- its messages, taken before
+ * the reset, each named by its transcript row (`__openclaw.id`; `originalEntryId` when the gateway
+ * re-appended it), and the gateway's model view of them. A reset keeps the session id, so the
+ * transcript is not read later: the new conversation is already writing into it. None from an older
+ * gateway (no model view) -- the reset then only archives.
+ */
+export function resetEventReader(event: Record<string, unknown> | undefined): SessionTranscriptReader | undefined {
+  const messages = event?.messages;
+  const select = event?.selectModelVisible;
+  if (!Array.isArray(messages) || typeof select !== "function") {
+    return undefined;
+  }
+  const rows = messages.flatMap((message): BranchRow[] => {
+    const meta = (message as { __openclaw?: { id?: unknown; originalEntryId?: unknown } } | null)?.__openclaw;
+    if (!meta || typeof meta.id !== "string" || !meta.id) {
+      return [];
+    }
+    const firstEntryId = typeof meta.originalEntryId === "string" && meta.originalEntryId ? meta.originalEntryId : meta.id;
+    return [{ entryId: meta.id, firstEntryId, message }];
+  });
+  return {
+    readVisiblePage: async () => ({ kind: "page", cursor: "", rows, hasMore: false }),
+    selectModelVisible: select as SessionTranscriptReader["selectModelVisible"],
+  };
+}
