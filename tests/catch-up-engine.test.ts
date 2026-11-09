@@ -24,7 +24,7 @@ const T0 = Date.UTC(2026, 10, 9, 10, 0, 0);
 
 type Stored = OVMessage & { source_message_ids?: string[] };
 
-function server() {
+function server(options: { failWrites?: () => boolean } = {}) {
   const stored: Stored[] = [];
   const commits: unknown[] = [];
   // As the server: a session never written to is unknown to reads; the first write creates it.
@@ -36,6 +36,12 @@ function server() {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
+    if (parsed.pathname.endsWith("/messages") && init?.method === "POST" && options.failWrites?.()) {
+      return new Response(JSON.stringify({ status: "error", error: { code: "UNAVAILABLE", message: "storage busy" } }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     if (parsed.pathname.endsWith("/messages") && init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as {
         role: string;
@@ -268,5 +274,49 @@ describe("запись хода через «догнать», как зовёт
     await assemble();
 
     expect(diags.filter((entry) => entry.stage === "assemble_error")).toEqual([]);
+  });
+
+  it("сборка: «догнать» не дописало -- окно этого хода запасным путём, громко", async () => {
+    let down = false;
+    const stand = server({ failWrites: () => down });
+    const { engine, diags, warned } = engineOver(stand);
+    await queueWith(engine, [question, reply], "turn-written");
+    const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
+    const nextReply = row("a2", { role: "assistant", content: [{ type: "text", text: "сухо" }], timestamp: T0 + 61_000 });
+    const branch = [question, reply, next, nextReply];
+    down = true;
+
+    await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: branch.map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch) },
+    } as never);
+
+    expect(diags.find((entry) => entry.stage === "assemble_result")?.data).toMatchObject({ reason: "catch_up_stopped" });
+    expect(warned.some((line) => line.includes("catch-up did not complete"))).toBe(true);
+  });
+
+  it("сбой «догнать» в конце хода слив по X не отменяет", async () => {
+    const stand = server();
+    const { engine, diags } = engineOver(stand);
+    const broken: SessionTranscriptReader = {
+      readVisiblePage: async () => {
+        throw new Error("projection broke");
+      },
+      selectModelVisible: (rows) => rows,
+    };
+
+    await engine.commitTurn?.({
+      advancementKey: "turn-broken",
+      messages: [question.message, reply.message] as never,
+      sessionId: SESSION,
+      sessionKey: KEY,
+      runtimeContext: { readSessionTranscript: broken, currentTokenCount: 1_000 },
+    } as never);
+
+    expect(diags.find((entry) => entry.stage === "pour_skip")?.data).toMatchObject({ reason: "below_x" });
   });
 });
