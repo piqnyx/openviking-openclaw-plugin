@@ -1239,15 +1239,30 @@ async function holdForSummary(params: {
     holdSeconds,
   });
   if (!stands) {
-    summaryHoldGivenUp.add(ovSessionId);
+    // PLAN-krug 7в.7б: the answer read before the wait is as old as the hold; the window goes by the
+    // server's answer as it stands now -- a summary that stood meanwhile is in it. A server that does
+    // not answer now leaves the answer from before the wait, with the summary that stood then.
+    let now = ctx;
+    try {
+      now = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+    } catch (err) {
+      logger.warn?.(
+        `openviking: assemble session=${ovSessionId}: the context could not be read again after the hold ` +
+          `(${String(err)}); going on by the answer read before it`,
+      );
+    }
+    // Not held again only while archives wait by that answer: nothing waiting (the summary failed after
+    // the limit, and the turn's end pours, PLAN-krug 7в.Р2а), the next pour's summary is waited for again.
+    const stillWaiting = now?.stats?.unsummarizedArchives;
+    if (typeof stillWaiting === "number" && stillWaiting > 0) {
+      summaryHoldGivenUp.add(ovSessionId);
+    }
     logger.warn?.(
       `openviking: assemble session=${ovSessionId}: the summary did not stand within ${holdSeconds} s ` +
         `(${wait.polls} polls); going on by the answer read now (the fallback path while archives wait), ` +
         "and not holding again until it stands",
     );
-    // PLAN-krug 7в.7б: the answer read before the wait is as old as the hold; the window goes by the
-    // server's answer as it stands now -- a summary that stood meanwhile is in it.
-    return await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+    return now;
   }
   logger.info(
     `openviking: assemble session=${ovSessionId}: the summary stands after ${waitedMs} ms (${wait.polls} polls); ` +
