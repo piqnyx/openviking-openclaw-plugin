@@ -382,15 +382,50 @@ describe("запись хода через «догнать», как зовёт
     expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"]]);
   });
 
-  it("ход кончился без видимого ответа -- вопрос пишется в конце хода", async () => {
+  // PLAN-krug 7в.4 (Н2): the queue does not write a lone question at the branch's end either -- at the start
+  // of a turn and in the background that question may be the new turn's own, which comes as the prompt.
+  it("ход кончился без видимого ответа -- вопрос ждёт и пишется на сборке следующего хода", async () => {
     const stand = server();
     const { engine } = engineOver(stand);
     await queueWith(engine, [u0, a0], "turn-earlier");
 
     // The reply was a silent one (NO_REPLY): the gateway's rule of what the model sees drops it.
     await queueWith(engine, [u0, a0, question], "turn-silent");
+    const afterQueue = stand.stored.map((message) => message.source_message_ids);
+    const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
+    const branch = [u0, a0, question, next];
+    await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: [u0, a0, question].map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch, { fence: 3 }) },
+    } as never);
 
+    expect(afterQueue).toEqual([["u0"], ["a0"]]);
     expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"], ["u1"]]);
+  });
+
+  it("вопрос нового хода не пишется записью из очереди и не задваивается в окне (Н2)", async () => {
+    const stand = server();
+    const { engine } = engineOver(stand);
+    await queueWith(engine, [u0, a0], "turn-earlier");
+
+    // The previous turn's record drained at the start of the next one: its open read meets the new question.
+    await queueWith(engine, [u0, a0, question], "turn-earlier-drained-late");
+    const assembled = await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      // As the gateway hands it: the admitted question is taken off and comes as the prompt.
+      messages: [u0, a0].map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver([u0, a0, question], { fence: 2 }) },
+    } as never);
+
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"]]);
+    expect(JSON.stringify(assembled.messages)).not.toContain("погода?");
   });
 
   it("журнал afterTurn_entry (опись З7) пишется и на пути с читателем", async () => {
