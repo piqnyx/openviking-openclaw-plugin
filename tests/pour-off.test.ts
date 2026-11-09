@@ -414,3 +414,128 @@ function serverOf(messages: OVMessage[]): Stand {
   const client = new OpenVikingClient("http://127.0.0.1:1933", "ov-key", "main", 5_000, "", "", undefined, { transport });
   return { client, commits, asked };
 }
+
+/**
+ * PLAN-krug 7в.Р2а: новейший архив сорван до записи сводки -- сервер не даёт сводки и ничего не ждёт (случай (б)
+ * Р2). Слив заводит новый архив, и до его сводки сервер считает его ждущим; `summaryStood` -- сводка встала.
+ */
+function serverWithFailedSummary(turns: number, chars: number) {
+  const commits: Array<Record<string, unknown>> = [];
+  const asked: string[] = [];
+  const messages = Array.from({ length: turns * 2 }, (_, i) => ovMessage(i, chars));
+  const state = { waiting: 0, overview: "" };
+  const transport: HttpTransport = vi.fn(async (url, init) => {
+    const parsed = new URL(url);
+    asked.push(`${init?.method ?? "GET"} ${parsed.pathname}`);
+    const answer = (body: unknown) =>
+      new Response(JSON.stringify({ status: "ok", result: body }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    if (parsed.pathname.endsWith("/messages")) return answer({ session_id: SESSION });
+    if (parsed.pathname.endsWith("/commit")) {
+      commits.push(init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {});
+      state.waiting = 1;
+      return answer({ status: "accepted", archived: true, task_id: "task-1" });
+    }
+    if (parsed.pathname.endsWith("/context")) {
+      return answer({
+        latest_archive_overview: state.overview, pre_archive_abstracts: [], messages, estimatedTokens: 1,
+        stats: {
+          totalArchives: 2 + commits.length, includedArchives: 0, droppedArchives: 0, failedArchives: 1,
+          activeTokens: 1, archiveTokens: 0, unsummarizedArchives: state.waiting,
+        },
+      });
+    }
+    if (/\/api\/v1\/sessions\/[^/]+$/.test(parsed.pathname)) {
+      return answer({ pending_tokens: 0, unsummarized_archives: state.waiting });
+    }
+    return new Response(JSON.stringify({ status: "error", error: { code: "NOT_FOUND", message: parsed.pathname } }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  const client = new OpenVikingClient("http://127.0.0.1:1933", "ov-key", "main", 5_000, "", "", undefined, { transport });
+  return {
+    client,
+    commits,
+    asked,
+    summaryStood: () => {
+      state.waiting = 0;
+      state.overview = "СВОДКА";
+    },
+  };
+}
+
+/** Главная сборка окна того же хода, как её зовёт шлюз. */
+async function assembleTurn(engine: ReturnType<typeof engineOver>["engine"], tag: string) {
+  await engine.assemble({
+    sessionId: `${SESSION}-${tag}`,
+    messages: turn(tag) as never,
+    tokenBudget: 200_000,
+    availableTools: new Set<string>(),
+  } as never);
+}
+
+// PLAN-krug 7в.Р2а: with the newest archive's summary failed the window is cut to K by the fallback path and
+// never reaches X; without a new archive the failed one stays the newest for ever. The server rolls a failed
+// archive into the next one's summary, so the turn's end pours below X while that is so.
+describe("слив при сорванной сводке (PLAN-krug 7в.Р2а)", () => {
+  it("ниже X, остаток тяжелее K -- слив с хвостом под K", async () => {
+    // 20 ходов по два сообщения в 10 000 знаков: не тяжелее 150 000 -- 7 ходов (140 001 с «x»).
+    const stand = serverWithFailedSummary(20, 10_000);
+    const { price } = handle();
+    const { engine, diags } = engineOver(stand, price);
+
+    await assembleTurn(engine, "failed");
+    await afterTurn(engine, "failed", 160_000);
+
+    expect(stand.commits).toEqual([{ keep_recent_count: 14 }]);
+    expect(lastDiag(diags, "pour_off")).toMatchObject({
+      trigger: "failed_summary", window: 160_000, cap: K, keptMessages: 14, archivedMessages: 26,
+    });
+  });
+
+  it("остаток не тяжелее K -- слива нет, и каждый ход об этом не кричит", async () => {
+    const stand = serverWithFailedSummary(5, 10_000);
+    const { price } = handle();
+    const { engine, diags, warned } = engineOver(stand, price);
+
+    await assembleTurn(engine, "light-failed");
+    await afterTurn(engine, "light-failed", 160_000);
+
+    expect(stand.commits).toEqual([]);
+    expect(lastDiag(diags, "pour_skip")).toMatchObject({ reason: "nothing_to_pour", failedSummary: true });
+    expect(warned.join("\n")).not.toMatch(/nothing to pour/);
+  });
+
+  it("ручка молчит -- слива нет, и следующий ход его не ждёт", async () => {
+    const stand = serverWithFailedSummary(20, 10_000);
+    const silent = { url: "http://127.0.0.1:8787/price", price: async () => null };
+    const { engine, diags } = engineOver(stand, silent);
+
+    await assembleTurn(engine, "silent-failed");
+    await afterTurn(engine, "silent-failed", 160_000);
+    await assembleTurn(engine, "silent-failed");
+
+    expect(stand.commits).toEqual([]);
+    expect(lastDiag(diags, "pour_skip")).toMatchObject({ reason: "no_weight", failedSummary: true });
+    expect(diags.filter((d) => d.stage === "pour_hold")).toEqual([]);
+  });
+
+  it("сводка встала -- ниже X ответ сервера в конце хода снова не читается", async () => {
+    const stand = serverWithFailedSummary(20, 10_000);
+    const { price } = handle();
+    const { engine, diags } = engineOver(stand, price);
+
+    await assembleTurn(engine, "stood");
+    stand.summaryStood();
+    await assembleTurn(engine, "stood");
+    const readsBefore = stand.asked.filter((line) => line.endsWith("/context")).length;
+    await afterTurn(engine, "stood", 160_000);
+
+    expect(stand.asked.filter((line) => line.endsWith("/context")).length).toBe(readsBefore);
+    expect(stand.commits).toEqual([]);
+    expect(lastDiag(diags, "pour_skip")).toMatchObject({ reason: "below_x" });
+  });
+});
