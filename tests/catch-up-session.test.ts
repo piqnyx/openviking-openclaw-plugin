@@ -84,6 +84,9 @@ function server(
     // 267-350, auto_create=False -> NOT_FOUND); the first write creates it (506, 555).
     unknownUntilWritten?: boolean;
     contextBody?: unknown;
+    // The write is kept although the answer is a failure (a write answered after the client's own
+    // deadline: the server waits up to 30 s for the session lock, session.py 86, 1207-1209).
+    keepRefused?: boolean;
   } = {},
 ) {
   const stored: Stored[] = options.stored ?? [];
@@ -101,6 +104,9 @@ function server(
       ) => {
         const text = parts.map((part) => part.text ?? "").join(" ");
         const status = options.refuse?.(text);
+        if (status && options.keepRefused) {
+          stored.push({ id: `m${stored.length + 1}`, role, parts: parts as OVMessage["parts"], created_at: createdAt ?? "", ...(sourceIds ? { source_message_ids: [...sourceIds] } : {}) });
+        }
         if (status) {
           throw new OpenVikingRequestError(`OpenViking request failed: refused ${text}`, status, status >= 500 ? "UNAVAILABLE" : "INVALID_ARGUMENT");
         }
@@ -290,6 +296,52 @@ describe("«догнать» для сессии", () => {
     await catchUp({ ...base, memory: "open", reader: open });
 
     expect(open.cursors[0]).toBe("1");
+  });
+
+  it("после останова записи следующее «догнать» сверяется с сервером: поздно принятая запись второй раз не пишется", async () => {
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
+    let late = true;
+    const { client, stored } = server({ keepRefused: true, refuse: (text) => (late && text === "здравствуй" ? 504 : undefined) });
+    const catchUp = createSessionCatchUp();
+    const base = { client, ovSessionId: "s1", place: "settled" as const, memory: "open" as const, peerIdOf: () => undefined, logger: logger() };
+
+    await catchUp({ ...base, reader: reader(branch) });
+    late = false;
+    await catchUp({ ...base, reader: reader(branch) });
+
+    expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"]]);
+  });
+
+  it("закладки нет среди строк ветки -- сверка с сервером; сервер тоже ничего из ветки не держит -- громкий пропуск, не вся ветка", async () => {
+    const { client } = server({ stored: [held("old1", "user", "давнее"), held("old2", "assistant", "давний ответ")] });
+    const catchUp = createSessionCatchUp();
+    const log = logger();
+    const base = { client, ovSessionId: "s1", place: "settled" as const, memory: "open" as const, peerIdOf: () => undefined, logger: log };
+    // The process knows what it held -- rows no longer on the branch.
+    await catchUp({ ...base, reader: reader([row("old1", "user", "давнее", T0), row("old2", "assistant", "давний ответ", T0 + 1_000)]) });
+    client.addSessionMessage.mockClear();
+    client.getSessionContext.mockClear();
+
+    const outcome = await catchUp({
+      ...base,
+      reader: reader([row("n1", "user", "новое", T0 + 60_000), row("n2", "assistant", "новый ответ", T0 + 61_000)]),
+    });
+
+    expect(outcome).toMatchObject({ kind: "skipped" });
+    expect(client.getSessionContext).toHaveBeenCalled();
+    expect(client.addSessionMessage).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("одна строка дважды в остатке Викинга -- громкая строка про дубль", async () => {
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
+    const { client } = server({ stored: [held("u1", "user", "привет"), held("a1", "assistant", "здравствуй"), held("a1", "assistant", "здравствуй")] });
+    const log = logger();
+
+    await createSessionCatchUp()({ client, ovSessionId: "s1", place: "settled", memory: "open", reader: reader(branch), peerIdOf: () => undefined, logger: log });
+
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("a1"));
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("twice"));
   });
 
   it("свежая сессия без архивов -- пишет ветку целиком", async () => {
