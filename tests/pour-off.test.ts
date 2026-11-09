@@ -320,31 +320,39 @@ describe("отливание по X", () => {
     const announce = vi.fn();
     await afterTurn(engine, "announce", X, "gemini-3.5-flash-lite", announce);
     expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
-    // Постоянная часть 44 999 плюс хвост 140 001.
-    expect(announce.mock.calls).toEqual([["end", { completed: true, tokensAfter: 185_000 }]]);
+    // Постоянная часть 44 999 плюс хвост 140 001. PLAN-krug 7в.3а-2: «начало» -- на время взвешивания и записи.
+    expect(announce.mock.calls).toEqual([["start"], ["end", { completed: true, tokensAfter: 185_000 }]]);
     expect(lastDiag(diags, "pour_off")).toMatchObject({ rest: 44_999, keptWeight: 140_001, windowAfter: 185_000 });
   });
 
-  it("без разлива ручка хоста молчит", async () => {
-    const announce = vi.fn();
+  // PLAN-krug 7в.3а-2: ниже X ручка хоста молчит; от X хост видит работу -- «начало» и «конец», но без записанного
+  // архива «конец» всегда несёт completed: false, иначе хост посчитает лишнее сжатие и взведёт тихий ход не по делу.
+  it("без разлива: ниже X ручка хоста молчит, от X -- начало и незаконченный конец", async () => {
     const { price } = handle();
+    const quiet = vi.fn();
     const below = engineOver(server(20, 10_000), price);
-    await afterTurn(below.engine, "quiet-below", X - 1, "gemini-3.5-flash-lite", announce);
+    await afterTurn(below.engine, "quiet-below", X - 1, "gemini-3.5-flash-lite", quiet);
+    expect(quiet).not.toHaveBeenCalled();
+
+    const pendingAnnounce = vi.fn();
     const pending = engineOver(server(20, 10_000, 1), price);
-    await afterTurn(pending.engine, "quiet-pending", X, "gemini-3.5-flash-lite", announce);
+    await afterTurn(pending.engine, "quiet-pending", X, "gemini-3.5-flash-lite", pendingAnnounce);
+    expect(pendingAnnounce.mock.calls).toEqual([["start"], ["end", { completed: false }]]);
+
+    const lightAnnounce = vi.fn();
     const light = engineOver(server(10, 1_000), price, 4);
-    await afterTurn(light.engine, "quiet-light", X, "gemini-3.5-flash-lite", announce);
-    expect(announce).not.toHaveBeenCalled();
+    await afterTurn(light.engine, "quiet-light", X, "gemini-3.5-flash-lite", lightAnnounce);
+    expect(lightAnnounce.mock.calls).toEqual([["start"], ["end", { completed: false }]]);
   });
 
-  it("сервер ничего не заархивировал -- сжатия не было, хост не слышит", async () => {
+  it("сервер ничего не заархивировал -- сжатием не считается", async () => {
     const stand = server(20, 5_000, 0, false);
     const { price } = handle();
     const { engine, diags } = engineOver(stand, price);
     const announce = vi.fn();
     await afterTurn(engine, "not-archived", X, "gemini-3.5-flash-lite", announce);
     expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
-    expect(announce).not.toHaveBeenCalled();
+    expect(announce.mock.calls).toEqual([["start"], ["end", { completed: false }]]);
     expect(lastDiag(diags, "pour_off")).toMatchObject({ archived: false });
   });
 
@@ -353,8 +361,37 @@ describe("отливание по X", () => {
     const { engine, warned } = engineOver(stand, undefined);
     const announce = vi.fn();
     await afterTurn(engine, "no-handle-announce", X, "gemini-3.5-flash-lite", announce);
-    expect(announce.mock.calls).toEqual([["end", { completed: true }]]);
+    expect(announce.mock.calls).toEqual([["start"], ["end", { completed: true }]]);
     expect(warned.join("\n")).toMatch(/weight of the window after/);
+  });
+
+  // PLAN-krug 7в.3а-2 (НЗ2-7): the host's ear failing on the start costs the picture, not the pour-off.
+  it("ручка хоста бросила на начале -- слив всё равно идёт", async () => {
+    const stand = server(20, 5_000);
+    const { price } = handle();
+    const { engine, warned } = engineOver(stand, price);
+    const announce = vi.fn((phase: string) => {
+      if (phase === "start") {
+        throw new Error("host gone");
+      }
+    });
+    await afterTurn(engine, "throwing-ear", X, "gemini-3.5-flash-lite", announce);
+    expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
+    expect(announce.mock.calls.at(-1)).toEqual(["end", { completed: true, tokensAfter: 185_000 }]);
+    expect(warned.join("\n")).toMatch(/host gone/);
+  });
+
+  // PLAN-krug 7в.3а-2: whatever breaks after the start, the host hears an end -- not a finished compaction.
+  it("запись архива сорвалась -- хост слышит незаконченный конец", async () => {
+    const stand = server(20, 5_000);
+    const { price } = handle();
+    const { engine } = engineOver(stand, price);
+    const announce = vi.fn();
+    stand.client.commitSession = async () => {
+      throw new Error("storage busy");
+    };
+    await afterTurn(engine, "commit-failed", X, "gemini-3.5-flash-lite", announce);
+    expect(announce.mock.calls).toEqual([["start"], ["end", { completed: false }]]);
   });
 
   it("запись хода после хода объявляет разлив так же", async () => {
@@ -372,7 +409,7 @@ describe("отливание по X", () => {
       announceCompaction: announce,
     } as never);
     expect(result?.status).toBe("committed");
-    expect(announce.mock.calls).toEqual([["end", { completed: true, tokensAfter: 185_000 }]]);
+    expect(announce.mock.calls).toEqual([["start"], ["end", { completed: true, tokensAfter: 185_000 }]]);
   });
 
   it("запись хода после хода отливает так же", async () => {
@@ -556,7 +593,7 @@ describe("слив при сорванной сводке (PLAN-krug 7в.Р2а)"
     await afterTurn(engine, "announce-failed", 160_000, "gemini-3.5-flash-lite", announce);
 
     expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
-    expect(announce.mock.calls).toEqual([["end", { completed: true }]]);
+    expect(announce.mock.calls).toEqual([["start"], ["end", { completed: true }]]);
     expect(warned.join("\n")).not.toMatch(/without a weight of the window after/);
   });
 
