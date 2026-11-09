@@ -377,7 +377,7 @@ export function createMemoryOpenVikingContextEngine(params: {
    */
   async function catchUpBeforeReset(params: { sessionId: string; sessionKey?: string; messages: unknown[] }) {
     const rows = rowsOfTranscriptMessages(params.messages);
-    if (rows.length === 0 || isBypassedSession({ sessionId: params.sessionId, sessionKey: params.sessionKey })) {
+    if (!cfg.autoCapture || rows.length === 0 || isBypassedSession({ sessionId: params.sessionId, sessionKey: params.sessionKey })) {
       return;
     }
     try {

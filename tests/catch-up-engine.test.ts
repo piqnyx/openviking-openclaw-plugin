@@ -399,7 +399,10 @@ describe("запись хода через «догнать», как зовёт
     await engine.commitOVSession({
       sessionId: SESSION,
       sessionKey: KEY,
-      transcriptMessages: branch.map((candidate) => ({ ...candidate.message, __openclaw: { id: candidate.entryId } })),
+      transcriptMessages: branch.map((candidate) => ({
+        ...(candidate.message as Record<string, unknown>),
+        __openclaw: { id: candidate.entryId },
+      })),
     } as never);
 
     expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"]]);

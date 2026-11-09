@@ -1558,7 +1558,8 @@ export async function assembleOpenVikingSession({
     // PLAN-krug Р1, шаг 7б: rows the gateway holds and Viking does not (a turn whose write at its end
     // failed, or that closed without the queue) are caught up before the window is built, checked
     // against the live messages just read; the window is read again only when any went in.
-    const reader = catchUp ? transcriptReaderOf(runtimeContext) : undefined;
+    // Nothing is written with autoCapture off (PLAN-krug П10), as the turn's end does not write.
+    const reader = catchUp && cfg?.autoCapture !== false ? transcriptReaderOf(runtimeContext) : undefined;
     if (catchUp && reader && ctx) {
       const senderRoleId = toRoleId(sender.senderId);
       let outcome: CatchUpOutcome | { kind: "failed"; error: string };
