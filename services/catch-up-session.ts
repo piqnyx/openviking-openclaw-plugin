@@ -98,7 +98,9 @@ export function createSessionCatchUp() {
       const state = stateOf(params.ovSessionId);
       try {
         const outcome = await catchUpUnderLock(params, state);
-        state.dirty = outcome.kind === "stopped";
+        // PLAN-krug К19: only a call that wrote took the server's ids into memory; a skip leaves the
+        // memory as it was, dirty included, or a write the server accepted late goes in again.
+        state.dirty = outcome.kind === "stopped" || (outcome.kind === "skipped" && state.dirty === true);
         return outcome;
       } catch (error) {
         state.dirty = true;
