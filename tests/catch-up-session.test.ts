@@ -318,6 +318,26 @@ describe("«догнать» для сессии", () => {
     expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"]]);
   });
 
+  it("сверка с сервером после останова не теряется, если следующее «догнать» вышло пропуском (PLAN-krug К19)", async () => {
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
+    let late = true;
+    const { client, stored } = server({ keepRefused: true, refuse: (text) => (late && text === "здравствуй" ? 504 : undefined) });
+    const catchUp = createSessionCatchUp();
+    const base = { client, ovSessionId: "s1", holdTrailingQuestion: false, memory: "open" as const, peerIdOf: () => undefined, logger: logger() };
+    const rebuilding: SessionTranscriptReader = {
+      readVisiblePage: async () => ({ kind: "unavailable", reason: "projection_rebuilding" }),
+      selectModelVisible: (rows) => rows,
+    };
+
+    await catchUp({ ...base, reader: reader(branch) });
+    late = false;
+    // The memory is dirty; this call asks the server, then the branch cannot be read.
+    await catchUp({ ...base, reader: rebuilding });
+    await catchUp({ ...base, reader: reader(branch) });
+
+    expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"]]);
+  });
+
   it("закладки нет среди строк ветки -- сверка с сервером; сервер тоже ничего из ветки не держит -- громкий пропуск, не вся ветка", async () => {
     const { client } = server({ stored: [held("old1", "user", "давнее"), held("old2", "assistant", "давний ответ")] });
     const catchUp = createSessionCatchUp();
