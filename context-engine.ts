@@ -388,7 +388,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         client,
         ovSessionId,
         reader: fixedBranchReader(rows),
-        place: "working",
+        holdTrailingQuestion: false,
         memory: "none",
         peerIdOf: (role) =>
           resolveOpenVikingMessagePeerId({ peerRole: cfg.peer_role ?? "assistant", role, assistantPeerId: agentId }),

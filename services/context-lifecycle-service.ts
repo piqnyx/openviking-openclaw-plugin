@@ -1567,7 +1567,7 @@ export async function assembleOpenVikingSession({
           client,
           ovSessionId,
           reader,
-          place: "settled",
+          holdTrailingQuestion: false,
           memory: "fenced",
           remainder: { messages: ctx.messages, totalArchives: ctx.stats?.totalArchives },
           peerIdOf: (role) =>
@@ -1947,7 +1947,8 @@ export async function afterTurnOpenVikingSession({
           client,
           ovSessionId,
           reader,
-          place: path === "commitTurn" ? "settled" : "working",
+          // The hook mid-turn (and a turn end with no queue: the next assemble writes it then).
+          holdTrailingQuestion: path === "afterTurn",
           memory: "open",
           peerIdOf: (role) =>
             resolveOpenVikingMessagePeerId({

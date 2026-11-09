@@ -27,7 +27,8 @@ type CatchUpParams = {
   client: CatchUpClient;
   ovSessionId: string;
   reader: SessionTranscriptReader;
-  place: "settled" | "working";
+  /** PLAN-krug П3': hold a trailing question with nothing after it (mid-turn only). */
+  holdTrailingQuestion: boolean;
   /** Which memory of reading: the main assemble's fenced one, the open one, or none (a reset). */
   memory: "fenced" | "open" | "none";
   /** The session's live messages the caller has just read (the main assemble reads them anyway). */
@@ -138,7 +139,7 @@ async function catchUpUnderLock(params: CatchUpParams, state: SessionState): Pro
       return skippedLoudly(params, "bookmark_not_on_branch");
     }
   }
-  const plan = planTranscriptCatchUp({ rows: read.visible, seenIds: held.ids, place: params.place });
+  const plan = planTranscriptCatchUp({ rows: read.visible, seenIds: held.ids, holdTrailingQuestion: params.holdTrailingQuestion });
   const written = await writeInOrder(params, plan.messages, held.ids);
   if (params.memory !== "none") {
     state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };

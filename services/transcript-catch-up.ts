@@ -30,20 +30,21 @@ export type CatchUpMessage = {
  * newest one Viking already holds (by the id the row was first written under), in the capture
  * form. A row Viking holds is never written again, whatever reads it twice.
  *
- * A `settled` read (the main assemble, the end of a turn) leaves a trailing question with no
- * reply unwritten: its turn broke off, and the gateway glues it into the next question, which is
- * written then. The `working` read (the current turn, mid-turn) writes it.
+ * `holdTrailingQuestion` (mid-turn only, PLAN-krug П3'): a trailing question with nothing after it
+ * belongs to the turn still running and waits for its continuation. Everywhere else it is written:
+ * the question of a turn that broke off or ended with no visible reply stays on the gateway's
+ * branch, and the model sees it next to the next question.
  */
 export function planTranscriptCatchUp(params: {
   rows: readonly BranchRow[];
   seenIds: ReadonlySet<string>;
-  place: "settled" | "working";
+  holdTrailingQuestion: boolean;
 }): { messages: CatchUpMessage[]; heldQuestionId?: string } {
   const { rows } = params;
   const bookmark = newestSeenIndex(rows, params.seenIds);
   const last = rows.at(-1);
   const holdsQuestion =
-    params.place === "settled" && last !== undefined && rows.length - 1 > bookmark && roleOf(last.message) === "user";
+    params.holdTrailingQuestion && last !== undefined && rows.length - 1 > bookmark && roleOf(last.message) === "user";
   const end = holdsQuestion ? rows.length - 1 : rows.length;
 
   // Tool calls before the bookmark still name the inputs of the results after it.

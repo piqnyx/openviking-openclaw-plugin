@@ -52,7 +52,7 @@ describe("«догнать»: что писать в Викинг", () => {
       answer("a2", "хорошо", T0 + 61_000),
     ];
 
-    const plan = planTranscriptCatchUp({ rows, seenIds: new Set(["u1", "a1"]), place: "settled" });
+    const plan = planTranscriptCatchUp({ rows, seenIds: new Set(["u1", "a1"]), holdTrailingQuestion: false });
 
     expect(plan.messages).toEqual([
       { role: "user", parts: [{ type: "text", text: "как дела?" }], sourceIds: ["u2"], createdAt: iso(T0 + 60_000) },
@@ -63,7 +63,7 @@ describe("«догнать»: что писать в Викинг", () => {
   it("ничего не дописывает, когда Викинг держит всё", () => {
     const rows = [user("u1", "привет", T0), answer("a1", "здравствуй", T0 + 1_000)];
 
-    expect(planTranscriptCatchUp({ rows, seenIds: new Set(["u1", "a1"]), place: "settled" }).messages).toEqual([]);
+    expect(planTranscriptCatchUp({ rows, seenIds: new Set(["u1", "a1"]), holdTrailingQuestion: false }).messages).toEqual([]);
   });
 
   it("перезаписанная строка зовётся номером, под которым записана впервые, и второй раз не пишется", () => {
@@ -73,7 +73,7 @@ describe("«догнать»: что писать в Викинг", () => {
       user("u2", "ещё вопрос", T0 + 60_000),
     ];
 
-    const plan = planTranscriptCatchUp({ rows, seenIds: new Set(["u1", "a1"]), place: "working" });
+    const plan = planTranscriptCatchUp({ rows, seenIds: new Set(["u1", "a1"]), holdTrailingQuestion: false });
 
     expect(plan.messages.map((message) => message.sourceIds)).toEqual([["u2"]]);
   });
@@ -88,7 +88,7 @@ describe("«догнать»: что писать в Викинг", () => {
       answer("a1", "дождь и ветер", T0 + 5_000),
     ];
 
-    const plan = planTranscriptCatchUp({ rows, seenIds: new Set(), place: "settled" });
+    const plan = planTranscriptCatchUp({ rows, seenIds: new Set(), holdTrailingQuestion: false });
 
     expect(plan.messages.map((message) => [message.role, message.sourceIds, message.createdAt])).toEqual([
       ["user", ["u1"], iso(T0)],
@@ -108,12 +108,12 @@ describe("«догнать»: что писать в Викинг", () => {
     ]);
   });
 
-  it("одинокий вопрос в конце ждёт в устоявшемся чтении и идёт в рабочем", () => {
+  it("одинокий вопрос в конце ждёт, когда велено держать (посреди хода), и пишется иначе", () => {
     const rows = [user("u1", "привет", T0), answer("a1", "здравствуй", T0 + 1_000), user("u2", "ты тут?", T0 + 60_000)];
     const seenIds = new Set(["u1", "a1"]);
 
-    const settled = planTranscriptCatchUp({ rows, seenIds, place: "settled" });
-    const working = planTranscriptCatchUp({ rows, seenIds, place: "working" });
+    const settled = planTranscriptCatchUp({ rows, seenIds, holdTrailingQuestion: true });
+    const working = planTranscriptCatchUp({ rows, seenIds, holdTrailingQuestion: false });
 
     expect(settled).toEqual({ messages: [], heldQuestionId: "u2" });
     expect(working.messages.map((message) => message.sourceIds)).toEqual([["u2"]]);
@@ -123,7 +123,7 @@ describe("«догнать»: что писать в Викинг", () => {
     const rows = [user("u1", "привет", T0), answer("a1", "здравствуй", T0 + 1_000)];
 
     expect(
-      planTranscriptCatchUp({ rows, seenIds: new Set(), place: "settled" }).messages.map((message) => message.sourceIds),
+      planTranscriptCatchUp({ rows, seenIds: new Set(), holdTrailingQuestion: false }).messages.map((message) => message.sourceIds),
     ).toEqual([["u1"], ["a1"]]);
   });
 
@@ -133,7 +133,7 @@ describe("«догнать»: что писать в Викинг", () => {
       answer("a1", "[[reply_to_current]] ответ", T0 + 1_000),
     ];
 
-    const plan = planTranscriptCatchUp({ rows, seenIds: new Set(), place: "settled" });
+    const plan = planTranscriptCatchUp({ rows, seenIds: new Set(), holdTrailingQuestion: false });
 
     expect(plan.messages.map((message) => message.parts)).toEqual([
       [{ type: "text", text: "вопрос" }],
