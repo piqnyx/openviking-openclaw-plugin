@@ -7,16 +7,15 @@ import { OpenVikingClient, type OVMessage, type OVMessagePart } from "../client.
 import { memoryOpenVikingConfigSchema } from "../config.js";
 import { createMemoryOpenVikingContextEngine } from "../context-engine.js";
 import { registerOpenVikingLifecycleHooks } from "../plugin/openviking-lifecycle-hooks.js";
-import type { SessionTranscriptReader } from "../services/branch-reader.js";
 import type { BranchRow } from "../services/transcript-catch-up.js";
 
 /*
- * PLAN-krug Р1, шаг 7б, К13 (П13'): сброс беседы (/new, /reset). Шлюз кладёт в событие `before_reset`
- * читателя сбрасываемой сессии (`readSessionTranscript`). Обычно писать нечего: последний ход записан в
- * конце хода. Если запись последнего хода сорвалась, а следом сброс, -- его строки дописываются (по
- * отбору шлюза «как видит модель», номера -- у сервера, громко) и только потом сессия уходит в архив:
- * иначе очередь допишет их в старую сессию уже после архива. Шлюз старее (в событии только сообщения) --
- * только архив, как было до 7б.
+ * PLAN-krug Р1, шаг 7б, К13б (П13'): сброс беседы (/new, /reset). В событии `before_reset` -- сообщения, снятые
+ * до сброса (у каждого номер строки в `__openclaw`), и правило шлюза «как видит модель» (`selectModelVisible`).
+ * Читать переписку позже нельзя: сброс оставляет номер сессии, новая беседа пишет в неё сразу за событием.
+ * Обычно писать нечего: последний ход записан в конце хода. Если запись последнего хода сорвалась, а следом
+ * сброс, -- его строки дописываются (по правилу шлюза, номера -- у сервера, громко) и только потом сессия уходит
+ * в архив. Шлюз старее (правила нет) -- только архив, как было до 7б.
  */
 
 type Stored = OVMessage & { source_message_ids?: string[] };
@@ -78,11 +77,17 @@ function row(id: string, role: "user" | "assistant", text: string, firstEntryId 
   };
 }
 
-/** The gateway's read of the reset session; its model view drops the messages marked as delivery copies. */
-function readerOver(branch: BranchRow[]): SessionTranscriptReader {
+/** The event the gateway fires: the messages taken before the reset, each named by its row, and its model view. */
+function resetEvent(branch: BranchRow[]): Record<string, unknown> {
   return {
-    readVisiblePage: async () => ({ kind: "page", cursor: String(branch.length - 1), rows: branch, hasMore: false }),
-    selectModelVisible: (rows) => rows.filter((candidate) => (candidate.message as { mirror?: boolean }).mirror !== true),
+    reason: "new",
+    messages: branch.map((candidate) => ({
+      ...(candidate.message as Record<string, unknown>),
+      __openclaw: { id: candidate.entryId, ...(candidate.firstEntryId !== candidate.entryId ? { originalEntryId: candidate.firstEntryId } : {}) },
+    })),
+    // The gateway's model view drops the delivery copies.
+    selectModelVisible: <T extends { message: unknown }>(rows: T[]) =>
+      rows.filter((candidate) => (candidate.message as { mirror?: boolean }).mirror !== true),
   };
 }
 
@@ -121,7 +126,7 @@ describe("сброс беседы", () => {
       row("a2-again", "assistant", "до встречи", "a2"),
     ];
 
-    await hooksOver(engine)({ messages: [], reason: "new", readSessionTranscript: readerOver(branch) });
+    await hooksOver(engine)(resetEvent(branch));
 
     expect(stand.events).toEqual(["write:u2", "write:a2", "commit"]);
     expect(warned.some((line) => line.includes("before_reset"))).toBe(true);
@@ -131,17 +136,13 @@ describe("сброс беседы", () => {
     const stand = server([held("u1", "user", "привет"), held("a1", "assistant", "здравствуй")]);
     const { engine, warned } = engineOver(stand);
 
-    await hooksOver(engine)({
-      messages: [],
-      reason: "new",
-      readSessionTranscript: readerOver([row("u1", "user", "привет"), row("a1", "assistant", "здравствуй")]),
-    });
+    await hooksOver(engine)(resetEvent([row("u1", "user", "привет"), row("a1", "assistant", "здравствуй")]));
 
     expect(stand.events).toEqual(["commit"]);
     expect(warned).toEqual([]);
   });
 
-  it("шлюз старее: в событии только сообщения -- только архив, ничего не пишется", async () => {
+  it("шлюз старее: в событии только сообщения, правила нет -- только архив, ничего не пишется", async () => {
     const stand = server([held("u1", "user", "привет")]);
     const { engine } = engineOver(stand);
     const messages = [
