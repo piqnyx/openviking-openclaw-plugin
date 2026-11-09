@@ -6,6 +6,7 @@ import type { HttpTransport } from "../adapters/http-transport.js";
 import { OpenVikingClient, type OVMessage, type OVMessagePart } from "../client.js";
 import { memoryOpenVikingConfigSchema } from "../config.js";
 import { createMemoryOpenVikingContextEngine } from "../context-engine.js";
+import { registerOpenVikingContextEngine } from "../plugin/openviking-context-engine-registration.js";
 import type { SessionTranscriptReader } from "../services/branch-reader.js";
 import type { BranchRow } from "../services/transcript-catch-up.js";
 
@@ -413,5 +414,74 @@ describe("запись хода через «догнать», как зовёт
 
     // With it the gateway drops a queued turn it can no longer read instead of keeping it as a plug.
     expect(engine.info.transcriptSemantics).toMatchObject({ turnAdvancementRecovery: "transcript-catch-up-v1" });
+  });
+});
+
+/*
+ * PLAN-krug К18: the gateway builds a fresh engine for each logical turn (`resolveLogicalTurnContextEngines`
+ * calls the plugin's factory every time) -- the «догнать» memory must outlive the engine, or each turn reads
+ * the gateway's branch from its start again.
+ */
+describe("память «догнать» между ходами: движок у шлюза новый на каждый ход", () => {
+  beforeEach(() => {
+    SESSION = randomUUID();
+  });
+
+  it("следующий ход читает ветку с места, где остановился прошлый, а не с начала", async () => {
+    const stand = server();
+    let factory: ((ctx?: unknown) => unknown) | undefined;
+    registerOpenVikingContextEngine({
+      api: { registerContextEngine: (_id, registered) => void (factory = registered) },
+      plugin: { id: "openviking", name: "OpenViking" },
+      version: "test",
+      cfg: memoryOpenVikingConfigSchema.parse({ baseUrl: "http://127.0.0.1:1933", autoRecall: false }),
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      getClient: async () => stand.client,
+      resolveAgentId: () => "main",
+      rememberSessionAgentId: () => {},
+      queryConfigStore: undefined,
+      traceRecorder: undefined,
+      createContextEngine: createMemoryOpenVikingContextEngine,
+      setContextEngineRef: () => {},
+    });
+    const engineOfTurn = () => factory?.() as ReturnType<typeof createMemoryOpenVikingContextEngine>;
+    const servedRows = (branch: BranchRow[], options: { fence?: number } = {}) => {
+      const served: string[] = [];
+      const reader = readerOver(branch, options);
+      const recording: SessionTranscriptReader = {
+        ...reader,
+        readVisiblePage: async (limits) => {
+          const page = await reader.readVisiblePage(limits);
+          if (page.kind === "page") {
+            served.push(...page.rows.map((candidate) => candidate.entryId));
+          }
+          return page;
+        },
+      };
+      return { served, reader: recording };
+    };
+    const assembleTurn = async (engine: ReturnType<typeof engineOfTurn>, branch: BranchRow[], reader: SessionTranscriptReader) =>
+      await engine.assemble({
+        sessionId: SESSION,
+        sessionKey: KEY,
+        messages: branch.map((candidate) => candidate.message) as never,
+        tokenBudget: 200_000,
+        availableTools: new Set<string>(),
+        runtimeContext: { sessionKey: KEY, readSessionTranscript: reader },
+      } as never);
+    const greeting = row("u0", { role: "user", content: "привет", timestamp: T0 - 60_000 });
+    const greetingReply = row("a0", { role: "assistant", content: [{ type: "text", text: "здравствуй" }], timestamp: T0 - 59_000 });
+    const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
+
+    const first = engineOfTurn();
+    await assembleTurn(first, [greeting, greetingReply, question], servedRows([greeting, greetingReply, question], { fence: 2 }).reader);
+    await queueWith(first, [greeting, greetingReply, question, reply], "turn-first");
+    const second = engineOfTurn();
+    const secondRead = servedRows([greeting, greetingReply, question, reply, next], { fence: 4 });
+    await assembleTurn(second, [greeting, greetingReply, question, reply, next], secondRead.reader);
+
+    expect(second).not.toBe(first);
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"], ["u1"], ["a1"]]);
+    expect(secondRead.served).toEqual(["u1", "a1"]);
   });
 });
