@@ -80,7 +80,8 @@ describe("чтение ветки шлюза", () => {
     const { value, cursors } = reader(branch, { resetOnce: true });
     const memory: BranchMemory = { cursor: "c9", rows: [row("u1", "user"), row("a1-old", "assistant")] };
 
-    const read = await readBranchSinceBookmark({ reader: value, seenIds: new Set(["u1"]), memory });
+    // Viking holds the old copy the moved branch no longer has.
+    const read = await readBranchSinceBookmark({ reader: value, seenIds: new Set(["a1-old"]), memory });
 
     expect(cursors).toEqual(["c9", "c0"]);
     expect(read.kind === "rows" && ids(read.memory.rows)).toEqual(["u1", "a1-new"]);
