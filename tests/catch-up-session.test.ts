@@ -370,6 +370,15 @@ describe("«догнать» для сессии", () => {
     expect(client.getSessionContext).not.toHaveBeenCalled();
   });
 
+  it("отложенный одинокий вопрос назван в итоге «догнать» (журнал)", async () => {
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000), row("u2", "user", "ты тут?", T0 + 60_000)];
+    const { client } = server();
+
+    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", holdTrailingQuestion: true, memory: "open", reader: reader(branch), peerIdOf: () => undefined, logger: logger() });
+
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0, heldQuestion: "u2" });
+  });
+
   it("свежая сессия без архивов -- пишет ветку целиком", async () => {
     const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
     const { client, stored } = server();
