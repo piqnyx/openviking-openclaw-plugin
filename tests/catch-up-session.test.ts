@@ -35,8 +35,19 @@ function reader(branch: BranchRow[]): SessionTranscriptReader {
 
 type Stored = OVMessage;
 
-function server(options: { totalArchives?: number; stored?: Stored[]; refuse?: (text: string) => number | undefined } = {}) {
+function server(
+  options: {
+    totalArchives?: number;
+    stored?: Stored[];
+    refuse?: (text: string) => number | undefined;
+    // As the server: a session never written to is unknown to every read (routers/sessions.py
+    // 267-350, auto_create=False -> NOT_FOUND); the first write creates it (506, 555).
+    unknownUntilWritten?: boolean;
+    contextBody?: unknown;
+  } = {},
+) {
   const stored: Stored[] = options.stored ?? [];
+  let created = !options.unknownUntilWritten;
   const client = {
     addSessionMessage: vi.fn(
       async (
@@ -53,6 +64,7 @@ function server(options: { totalArchives?: number; stored?: Stored[]; refuse?: (
         if (status) {
           throw new OpenVikingRequestError(`OpenViking request failed: refused ${text}`, status, status >= 500 ? "UNAVAILABLE" : "INVALID_ARGUMENT");
         }
+        created = true;
         stored.push({
           id: `m${stored.length + 1}`,
           role,
@@ -62,13 +74,21 @@ function server(options: { totalArchives?: number; stored?: Stored[]; refuse?: (
         });
       },
     ),
-    getSessionContext: vi.fn(async () => ({
-      latest_archive_overview: "",
-      pre_archive_abstracts: [],
-      messages: [...stored],
-      estimatedTokens: 0,
-      stats: { totalArchives: options.totalArchives ?? 0 },
-    })),
+    getSessionContext: vi.fn(async () => {
+      if (!created) {
+        throw new OpenVikingRequestError("OpenViking request failed [NOT_FOUND]: Session not found", 404, "NOT_FOUND");
+      }
+      if (options.contextBody !== undefined) {
+        return options.contextBody as never;
+      }
+      return {
+        latest_archive_overview: "",
+        pre_archive_abstracts: [],
+        messages: [...stored],
+        estimatedTokens: 0,
+        stats: { totalArchives: options.totalArchives ?? 0 },
+      };
+    }),
   };
   return { client, stored };
 }
@@ -147,6 +167,28 @@ describe("«догнать» для сессии", () => {
   ])("не переписывает всю переписку: %s -- громкий пропуск", async (_label, setup) => {
     const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
     const { client } = server(setup);
+    const log = logger();
+
+    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: log });
+
+    expect(outcome).toMatchObject({ kind: "skipped" });
+    expect(client.addSessionMessage).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("новая беседа: сервер не знает сессию (404) -- пишется ветка, сессия создаётся первой записью", async () => {
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
+    const { client, stored } = server({ unknownUntilWritten: true });
+
+    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: logger() });
+
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0 });
+    expect(textsOf(stored)).toEqual(["привет", "здравствуй"]);
+  });
+
+  it("ответ сервера без сообщений или счёта архивов -- не «свежая»: ничего не пишется, громко", async () => {
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
+    const { client } = server({ contextBody: {} });
     const log = logger();
 
     const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), place: "settled", peerIdOf: () => undefined, logger: log });
