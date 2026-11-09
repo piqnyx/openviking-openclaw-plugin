@@ -66,7 +66,7 @@ function server() {
     return answer({ pending_tokens: 0, unsummarized_archives: 0 });
   });
   const client = new OpenVikingClient("http://127.0.0.1:1933", "ov-key", "main", 5_000, "", "", undefined, { transport });
-  return { client, stored, commits };
+  return { client, stored, commits, transport: transport as unknown as ReturnType<typeof vi.fn> };
 }
 
 function engineOver(stand: ReturnType<typeof server>) {
@@ -186,5 +186,40 @@ describe("запись хода через «догнать», как зовёт
 
     expect(stand.stored.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(warned.filter((line) => line.includes("readSessionTranscript"))).toHaveLength(1);
+  });
+
+  it("главная сборка дописывает ход, который Викинг не держит, и строит окно уже с ним", async () => {
+    const stand = server();
+    const { engine } = engineOver(stand);
+    await queueWith(engine, [question, call, result, reply], "turn-written");
+    const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
+    const nextReply = row("a2", { role: "assistant", content: [{ type: "text", text: "сухо" }], timestamp: T0 + 61_000 });
+    const branch = [question, call, result, reply, next, nextReply];
+    const contextReads = () => stand.transport.mock.calls.filter(([url]) => new URL(String(url)).pathname.endsWith("/context")).length;
+
+    // The queue's write of the second turn failed; the next turn's assemble reads the fenced branch.
+    const before = contextReads();
+    const assembled = await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: branch.map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch) },
+    } as never);
+
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["r1"], ["a1"], ["u2"], ["a2"]]);
+    expect(JSON.stringify(assembled.messages)).toContain("сухо");
+    const afterFirst = contextReads();
+    await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: branch.map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch) },
+    } as never);
+    // Caught up, the window is read again once; with nothing to write, not again.
+    expect(afterFirst - before).toBeGreaterThan(contextReads() - afterFirst);
   });
 });

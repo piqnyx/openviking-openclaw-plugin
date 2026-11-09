@@ -474,6 +474,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         announceCompaction: (
           assembleParams as { announceCompaction?: AnnounceCompaction }
         ).announceCompaction,
+        catchUp,
       });
     },
 

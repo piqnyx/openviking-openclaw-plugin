@@ -114,6 +114,8 @@ export type AssembleOpenVikingSessionParams = {
   isMainAssemble: boolean;
   /** The host's announcer of the engine's compaction (PLAN-gorizont 4д); absent on a host without file 35. */
   announceCompaction?: AnnounceCompaction;
+  /** PLAN-krug Р1, шаг 7б: the engine's «догнать», run before the main window is built. */
+  catchUp?: SessionCatchUp;
   /** How often the server is asked while the turn is held for the summary, ms; the tests shorten it. */
   pollIntervalMs?: number;
   /** PLAN-gorizont 5а: the pause between questions to the price handle while the turn is held, ms. */
@@ -1405,6 +1407,7 @@ export async function assembleOpenVikingSession({
   announceCompaction,
   pollIntervalMs = PHASE2_POLL_INTERVAL_MS,
   pourRetryPauseMs = POUR_RETRY_PAUSE_MS,
+  catchUp,
 }: AssembleOpenVikingSessionParams): Promise<AssembleOpenVikingSessionResult> {
   const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
   const sender = extractRuntimeSenderId(runtimeContext);
@@ -1538,10 +1541,9 @@ export async function assembleOpenVikingSession({
   }
 
   try {
-    const client = await getClient(
-      resolveAgentId(sessionId ?? sessionKey ?? ovSessionId, sessionKey, ovSessionId),
-    );
-    const ctx = await settleWindow({
+    const agentId = resolveAgentId(sessionId ?? sessionKey ?? ovSessionId, sessionKey, ovSessionId);
+    const client = await getClient(agentId);
+    let ctx = await settleWindow({
       client,
       ovSessionId,
       cfg,
@@ -1553,6 +1555,32 @@ export async function assembleOpenVikingSession({
       runtimeSettings,
       priceHandle,
     });
+    // PLAN-krug Р1, шаг 7б: rows the gateway holds and Viking does not (a turn whose write at its end
+    // failed, or that closed without the queue) are caught up before the window is built, checked
+    // against the live messages just read; the window is read again only when any went in.
+    const reader = catchUp ? transcriptReaderOf(runtimeContext) : undefined;
+    if (catchUp && reader && ctx) {
+      const senderRoleId = toRoleId(sender.senderId);
+      const outcome = await catchUp({
+        client,
+        ovSessionId,
+        reader,
+        place: "settled",
+        remainder: { messages: ctx.messages ?? [], totalArchives: ctx.stats?.totalArchives },
+        peerIdOf: (role) =>
+          resolveOpenVikingMessagePeerId({
+            peerRole: cfg.peer_role ?? "assistant",
+            role,
+            personPeerId: senderRoleId,
+            assistantPeerId: agentId,
+          }),
+        logger,
+      });
+      diag("assemble_catch_up", ovSessionId, outcome);
+      if (outcome.kind !== "skipped" && outcome.written > 0) {
+        ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+      }
+    }
 
     const preAbstracts = ctx?.pre_archive_abstracts ?? [];
     const hasArchives = !!ctx?.latest_archive_overview || preAbstracts.length > 0;
