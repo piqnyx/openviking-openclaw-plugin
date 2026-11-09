@@ -204,6 +204,30 @@ describe("сброс: первые шаги новой беседы ждут а�
     expect(JSON.stringify(assembled.messages)).not.toContain("старая беседа");
   });
 
+  it("конец первого хода через очередь (телега, веб) пишется после архива старой беседы", async () => {
+    const gate = deferred();
+    const stand = server({ commitGate: gate.promise });
+    const sessionId = randomUUID();
+    const plugin = pluginOver(stand);
+    await oldConversation(plugin, sessionId);
+
+    const resetting = plugin.fireReset(sessionId, old);
+    const branch = [...old, asked, answered];
+    const committing = plugin.engineOfTurn().commitTurn?.({
+      advancementKey: `turn-new-${sessionId}`,
+      messages: branch.map((candidate) => candidate.message) as never,
+      sessionId,
+      sessionKey: KEY,
+      runtimeContext: { readSessionTranscript: readerOver(branch) },
+    } as never);
+    setTimeout(() => gate.release(), 20);
+    await committing;
+    await resetting;
+
+    expect(stand.events.indexOf("commit")).toBeGreaterThan(-1);
+    expect(stand.events.indexOf("commit")).toBeLessThan(stand.events.indexOf("write:u1"));
+  });
+
   it("барьер снят, как только сервер принял архив; извлечение памяти ход не держит", async () => {
     let extracted = false;
     const stand = server({ phaseTwo: () => extracted });
