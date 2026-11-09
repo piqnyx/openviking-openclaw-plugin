@@ -21,7 +21,14 @@ export type CatchUpOutcome =
 // the reads without a fence (mid-turn, the queue), whose cursor may pass the current question.
 // `dirty`: a write stopped or the catch-up failed -- what Viking holds is asked of the server next
 // time, not of this memory (a write answered late may have landed meanwhile; PLAN-krug П1').
-type SessionState = { fenced?: BranchMemory; open?: BranchMemory; held: Set<string>; dirty?: boolean };
+type SessionState = {
+  fenced?: BranchMemory;
+  open?: BranchMemory;
+  held: Set<string>;
+  dirty?: boolean;
+  /** The rows whose write failed last, and how many times in a row (PLAN-krug К15). */
+  failing?: { ids: string; times: number };
+};
 
 type CatchUpParams = {
   client: CatchUpClient;
@@ -45,6 +52,9 @@ const MAX_SESSIONS = 256;
 // What the session's rows Viking holds, by id, newest last: shared by both memories and not cut to
 // either one's rows -- a retry's fenced read must not forget what the open read wrote.
 const MAX_HELD_IDS = 4096;
+// A write that fails this many times in a row on the same rows is lost loudly, and the rest go on:
+// rows the server always fails on must not hold every row after them (PLAN-krug П9', К15).
+const MAX_TRIES = 5;
 
 /**
  * PLAN-krug Р1, шаг 7б: «догнать» for one session -- what Viking holds (the row ids of its live
@@ -146,7 +156,7 @@ async function catchUpUnderLock(params: CatchUpParams, state: SessionState): Pro
     }
   }
   const plan = planTranscriptCatchUp({ rows: read.visible, seenIds: held.ids, holdTrailingQuestion: params.holdTrailingQuestion });
-  const written = await writeInOrder(params, plan.messages, held.ids);
+  const written = await writeInOrder(params, plan.messages, held.ids, state);
   if (params.memory !== "none") {
     state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
   }
@@ -241,6 +251,7 @@ async function writeInOrder(
   },
   messages: CatchUpMessage[],
   held: Set<string>,
+  state: Pick<SessionState, "failing">,
 ): Promise<CatchUpOutcome> {
   let written = 0;
   let lost = 0;
@@ -265,11 +276,22 @@ async function writeInOrder(
         );
         lost += 1;
       } else {
+        const ids = message.sourceIds.join(",");
+        const times = state.failing?.ids === ids ? state.failing.times + 1 : 1;
+        if (times < MAX_TRIES) {
+          state.failing = { ids, times };
+          params.logger.warn?.(
+            `openviking: catch-up of session=${params.ovSessionId} stopped at gateway rows ` +
+              `${ids} (${text}); the next catch-up resumes there`,
+          );
+          return { kind: "stopped", written, error: text };
+        }
+        state.failing = undefined;
         params.logger.warn?.(
-          `openviking: catch-up of session=${params.ovSessionId} stopped at gateway rows ` +
-            `${message.sourceIds.join(",")} (${text}); the next catch-up resumes there`,
+          `openviking: the server failed gateway rows ${ids} of session=${params.ovSessionId} ${MAX_TRIES} times ` +
+            `in a row (${text}); they are not in Viking and are not tried again`,
         );
-        return { kind: "stopped", written, error: text };
+        lost += 1;
       }
     }
     for (const id of message.sourceIds) {
