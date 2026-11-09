@@ -232,6 +232,31 @@ describe("сборка, когда сервер дал пересказ", () => 
     expect(outcome.recovered).toBeUndefined();
     expect(asked.filter((p) => p.includes("/archives/"))).toEqual([]);
   });
+
+  // PLAN-krug 7в.6: the gateway stamps every user message by its `timestamp` (attempt-llm-boundary.ts);
+  // a window message from Viking carries the time it was written with.
+  it("сообщения окна несут время своей записи; нечитаемое время -- без поля", async () => {
+    const live = liveTranscript(62);
+    const unreadable = { ...ovMessage(60, "user"), created_at: "не время" };
+    const { client } = server({
+      context: {
+        latest_archive_overview: "ПЕРЕСКАЗ-СВЕЖИЙ",
+        messages: [ovMessage(57, "assistant"), ovMessage(58, "user"), ovMessage(59, "assistant"), unreadable],
+        stats: {
+          totalArchives: 3, includedArchives: 0, droppedArchives: 3,
+          failedArchives: 0, activeTokens: 10, archiveTokens: 5,
+        },
+      },
+    });
+    const { value } = await assemble(live, 12_000, client);
+
+    const carrying = (i: number) => value.messages.find((message) => JSON.stringify(message.content).includes(mark(i)));
+    expect(carrying(57)?.timestamp).toBe(Date.parse(ovMessage(57).created_at));
+    expect(carrying(58)?.timestamp).toBe(Date.parse(ovMessage(58).created_at));
+    expect(carrying(59)?.timestamp).toBe(Date.parse(ovMessage(59).created_at));
+    expect(carrying(60)).toBeDefined();
+    expect(carrying(60)).not.toHaveProperty("timestamp");
+  });
 });
 
 describe("сборка, когда свежего пересказа нет", () => {
