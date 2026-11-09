@@ -36,7 +36,7 @@ function liveTranscript(count: number): AgentMessage[] {
 
 /** The server: the context says how many archives wait for a summary, the session
  * says the same when asked again; each list is read front to back, the last value
- * stays. */
+ * stays. A negative count in the context's list: the server does not answer that read. */
 function server(answers: { context: number[]; session: number[] }) {
   const asked: string[] = [];
   const next = (list: number[]) => (list.length > 1 ? (list.shift() as number) : (list[0] as number));
@@ -50,6 +50,12 @@ function server(answers: { context: number[]; session: number[] }) {
       });
     if (parsed.pathname.endsWith("/context")) {
       const waiting = next(answers.context);
+      if (waiting < 0) {
+        return new Response(JSON.stringify({ status: "error", error: { code: "INTERNAL", message: "storage busy" } }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       return answer({
         latest_archive_overview: waiting > 0 ? "" : "СВОДКА",
         pre_archive_abstracts: [],
@@ -174,6 +180,37 @@ describe("ход держится, пока сводка не встала", () 
     expect(JSON.stringify(window.messages[0])).toContain("[Session History Summary]\\nСВОДКА");
     // One read more for the hold given up: before the wait and after it.
     expect(contextReads()).toBe(2);
+  });
+
+  // PLAN-krug 7в.7б (НР-1): a server that does not answer after the wait leaves the answer from before it,
+  // not a window built as after an error, with no summary at all.
+  it("предел вышел, а ответа после ожидания нет -- окно по ответу до ожидания", async () => {
+    const { client } = server({ context: [1, -1], session: [1] });
+    const { assemble, seen } = stand("11111111-0000-4000-8000-000000000007", client, {
+      holdForSummarySeconds: 0.02,
+    });
+
+    await assemble();
+
+    expect(seen.filter((entry) => entry.stage === "assemble_result").at(-1)?.data).toMatchObject({
+      reason: "no_fresh_summary",
+    });
+  });
+
+  // PLAN-krug 7в.7б (НР-2): not held again only while archives wait by the answer after the wait; nothing
+  // waiting then (the summary failed after the limit, and PLAN-krug 7в.Р2а pours), the next pour's summary
+  // is waited for again.
+  it("предел вышел, а после ожидания ничего не ждёт -- следующую сводку снова ждут", async () => {
+    const { client } = server({ context: [1, 0, 1], session: [1] });
+    const { assemble, holds, seen } = stand("11111111-0000-4000-8000-000000000008", client, {
+      holdForSummarySeconds: 0.02,
+    });
+
+    await assemble();
+    await assemble();
+
+    expect(seen.filter((entry) => entry.stage === "hold_for_summary_skip")).toEqual([]);
+    expect(holds()).toHaveLength(2);
   });
 
   it("не ждёт, когда ничто не ждёт сводки", async () => {
