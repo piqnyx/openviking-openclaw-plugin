@@ -156,6 +156,25 @@ describe("ход держится, пока сводка не встала", () 
     expect(announce.mock.calls).toEqual([["start"], ["end", { completed: false }]]);
   });
 
+  // PLAN-krug 7в.7б: the answer read before the hold is up to the limit old when the hold gives up; the
+  // window is built from the server's answer as it stands at the end of the wait.
+  it("предел вышел -- окно по ответу, прочитанному после ожидания", async () => {
+    // The summary stood right after the last poll: only the answer read after the wait has it.
+    const { client, contextReads } = server({ context: [1, 0], session: [1] });
+    const { assemble, holds } = stand("11111111-0000-4000-8000-000000000006", client, {
+      holdForSummarySeconds: 0.02,
+    });
+
+    const window = await assemble();
+
+    expect(holds()).toEqual([
+      expect.objectContaining({ data: expect.objectContaining({ outcome: "timeout" }) }),
+    ]);
+    expect(JSON.stringify(window.messages[0])).toContain("[Session History Summary]\\nСВОДКА");
+    // One read more for the hold given up: before the wait and after it.
+    expect(contextReads()).toBe(2);
+  });
+
   it("не ждёт, когда ничто не ждёт сводки", async () => {
     const { client, contextReads, sessionPolls } = server({ context: [0], session: [0] });
     const { assemble, announce } = stand("11111111-0000-4000-8000-000000000003", client, {});
