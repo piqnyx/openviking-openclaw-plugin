@@ -153,7 +153,14 @@ function charsHandle() {
   };
 }
 
-type Cut = { keepRecentTokens?: number; keepRecentFloor?: number; handle?: boolean | "silent"; holdForSummarySeconds?: number };
+type Cut = {
+  keepRecentTokens?: number;
+  keepRecentFloor?: number;
+  handle?: boolean | "silent";
+  holdForSummarySeconds?: number;
+  /** «Догнать» шло и не дописало (запись встала). */
+  catchUp?: "stopped";
+};
 
 /** Весы, которые молчат: вердикта нет ни на одно тело (шторм). */
 function silentHandle() {
@@ -177,6 +184,17 @@ function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVik
     ...(cut.handle === false
       ? {}
       : { priceHandle: cut.handle === "silent" ? silentHandle() : charsHandle() }),
+    ...(cut.catchUp === "stopped"
+      ? {
+          catchUp: async () => ({ kind: "stopped" as const, written: 0, error: "storage busy" }),
+          runtimeContext: {
+            readSessionTranscript: {
+              readVisiblePage: async () => ({ kind: "page", cursor: "-1", rows: [], hasMore: false }),
+              selectModelVisible: (rows: unknown[]) => rows,
+            },
+          },
+        }
+      : {}),
     runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite", requested: null } },
     getClient: async () => client,
     logger: { info: () => {}, warn: (line) => warned.push(line) },
@@ -297,6 +315,88 @@ describe("путь окна по фактам сервера (PLAN-krug 7в.2)",
 
     expect(value.messages).toBe(live);
     expect(outcome.reason).toBe("ov_msgs_fewer_than_input");
+  });
+});
+
+// PLAN-krug 7в.7а: the server's answer stands on the summary of the archive its walk stopped at -- a closed one,
+// or one failed or still at work with its summary written whole (PLAN-gorizont 3г, 3е) -- while only closed
+// archives are handed out one by one. The fallback path keeps the newest summary in hand.
+describe("запасной путь и сводка, на которой стоит ответ сервера (PLAN-krug 7в.7а)", () => {
+  // Сводка стоит у сорванного архива (3г) -- archive_002; перед ним закрытый archive_001, кончился на 39.
+  const standingOn3g = (waiting: number): Partial<SessionContextResult> => ({
+    latest_archive_overview: "ПЕРЕСКАЗ-3Г",
+    messages: [ovMessage(48), ovMessage(49, "assistant"), ovMessage(58), ovMessage(59, "assistant")],
+    stats: {
+      totalArchives: 2 + waiting, includedArchives: 1, droppedArchives: 0,
+      failedArchives: 1, activeTokens: 10, archiveTokens: 5, unsummarizedArchives: waiting,
+    },
+  });
+
+  it.each([
+    {
+      trigger: "новейший ждёт сводки, удержание выключено",
+      waiting: 1,
+      cut: {},
+      reason: "no_fresh_summary",
+      probes: ["archive_003", "archive_002", "archive_001"],
+    },
+    {
+      trigger: "«догнать» не дописало",
+      waiting: 0,
+      cut: { catchUp: "stopped" as const },
+      reason: "catch_up_stopped",
+      probes: ["archive_002", "archive_001"],
+    },
+  ])("$trigger: сводка из ответа, хвост с границы старшего закрытого", async ({ waiting, cut, reason, probes }) => {
+    const live = liveTranscript(60);
+    const { client, asked } = server({
+      context: standingOn3g(waiting),
+      archives: { archive_001: { overview: "ПЕРЕСКАЗ-СТАРШИЙ", lastMessageIndex: 39 } },
+    });
+    const { value, outcome } = await assemble(live, 12_000, client, { holdForSummarySeconds: 0, ...cut });
+
+    expect(JSON.stringify(value.messages[0])).toContain("[Session History Summary]\\nПЕРЕСКАЗ-3Г");
+    expect(JSON.stringify(value.messages)).not.toContain("ПЕРЕСКАЗ-СТАРШИЙ");
+    // С начала хода, на котором кончился archive_001: отрезок архива 3г идёт ещё раз, ничего не пропущено.
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
+    expect(value.systemPromptAddition).toContain("Session Context Guide");
+    expect(asked.filter((p) => p.includes("/archives/")).map((p) => p.split("/").at(-1))).toEqual(probes);
+    expect(outcome).toMatchObject({
+      recovered: true, reason, summaryFrom: "context", archiveId: "archive_001", boundaryFound: true,
+    });
+  });
+
+  it("сводка стоит, закрытого архива в досягаемости нет: сводка из ответа и хвост по весу", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({ context: standingOn3g(1), archives: {} });
+    const { value, outcome } = await assemble(live, 12_000, client, {
+      holdForSummarySeconds: 0, keepRecentTokens: 12_000, keepRecentFloor: 4,
+    });
+
+    expect(JSON.stringify(value.messages[0])).toContain("[Session History Summary]\\nПЕРЕСКАЗ-3Г");
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
+    expect(value.systemPromptAddition).toContain("Session Context Guide");
+    expect(outcome).toMatchObject({
+      recovered: true, reason: "no_fresh_summary", summaryFrom: "context", archiveId: null, boundaryFound: false,
+    });
+  });
+
+  it("архив закрылся уже после ответа и он новее стоящей сводки: его сводка и его граница", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: standingOn3g(1),
+      // archive_003 ждал сводки, когда сервер отвечал, и закрылся раньше, чем плагин его спросил.
+      archives: {
+        archive_003: { overview: "ПЕРЕСКАЗ-003", lastMessageIndex: 49 },
+        archive_001: { overview: "ПЕРЕСКАЗ-СТАРШИЙ", lastMessageIndex: 39 },
+      },
+    });
+    const { value, outcome } = await assemble(live, 12_000, client, { holdForSummarySeconds: 0 });
+
+    expect(JSON.stringify(value.messages[0])).toContain("[Session History Summary]\\nПЕРЕСКАЗ-003");
+    expect(JSON.stringify(value.messages)).not.toContain("ПЕРЕСКАЗ-3Г");
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
+    expect(outcome).toMatchObject({ summaryFrom: "archive", archiveId: "archive_003", boundaryFound: true });
   });
 });
 
