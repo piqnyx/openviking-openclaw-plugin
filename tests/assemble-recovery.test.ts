@@ -812,20 +812,20 @@ describe("то же через движок, как его зовёт шлюз",
 // fallback path not whole (summary and a cut tail), "whole" otherwise -- so the web and the channel show a line while
 // part of the conversation is out of the model's sight and take it down once a later assembly is whole again.
 describe("состояние окна для хоста (PLAN-krug 7в.3в)", () => {
-  const engineOver = (client: OpenVikingClient) =>
+  const engineOver = (client: OpenVikingClient, keepRecentTokens = 30_000) =>
     createMemoryOpenVikingContextEngine({
       id: "openviking",
       name: "OpenViking",
       cfg: memoryOpenVikingConfigSchema.parse({
-        baseUrl: "http://127.0.0.1:1933", autoRecall: false, keepRecentTokens: 30_000,
+        baseUrl: "http://127.0.0.1:1933", autoRecall: false, keepRecentTokens,
       }),
       logger: { info: () => {}, warn: () => {}, error: () => {} },
       getClient: async () => client,
       resolveAgentId: () => "main",
       priceHandle: charsHandle(),
     });
-  const mainAssemble = (client: OpenVikingClient, live: AgentMessage[]) =>
-    engineOver(client).assemble({
+  const mainAssemble = (client: OpenVikingClient, live: AgentMessage[], keepRecentTokens?: number) =>
+    engineOver(client, keepRecentTokens).assemble({
       sessionId: "9478e347-6bdc-44f5-a4e0-207fe7e4b6e3",
       messages: live,
       tokenBudget: 12_000,
@@ -833,13 +833,25 @@ describe("состояние окна для хоста (PLAN-krug 7в.3в)", ()
       runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite", requested: null } },
     } as never) as Promise<{ messages: AgentMessage[]; contextWindow?: string }>;
 
-  it("запасной путь со сводкой и срезанным хвостом -- partial", async () => {
+  // 22 сообщения от границы архива весят около 21 250 -- под K 12 000 не влезают, старые срезаны.
+  it("запасной путь срезал старое -- partial", async () => {
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39 } },
+    });
+    const value = await mainAssemble(client, liveTranscript(60), 12_000);
+    expect(value.contextWindow).toBe("partial");
+  });
+
+  // Проверяющий кода 7в.3в, Н4: сводка и весь хвост от границы влезли под K -- из окна ничего не выпало.
+  it("запасной путь вместил всё от границы архива -- whole", async () => {
     const { client } = server({
       context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
       archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39 } },
     });
     const value = await mainAssemble(client, liveTranscript(60));
-    expect(value.contextWindow).toBe("partial");
+    expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ДО-39");
+    expect(value.contextWindow).toBe("whole");
   });
 
   it("главный путь -- whole", async () => {
