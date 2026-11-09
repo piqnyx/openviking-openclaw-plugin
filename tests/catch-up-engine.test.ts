@@ -250,8 +250,8 @@ describe("запись хода через «догнать», как зовёт
       availableTools: new Set<string>(),
       runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch) },
     } as never);
-    // Caught up, the window is read again once; with nothing to write, not again.
-    expect(afterFirst - before).toBeGreaterThan(contextReads() - afterFirst);
+    // The window, and once more after the catch-up wrote; with nothing to write, only the window.
+    expect([afterFirst - before, contextReads() - afterFirst]).toEqual([2, 1]);
   });
 
   it("повторная сборка после записи посреди своего хода не падает на ограде шлюза", async () => {
@@ -329,6 +329,28 @@ describe("запись хода через «догнать», как зовёт
   // and the model sees it next to the next question -- so only the turn still running holds it back.
   const u0 = row("u0", { role: "user", content: "привет", timestamp: T0 - 60_000 });
   const a0 = row("a0", { role: "assistant", content: [{ type: "text", text: "здравствуй" }], timestamp: T0 - 59_000 });
+
+  it("сборка после перезапуска сверяется с остатком, который уже прочитала: /context -- окно и после записи (В9, К12)", async () => {
+    const stand = server();
+    // Viking holds the first row; this process knows nothing of the session (a restart).
+    await stand.client.addSessionMessage(SESSION, "user", [{ type: "text", text: "привет" }], undefined, undefined, undefined, ["u0"]);
+    const { engine } = engineOver(stand);
+    const branch = [u0, a0, question];
+    const contextReads = () => stand.transport.mock.calls.filter(([url]) => new URL(String(url)).pathname.endsWith("/context")).length;
+
+    const before = contextReads();
+    await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: branch.map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch, { fence: 2 }) },
+    } as never);
+
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"]]);
+    expect(contextReads() - before).toBe(2);
+  });
 
   it("сорванный ход: его вопрос без ответа пишется на сборке следующего хода -- модель его видит", async () => {
     const stand = server();

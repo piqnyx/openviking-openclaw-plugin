@@ -24,10 +24,11 @@ function row(id: string, role: "user" | "assistant", text: string, at: number): 
 }
 
 /**
- * As the gateway's reader: the cursor names the last row read (its position and id); a cursor whose
- * row is no longer there is answered with a reset to the branch's start (anchor_missing); under a
- * fence (the current question's position) only rows before it are visible, and a cursor on the fence
- * or past it is an error, not a reset (session-accessor.sqlite-active-events.ts 207-235).
+ * As the gateway's reader: the cursor names the last row read (its position and id); under a fence
+ * (the current question's position) only rows before it are visible, and a cursor on the fence or
+ * past it is an error, not a reset; a cursor whose row is no longer there is answered with a reset to
+ * the branch's start (anchor_missing) -- the fence is checked before the anchor, as the gateway does
+ * (session-accessor.sqlite-active-events.ts 225-253).
  */
 function reader(branch: BranchRow[], options: { fence?: number } = {}) {
   const cursors: Array<string | undefined> = [];
@@ -37,13 +38,13 @@ function reader(branch: BranchRow[], options: { fence?: number } = {}) {
       cursors.push(limits?.cursor);
       const [position, anchor] = (limits?.cursor ?? "-1:").split(":");
       const last = Number(position);
-      if (last >= 0 && branch[last]?.firstEntryId !== anchor) {
-        return { kind: "reset", cursor: "-1:", reason: "anchor_missing" };
-      }
       if (options.fence !== undefined && last >= options.fence) {
         throw Object.assign(new Error("Transcript read cursor has crossed the current-turn admission fence"), {
           name: "SessionTranscriptReadFenceError",
         });
+      }
+      if (last >= 0 && branch[last]?.firstEntryId !== anchor) {
+        return { kind: "reset", cursor: "-1:", reason: "anchor_missing" };
       }
       const end = options.fence !== undefined ? Math.min(options.fence, branch.length) : branch.length;
       const rows = branch.slice(last + 1, end);
