@@ -352,6 +352,29 @@ describe("запись хода через «догнать», как зовёт
     expect(contextReads() - before).toBe(2);
   });
 
+  // PLAN-krug 7в.2: Viking keeps a tool round as one message, the gateway as several -- after the catch-up
+  // that is no reason to cut the window to K.
+  it("диалог без архивов с кругом инструментов после «догнать» -- окно из Викинга, не запасной путь", async () => {
+    const stand = server();
+    const { engine, diags } = engineOver(stand);
+    await queueWith(engine, [question, call, result, reply], "turn-tools");
+    const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
+    const branch = [question, call, result, reply, next];
+
+    await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: [question, call, result, reply].map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch, { fence: 4 }) },
+    } as never);
+
+    const outcome = diags.filter((entry) => entry.stage === "assemble_result").at(-1)?.data;
+    expect(outcome).toMatchObject({ passthrough: false });
+    expect(outcome?.reason).toBeUndefined();
+  });
+
   it("сорванный ход: его вопрос без ответа пишется на сборке следующего хода -- модель его видит", async () => {
     const stand = server();
     const { engine } = engineOver(stand);

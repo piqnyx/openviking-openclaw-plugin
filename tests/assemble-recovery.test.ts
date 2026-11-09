@@ -153,7 +153,7 @@ function charsHandle() {
   };
 }
 
-type Cut = { keepRecentTokens?: number; keepRecentFloor?: number; handle?: boolean | "silent" };
+type Cut = { keepRecentTokens?: number; keepRecentFloor?: number; handle?: boolean | "silent"; holdForSummarySeconds?: number };
 
 /** Весы, которые молчат: вердикта нет ни на одно тело (шторм). */
 function silentHandle() {
@@ -172,6 +172,7 @@ function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVik
       autoRecall: false,
       keepRecentTokens: cut.keepRecentTokens ?? 30_000,
       keepRecentFloor: cut.keepRecentFloor ?? 20,
+      ...(cut.holdForSummarySeconds !== undefined ? { holdForSummarySeconds: cut.holdForSummarySeconds } : {}),
     },
     ...(cut.handle === false
       ? {}
@@ -259,6 +260,46 @@ describe("сборка, когда сервер дал пересказ", () => 
   });
 });
 
+// PLAN-krug 7в.2: the path is chosen by what the server says, not by counting messages of two forms.
+describe("путь окна по фактам сервера (PLAN-krug 7в.2)", () => {
+  it("пересказ старшего архива стоит, а новейший ждёт пересказа после выключенного удержания -- запасной путь", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: {
+        latest_archive_overview: "ПЕРЕСКАЗ-СТАРЫЙ",
+        // The newest archive's messages come raw until its summary stands.
+        messages: [ovMessage(40), ovMessage(41, "assistant"), ovMessage(58), ovMessage(59, "assistant")],
+        stats: {
+          totalArchives: 3, includedArchives: 1, droppedArchives: 1,
+          failedArchives: 0, activeTokens: 10, archiveTokens: 5, unsummarizedArchives: 1,
+        },
+      },
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-СТАРЫЙ", lastMessageIndex: 39 } },
+    });
+    const { outcome } = await assemble(live, 12_000, client, { holdForSummarySeconds: 0 });
+
+    expect(outcome).toMatchObject({ recovered: true, reason: "no_fresh_summary" });
+  });
+
+  it("без читателя шлюза, архивов нет, у Викинга сообщений меньше -- проверка счёта как была", async () => {
+    const live = liveTranscript(10);
+    const { client } = server({
+      context: {
+        latest_archive_overview: "",
+        messages: [ovMessage(9)],
+        stats: {
+          totalArchives: 0, includedArchives: 0, droppedArchives: 0,
+          failedArchives: 0, activeTokens: 1, archiveTokens: 0, unsummarizedArchives: 0,
+        },
+      },
+    });
+    const { value, outcome } = await assemble(live, 200_000, client);
+
+    expect(value.messages).toBe(live);
+    expect(outcome.reason).toBe("ov_msgs_fewer_than_input");
+  });
+});
+
 describe("сборка, когда свежего пересказа нет", () => {
   it("маленькую переписку отдаёт как есть, тем же массивом", async () => {
     const live = liveTranscript(10);
@@ -267,7 +308,7 @@ describe("сборка, когда свежего пересказа нет", ()
 
     expect(value.messages).toBe(live);
     expect(outcome.passthrough).toBe(true);
-    expect(outcome.reason).toBe("ov_msgs_fewer_than_input");
+    expect(outcome.reason).toBe("no_fresh_summary");
     expect(asked.filter((p) => p.includes("/archives/"))).toEqual([]);
   });
 
@@ -295,7 +336,7 @@ describe("сборка, когда свежего пересказа нет", ()
     expect(asked.filter((p) => p.includes("/archives/")).map((p) => p.split("/").at(-1)))
       .toEqual(["archive_003", "archive_002"]);
     expect(outcome).toMatchObject({
-      passthrough: false, recovered: true, reason: "ov_msgs_fewer_than_input",
+      passthrough: false, recovered: true, reason: "no_fresh_summary",
       archiveId: "archive_002", boundaryFound: true, tailMessages: 22, droppedMessages: 0,
     });
     expect(outcome.boundary).toEqual({
