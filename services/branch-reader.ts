@@ -128,30 +128,3 @@ export function fromBookmarkTurn(rows: BranchRow[], seenIds: ReadonlySet<string>
   }
   return rows;
 }
-
-/**
- * The rows of messages that carry their transcript row id (`__openclaw.id`, and `originalEntryId`
- * when the gateway re-appended the row) -- the `before_reset` event's messages. Messages with no id
- * (an older gateway) are not rows.
- */
-export function rowsOfTranscriptMessages(messages: readonly unknown[]): BranchRow[] {
-  return messages.flatMap((message): BranchRow[] => {
-    const meta = (message as { __openclaw?: { id?: unknown; originalEntryId?: unknown } } | null)?.__openclaw;
-    if (!meta || typeof meta.id !== "string" || !meta.id) {
-      return [];
-    }
-    const firstEntryId = typeof meta.originalEntryId === "string" && meta.originalEntryId ? meta.originalEntryId : meta.id;
-    return [{ entryId: meta.id, firstEntryId, message }];
-  });
-}
-
-/**
- * A reader over rows already in hand, as one page; it keeps every row -- there is no gateway rule of
- * what the model sees here, the caller says so loudly when it writes any.
- */
-export function fixedBranchReader(rows: BranchRow[]): SessionTranscriptReader {
-  return {
-    readVisiblePage: async () => ({ kind: "page", cursor: "", rows, hasMore: false }),
-    selectModelVisible: (candidates) => candidates,
-  };
-}

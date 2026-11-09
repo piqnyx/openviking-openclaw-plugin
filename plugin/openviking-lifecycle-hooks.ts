@@ -1,3 +1,5 @@
+import { transcriptReaderOf, type SessionTranscriptReader } from "../services/branch-reader.js";
+
 export type OpenVikingHookContext = {
   agentId?: string;
   sessionId?: string;
@@ -9,8 +11,8 @@ export type ContextEngineCommitPort = {
   commitOVSession: (ctx: {
     sessionId: string;
     sessionKey?: string;
-    /** PLAN-krug 7б: the reset's messages, each named by its transcript row. */
-    transcriptMessages?: unknown[];
+    /** PLAN-krug К13: the gateway's read of the reset session; none from an older gateway. */
+    transcriptReader?: SessionTranscriptReader;
   }) => Promise<boolean>;
 };
 
@@ -52,11 +54,11 @@ export function registerOpenVikingLifecycleHooks(deps: OpenVikingLifecycleHooksD
     const contextEngine = deps.getContextEngine();
     if (sessionId && contextEngine) {
       try {
-        const messages = (event as { messages?: unknown } | undefined)?.messages;
+        const reader = transcriptReaderOf(event as Record<string, unknown> | undefined);
         const ok = await contextEngine.commitOVSession({
           sessionId,
           sessionKey: ctx?.sessionKey,
-          ...(Array.isArray(messages) ? { transcriptMessages: messages } : {}),
+          ...(reader ? { transcriptReader: reader } : {}),
         });
         if (ok) {
           deps.logger.info(`openviking: committed OV session on reset for session=${sessionId}`);

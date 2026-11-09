@@ -22,7 +22,7 @@ import {
   type AnnounceCompaction,
 } from "./services/context-lifecycle-service.js";
 import { createSessionCatchUp, type SessionCatchUp } from "./services/catch-up-session.js";
-import { fixedBranchReader, rowsOfTranscriptMessages } from "./services/branch-reader.js";
+import type { SessionTranscriptReader } from "./services/branch-reader.js";
 
 type ContextEngineInfo = {
   id: string;
@@ -188,8 +188,8 @@ export type ContextEngineWithCommit = ContextEngine & {
     sessionId: string;
     sessionKey?: string;
     runtimeContext?: Record<string, unknown>;
-    /** PLAN-krug 7б: the reset's messages, each named by its transcript row (before_reset). */
-    transcriptMessages?: unknown[];
+    /** PLAN-krug К13: the gateway's read of the reset session (before_reset); none from an older gateway. */
+    transcriptReader?: SessionTranscriptReader;
   }) => Promise<boolean>;
 };
 
@@ -377,13 +377,12 @@ export function createMemoryOpenVikingContextEngine(params: {
   /**
    * PLAN-krug 7б: on a reset the turn's end has normally written the last turn already; when its
    * write failed and the reset came first, the rows Viking lacks go in now, before the archive --
-   * after it, the queue would write them into the old session where nothing extracts them. There is
-   * no gateway reader here: they go without its rule of what the model sees, said loudly. A failure
-   * here does not hold the archive back.
+   * after it, the queue would write them into the old session where nothing extracts them. Read with
+   * the gateway's reader from the event, by its rule of what the model sees; the server says what Viking
+   * holds (PLAN-krug К13). A failure here does not hold the archive back.
    */
-  async function catchUpBeforeReset(params: { sessionId: string; sessionKey?: string; messages: unknown[] }) {
-    const rows = rowsOfTranscriptMessages(params.messages);
-    if (!cfg.autoCapture || rows.length === 0 || isBypassedSession({ sessionId: params.sessionId, sessionKey: params.sessionKey })) {
+  async function catchUpBeforeReset(params: { sessionId: string; sessionKey?: string; reader: SessionTranscriptReader }) {
+    if (!cfg.autoCapture || isBypassedSession({ sessionId: params.sessionId, sessionKey: params.sessionKey })) {
       return;
     }
     try {
@@ -393,7 +392,7 @@ export function createMemoryOpenVikingContextEngine(params: {
       const outcome = await catchUp({
         client,
         ovSessionId,
-        reader: fixedBranchReader(rows),
+        reader: params.reader,
         holdTrailingQuestion: false,
         memory: "none",
         peerIdOf: (role) =>
@@ -402,8 +401,7 @@ export function createMemoryOpenVikingContextEngine(params: {
       });
       if (outcome.kind !== "skipped" && outcome.written > 0) {
         logger.warn?.(
-          `openviking: before_reset wrote ${outcome.written} message(s) of session=${ovSessionId} that the turn's ` +
-            "end had not, without the gateway's rule of what the model sees (delivery copies or heartbeat rows may be among them)",
+          `openviking: before_reset wrote ${outcome.written} message(s) of session=${ovSessionId} that the turn's end had not`,
         );
       }
     } catch (err) {
@@ -415,12 +413,13 @@ export function createMemoryOpenVikingContextEngine(params: {
     sessionId: string;
     sessionKey?: string;
     runtimeContext?: Record<string, unknown>;
-    transcriptMessages?: unknown[];
+    transcriptReader?: SessionTranscriptReader;
   }): Promise<boolean> {
     const { sessionId } = params;
     const { sessionKey } = resolveSessionIdentity(params);
-    if (params.transcriptMessages) {
-      await catchUpBeforeReset({ sessionId, sessionKey, messages: params.transcriptMessages });
+    // PLAN-krug К13: an older gateway hands no reader -- the archive only, as before 7б.
+    if (params.transcriptReader) {
+      await catchUpBeforeReset({ sessionId, sessionKey, reader: params.transcriptReader });
     }
     return commitOpenVikingSession({
       sessionId,

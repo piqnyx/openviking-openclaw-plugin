@@ -99,8 +99,10 @@ export function createSessionCatchUp() {
       try {
         const outcome = await catchUpUnderLock(params, state);
         // PLAN-krug К19: only a call that wrote took the server's ids into memory; a skip leaves the
-        // memory as it was, dirty included, or a write the server accepted late goes in again.
-        state.dirty = outcome.kind === "stopped" || (outcome.kind === "skipped" && state.dirty === true);
+        // memory as it was, dirty included, or a write the server accepted late goes in again. К13: a
+        // reset (no memory) leaves it dirty -- its session is archived next.
+        state.dirty =
+          outcome.kind === "stopped" || (outcome.kind === "skipped" && state.dirty === true) || params.memory === "none";
         return outcome;
       } catch (error) {
         state.dirty = true;
@@ -111,7 +113,8 @@ export function createSessionCatchUp() {
 }
 
 async function catchUpUnderLock(params: CatchUpParams, state: SessionState): Promise<CatchUpOutcome> {
-  let held = await heldIds(params, state, { fromServer: state.dirty === true });
+  // A reset (no memory) takes the server's ids always (PLAN-krug К13).
+  let held = await heldIds(params, state, { fromServer: state.dirty === true || params.memory === "none" });
   if (held.kind === "skipped") {
     return skippedLoudly(params, held.reason);
   }
