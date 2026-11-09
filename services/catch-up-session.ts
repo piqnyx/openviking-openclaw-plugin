@@ -188,3 +188,6 @@ async function writeInOrder(
   }
   return { kind: "wrote", written, lost };
 }
+
+/** The engine's «догнать», one per engine (one per gateway process). */
+export type SessionCatchUp = ReturnType<typeof createSessionCatchUp>;

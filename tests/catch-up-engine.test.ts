@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { HttpTransport } from "../adapters/http-transport.js";
 import { OpenVikingClient, type OVMessage, type OVMessagePart } from "../client.js";
@@ -15,7 +17,8 @@ import type { BranchRow } from "../services/transcript-catch-up.js";
  * и одно громкое предупреждение на процесс.
  */
 
-const SESSION = "9478e347-6bdc-44f5-a4e0-207fe7e4b6e3";
+// A session of its own for each test: the old turn fingerprints are claimed process-wide (7д removes them).
+let SESSION = randomUUID();
 const KEY = "agent:main:telegram:direct:1";
 const T0 = Date.UTC(2026, 10, 9, 10, 0, 0);
 
@@ -141,6 +144,10 @@ async function queueWith(engine: ReturnType<typeof engineOver>["engine"], branch
 }
 
 describe("запись хода через «догнать», как зовёт шлюз", () => {
+  beforeEach(() => {
+    SESSION = randomUUID();
+  });
+
   it("хук пишет вопрос и выдачи по номерам строк, очередь -- ответ; повтор ничего не дублирует", async () => {
     const stand = server();
     const { engine } = engineOver(stand);
@@ -160,7 +167,7 @@ describe("запись хода через «догнать», как зовёт
     const stand = server();
     const { engine, diags } = engineOver(stand);
 
-    await queueWith(engine, [question, reply], "turn-1", { currentTokenCount: 1_000 });
+    await queueWith(engine, [question, reply], "turn-pour", { currentTokenCount: 1_000 });
 
     expect(diags.find((entry) => entry.stage === "pour_skip")?.data).toMatchObject({ reason: "below_x" });
   });
@@ -168,13 +175,16 @@ describe("запись хода через «догнать», как зовёт
   it("без читателя шлюза -- прежняя запись и одно предупреждение", async () => {
     const stand = server();
     const { engine, warned } = engineOver(stand);
-    const turn = [question.message, reply.message];
+    const turns = [
+      [question.message, reply.message],
+      [{ role: "user", content: "а завтра?", timestamp: T0 + 60_000 }, { role: "assistant", content: [{ type: "text", text: "сухо" }], timestamp: T0 + 61_000 }],
+    ];
 
-    for (const key of ["turn-1", "turn-2"]) {
-      await engine.commitTurn?.({ advancementKey: key, messages: turn as never, sessionId: SESSION, sessionKey: KEY } as never);
+    for (const [index, turn] of turns.entries()) {
+      await engine.commitTurn?.({ advancementKey: `turn-old-${index}`, messages: turn as never, sessionId: SESSION, sessionKey: KEY } as never);
     }
 
-    expect(stand.stored.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(stand.stored.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(warned.filter((line) => line.includes("readSessionTranscript"))).toHaveLength(1);
   });
 });

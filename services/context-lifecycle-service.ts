@@ -19,6 +19,8 @@ import { priceBodyOf, priceMessagesOf, type PriceHandle } from "../price-handle.
 import { floorTail, longestTailWithin, turnStarts } from "../tail-by-weight.js";
 import { extractNewTurnMessages } from "../text-utils.js";
 import { coalesceConsecutiveToolMessages, normalizeTimestamp, toOvParts } from "./capture-form.js";
+import { transcriptReaderOf } from "./branch-reader.js";
+import type { SessionCatchUp } from "./catch-up-session.js";
 import { estimateAgentMessageTokens, estimateTextTokens } from "../token-estimator.js";
 import {
   convertToAgentMessages,
@@ -221,6 +223,11 @@ export type AfterTurnOpenVikingSessionParams = {
   path?: "afterTurn" | "commitTurn";
   /** Gateway file 37: where a pour-off is told to the host; absent when the host does not count it. */
   announceCompaction?: AnnounceCompaction;
+  /**
+   * PLAN-krug Р1, шаг 7б: the engine's «догнать»; with it and the gateway's reader of the session's
+   * transcript (`runtimeContext.readSessionTranscript`) the turn is written by row ids.
+   */
+  catchUp?: SessionCatchUp;
   getClient: (agentId: string | undefined) => Promise<AfterTurnClient>;
   logger: ContextEngineLifecycleLogger;
   resolveAgentId: (sessionId: string, sessionKey?: string, ovSessionId?: string) => string;
@@ -1813,6 +1820,9 @@ function recordedPrefixLength(
   return 0;
 }
 
+// One warning a process: an older gateway hands no reader on any turn.
+let warnedOfNoTranscriptReader = false;
+
 export async function afterTurnOpenVikingSession({
   sessionId,
   sessionKey,
@@ -1832,6 +1842,7 @@ export async function afterTurnOpenVikingSession({
   pollIntervalMs,
   path = "afterTurn",
   announceCompaction,
+  catchUp,
 }: AfterTurnOpenVikingSessionParams): Promise<void> {
   if (!cfg.autoCapture) {
     return;
@@ -1866,111 +1877,143 @@ export async function afterTurnOpenVikingSession({
       return;
     }
 
-    const messages = rawMessages ?? [];
-    if (messages.length === 0) {
-      diag("afterTurn_skip", ovSessionId, {
-        reason: "no_messages",
-        totalMessages: 0,
-        senderIdFound: sender.found,
-        senderId: sender.senderId ?? null,
+    // PLAN-krug Р1, шаг 7б: with the gateway's reader of this session's transcript the rows Viking
+    // does not hold yet are written by their ids; without it (an older gateway) the turn is recorded
+    // the old way, guessed by the server's tail.
+    const reader = catchUp ? transcriptReaderOf(runtimeContext) : undefined;
+    let client: AfterTurnClient;
+    if (catchUp && reader) {
+      client = await getClient(agentId);
+      const senderRoleId = toRoleId(sender.senderId);
+      const outcome = await catchUp({
+        client,
+        ovSessionId,
+        reader,
+        place: path === "commitTurn" ? "settled" : "working",
+        peerIdOf: (role) =>
+          resolveOpenVikingMessagePeerId({
+            peerRole: cfg.peer_role ?? "assistant",
+            role,
+            personPeerId: senderRoleId,
+            assistantPeerId: agentId,
+          }),
+        logger,
       });
-      return;
-    }
-
-    const start =
-      typeof prePromptMessageCount === "number" && prePromptMessageCount >= 0
-        ? prePromptMessageCount
-        : 0;
-
-    const { messages: extractedMessagesRaw, newCount } = extractNewTurnMessages(messages, start);
-    const extractedMessages = coalesceConsecutiveToolMessages(
-      extractedMessagesRaw.map((message) => ({ ...message, rows: [] })),
-    );
-
-    if (extractedMessages.length === 0) {
-      diag("afterTurn_skip", ovSessionId, {
-        reason: "no_new_turn_messages",
-        totalMessages: messages.length,
-        prePromptMessageCount: start,
-        senderIdFound: sender.found,
-        senderId: sender.senderId ?? null,
-      });
-      return;
-    }
-
-    const turnMessages = messages.slice(start) as AgentMessage[];
-    const newMessages = turnMessages.filter((m: AgentMessage) => {
-      const role = (m as Record<string, unknown>).role as string;
-      return role === "user" || role === "assistant";
-    }) as AgentMessage[];
-    const newMsgFull = messageDigest(newMessages);
-    const newTurnTokens = newMsgFull.reduce((sum, digest) => sum + digest.tokens, 0);
-
-    const promptCache = runtimeContext?.promptCache as
-      | { lastCallUsage?: Record<string, unknown>; retention?: string }
-      | undefined;
-    diag("afterTurn_entry", ovSessionId, {
-      totalMessages: messages.length,
-      newMessageCount: newCount,
-      prePromptMessageCount: start,
-      newTurnTokens,
-      senderIdFound: sender.found,
-      senderId: sender.senderId ?? null,
-      // What the host hands on for the pour-off by X (PLAN-gorizont 4б): the
-      // window's weight, the budget, the last call's usage, and the model.
-      window: runtimeContext?.currentTokenCount ?? null,
-      hostTokenBudget: runtimeContext?.tokenBudget ?? null,
-      lastCallUsage: promptCache?.lastCallUsage ?? null,
-      runtimeContextKeys: Object.keys(runtimeContext ?? {}),
-      model: modelOf(runtimeSettings) ?? null,
-      messages: newMsgFull,
-    });
-
-    const client = await getClient(agentId);
-    const createdAt = pickLatestCreatedAt(turnMessages);
-    const senderRoleId = toRoleId(sender.senderId);
-    const toRecord = extractedMessages
-      .map((msg) => ({ role: msg.role, parts: toOvParts(msg) }))
-      .filter((msg) => msg.parts.length > 0);
-
-    // The queue hands the closed turn whole, and its beginning -- the question,
-    // then the tool results -- is what the loop hook recorded already, message by
-    // message, as the server's newest messages. That beginning is skipped: the
-    // truth is the server's tail, not this process's memory, so a restart or a
-    // replayed commit does not double it either. A server that gives no tail is
-    // warned about and the turn is recorded whole: a repeat costs less than a loss.
-    let skipped = 0;
-    if (path === "commitTurn" && toRecord.length > 0) {
-      try {
-        const tail = (await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET)).messages ?? [];
-        skipped = recordedPrefixLength(toRecord, tail);
-      } catch (err) {
+      diag("afterTurn_catch_up", ovSessionId, { path, ...outcome });
+    } else {
+      if (catchUp && !warnedOfNoTranscriptReader) {
+        warnedOfNoTranscriptReader = true;
         logger.warn?.(
-          `openviking: could not read the server's tail for session=${ovSessionId} before recording the turn ` +
-            `(${String(err)}); recording it whole`,
+          "openviking: the gateway hands no readSessionTranscript; turns are recorded the old way, " +
+            "guessed by the server's tail, and rows the model never sees may go to memory",
         );
       }
-      diag("afterTurn_dedupe", ovSessionId, {
-        path,
-        skipped,
-        recorded: toRecord.length - skipped,
-      });
-    }
+      const messages = rawMessages ?? [];
+      if (messages.length === 0) {
+        diag("afterTurn_skip", ovSessionId, {
+          reason: "no_messages",
+          totalMessages: 0,
+          senderIdFound: sender.found,
+          senderId: sender.senderId ?? null,
+        });
+        return;
+      }
 
-    for (const msg of toRecord.slice(skipped)) {
-      await client.addSessionMessage(
-        ovSessionId,
-        msg.role,
-        msg.parts,
-        undefined,
-        createdAt,
-        resolveOpenVikingMessagePeerId({
-          peerRole: cfg.peer_role ?? "assistant",
-          role: msg.role,
-          personPeerId: senderRoleId,
-          assistantPeerId: agentId,
-        }),
+      const start =
+        typeof prePromptMessageCount === "number" && prePromptMessageCount >= 0
+          ? prePromptMessageCount
+          : 0;
+
+      const { messages: extractedMessagesRaw, newCount } = extractNewTurnMessages(messages, start);
+      const extractedMessages = coalesceConsecutiveToolMessages(
+        extractedMessagesRaw.map((message) => ({ ...message, rows: [] })),
       );
+
+      if (extractedMessages.length === 0) {
+        diag("afterTurn_skip", ovSessionId, {
+          reason: "no_new_turn_messages",
+          totalMessages: messages.length,
+          prePromptMessageCount: start,
+          senderIdFound: sender.found,
+          senderId: sender.senderId ?? null,
+        });
+        return;
+      }
+
+      const turnMessages = messages.slice(start) as AgentMessage[];
+      const newMessages = turnMessages.filter((m: AgentMessage) => {
+        const role = (m as Record<string, unknown>).role as string;
+        return role === "user" || role === "assistant";
+      }) as AgentMessage[];
+      const newMsgFull = messageDigest(newMessages);
+      const newTurnTokens = newMsgFull.reduce((sum, digest) => sum + digest.tokens, 0);
+
+      const promptCache = runtimeContext?.promptCache as
+        | { lastCallUsage?: Record<string, unknown>; retention?: string }
+        | undefined;
+      diag("afterTurn_entry", ovSessionId, {
+        totalMessages: messages.length,
+        newMessageCount: newCount,
+        prePromptMessageCount: start,
+        newTurnTokens,
+        senderIdFound: sender.found,
+        senderId: sender.senderId ?? null,
+        // What the host hands on for the pour-off by X (PLAN-gorizont 4б): the
+        // window's weight, the budget, the last call's usage, and the model.
+        window: runtimeContext?.currentTokenCount ?? null,
+        hostTokenBudget: runtimeContext?.tokenBudget ?? null,
+        lastCallUsage: promptCache?.lastCallUsage ?? null,
+        runtimeContextKeys: Object.keys(runtimeContext ?? {}),
+        model: modelOf(runtimeSettings) ?? null,
+        messages: newMsgFull,
+      });
+
+      client = await getClient(agentId);
+      const createdAt = pickLatestCreatedAt(turnMessages);
+      const senderRoleId = toRoleId(sender.senderId);
+      const toRecord = extractedMessages
+        .map((msg) => ({ role: msg.role, parts: toOvParts(msg) }))
+        .filter((msg) => msg.parts.length > 0);
+
+      // The queue hands the closed turn whole, and its beginning -- the question,
+      // then the tool results -- is what the loop hook recorded already, message by
+      // message, as the server's newest messages. That beginning is skipped: the
+      // truth is the server's tail, not this process's memory, so a restart or a
+      // replayed commit does not double it either. A server that gives no tail is
+      // warned about and the turn is recorded whole: a repeat costs less than a loss.
+      let skipped = 0;
+      if (path === "commitTurn" && toRecord.length > 0) {
+        try {
+          const tail = (await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET)).messages ?? [];
+          skipped = recordedPrefixLength(toRecord, tail);
+        } catch (err) {
+          logger.warn?.(
+            `openviking: could not read the server's tail for session=${ovSessionId} before recording the turn ` +
+              `(${String(err)}); recording it whole`,
+          );
+        }
+        diag("afterTurn_dedupe", ovSessionId, {
+          path,
+          skipped,
+          recorded: toRecord.length - skipped,
+        });
+      }
+
+      for (const msg of toRecord.slice(skipped)) {
+        await client.addSessionMessage(
+          ovSessionId,
+          msg.role,
+          msg.parts,
+          undefined,
+          createdAt,
+          resolveOpenVikingMessagePeerId({
+            peerRole: cfg.peer_role ?? "assistant",
+            role: msg.role,
+            personPeerId: senderRoleId,
+            assistantPeerId: agentId,
+          }),
+        );
+      }
     }
 
     // The pour-off by X (PLAN-gorizont 4б). The window's weight is the charge of

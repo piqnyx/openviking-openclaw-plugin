@@ -21,6 +21,7 @@ import {
   commitOpenVikingSession,
   type AnnounceCompaction,
 } from "./services/context-lifecycle-service.js";
+import { createSessionCatchUp } from "./services/catch-up-session.js";
 
 type ContextEngineInfo = {
   id: string;
@@ -354,6 +355,8 @@ export function createMemoryOpenVikingContextEngine(params: {
     pourRetryPauseMs,
   } = params;
 
+  // PLAN-krug 7б: the turns written by the gateway's row ids; its memory lives with this engine.
+  const catchUp = createSessionCatchUp();
   const diagEnabled = cfg.emitStandardDiagnostics;
   const bypassSessionPatterns = compileSessionPatterns(cfg.bypassSessionPatterns);
   const diag = (stage: string, sessionId: string, data: Record<string, unknown>) =>
@@ -509,6 +512,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         pollIntervalMs,
         path: "afterTurn",
         announceCompaction: afterTurnParams.announceCompaction,
+        catchUp,
       });
     },
 
@@ -556,6 +560,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         pollIntervalMs,
         path: "commitTurn",
         announceCompaction: commitParams.announceCompaction,
+        catchUp,
       });
       return { status: "committed" };
     },
