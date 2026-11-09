@@ -76,7 +76,7 @@ export function createSessionCatchUp() {
     reader: SessionTranscriptReader;
     place: "settled" | "working";
     /** The session's live messages the caller has just read (the main assemble reads them anyway). */
-    remainder?: { messages: OVMessage[]; totalArchives?: number };
+    remainder?: { messages?: OVMessage[]; totalArchives?: number };
     peerIdOf: (role: "user" | "assistant") => string | undefined;
     logger: { info: (message: string) => void; warn?: (message: string) => void };
   }): Promise<CatchUpOutcome> {
@@ -111,7 +111,7 @@ export function createSessionCatchUp() {
 }
 
 async function heldIds(
-  params: { client: CatchUpClient; ovSessionId: string; remainder?: { messages: OVMessage[]; totalArchives?: number } },
+  params: { client: CatchUpClient; ovSessionId: string; remainder?: { messages?: OVMessage[]; totalArchives?: number } },
   state: SessionState,
 ): Promise<{ kind: "held"; ids: Set<string> } | { kind: "skipped"; reason: string }> {
   // What this process wrote is current; the server is asked only when the process knows nothing,
@@ -119,13 +119,10 @@ async function heldIds(
   if (!params.remainder && state.held.size > 0) {
     return { kind: "held", ids: new Set(state.held) };
   }
-  let remainder = params.remainder;
-  if (!remainder) {
-    const context = await params.client.getSessionContext(params.ovSessionId, WHOLE_REMAINDER);
-    remainder = { messages: context?.messages ?? [], totalArchives: context?.stats?.totalArchives };
-  }
+  const remainder = params.remainder ?? (await readServerRemainder(params.client, params.ovSessionId));
+  const messages = remainder.messages ?? [];
   const ids = new Set(state.held);
-  for (const message of remainder.messages) {
+  for (const message of messages) {
     for (const id of message.source_message_ids ?? []) {
       ids.add(id);
     }
@@ -133,13 +130,34 @@ async function heldIds(
   if (ids.size > 0) {
     return { kind: "held", ids };
   }
-  if (remainder.messages.length > 0) {
+  if (messages.length > 0) {
     return { kind: "skipped", reason: "live_messages_without_row_ids" };
   }
-  if ((remainder.totalArchives ?? 0) > 0) {
+  // Fresh only on the server's own word: no messages and no archives, both said.
+  if (remainder.messages === undefined || remainder.totalArchives === undefined) {
+    return { kind: "skipped", reason: "remainder_without_messages_or_archive_count" };
+  }
+  if (remainder.totalArchives > 0) {
     return { kind: "skipped", reason: "empty_remainder_with_archives" };
   }
   return { kind: "held", ids };
+}
+
+async function readServerRemainder(
+  client: CatchUpClient,
+  ovSessionId: string,
+): Promise<{ messages?: OVMessage[]; totalArchives?: number }> {
+  try {
+    const context = await client.getSessionContext(ovSessionId, WHOLE_REMAINDER);
+    return { messages: context?.messages, totalArchives: context?.stats?.totalArchives };
+  } catch (error) {
+    // A session Viking was never written to: every read answers NOT_FOUND, the first write
+    // creates it (server routers/sessions.py, reads with auto_create=False, writes with True).
+    if (error instanceof OpenVikingRequestError && error.status === 404 && error.code === "NOT_FOUND") {
+      return { messages: [], totalArchives: 0 };
+    }
+    throw error;
+  }
 }
 
 async function writeInOrder(

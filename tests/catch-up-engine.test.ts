@@ -27,6 +27,8 @@ type Stored = OVMessage & { source_message_ids?: string[] };
 function server() {
   const stored: Stored[] = [];
   const commits: unknown[] = [];
+  // As the server: a session never written to is unknown to reads; the first write creates it.
+  let created = false;
   const transport: HttpTransport = vi.fn(async (url, init) => {
     const parsed = new URL(url);
     const answer = (body: unknown) =>
@@ -41,6 +43,7 @@ function server() {
         created_at?: string;
         source_message_ids?: string[];
       };
+      created = true;
       stored.push({
         id: `ov-${stored.length + 1}`,
         role: body.role,
@@ -49,6 +52,12 @@ function server() {
         ...(body.source_message_ids ? { source_message_ids: body.source_message_ids } : {}),
       });
       return answer({ session_id: SESSION });
+    }
+    if (!created && init?.method !== "POST") {
+      return new Response(JSON.stringify({ status: "error", error: { code: "NOT_FOUND", message: "Session not found" } }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
     }
     if (parsed.pathname.endsWith("/context")) {
       return answer({

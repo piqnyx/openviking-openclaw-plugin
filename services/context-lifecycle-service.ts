@@ -1566,7 +1566,7 @@ export async function assembleOpenVikingSession({
         ovSessionId,
         reader,
         place: "settled",
-        remainder: { messages: ctx.messages ?? [], totalArchives: ctx.stats?.totalArchives },
+        remainder: { messages: ctx.messages, totalArchives: ctx.stats?.totalArchives },
         peerIdOf: (role) =>
           resolveOpenVikingMessagePeerId({
             peerRole: cfg.peer_role ?? "assistant",
