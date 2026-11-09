@@ -807,3 +807,71 @@ describe("то же через движок, как его зовёт шлюз",
     expect(marksOf(value.messages as AgentMessage[])).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
   });
 });
+
+// PLAN-krug 7в.3в: every main assembly tells the host the window's state -- "partial" while the window goes by the
+// fallback path not whole (summary and a cut tail), "whole" otherwise -- so the web and the channel show a line while
+// part of the conversation is out of the model's sight and take it down once a later assembly is whole again.
+describe("состояние окна для хоста (PLAN-krug 7в.3в)", () => {
+  const engineOver = (client: OpenVikingClient) =>
+    createMemoryOpenVikingContextEngine({
+      id: "openviking",
+      name: "OpenViking",
+      cfg: memoryOpenVikingConfigSchema.parse({
+        baseUrl: "http://127.0.0.1:1933", autoRecall: false, keepRecentTokens: 30_000,
+      }),
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      getClient: async () => client,
+      resolveAgentId: () => "main",
+      priceHandle: charsHandle(),
+    });
+  const mainAssemble = (client: OpenVikingClient, live: AgentMessage[]) =>
+    engineOver(client).assemble({
+      sessionId: "9478e347-6bdc-44f5-a4e0-207fe7e4b6e3",
+      messages: live,
+      tokenBudget: 12_000,
+      availableTools: new Set<string>(),
+      runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite", requested: null } },
+    } as never) as Promise<{ messages: AgentMessage[]; contextWindow?: string }>;
+
+  it("запасной путь со сводкой и срезанным хвостом -- partial", async () => {
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39 } },
+    });
+    const value = await mainAssemble(client, liveTranscript(60));
+    expect(value.contextWindow).toBe("partial");
+  });
+
+  it("главный путь -- whole", async () => {
+    const { client } = server({
+      context: {
+        latest_archive_overview: "ПЕРЕСКАЗ-СВЕЖИЙ",
+        messages: [ovMessage(58, "user"), ovMessage(59, "assistant")],
+        stats: {
+          totalArchives: 3, includedArchives: 0, droppedArchives: 3,
+          failedArchives: 0, activeTokens: 10, archiveTokens: 5, unsummarizedArchives: 0,
+        },
+      },
+    });
+    const value = await mainAssemble(client, liveTranscript(60));
+    expect(value.contextWindow).toBe("whole");
+  });
+
+  it("запасной путь отдал переписку целиком -- whole", async () => {
+    const { client } = server({ context: NO_SUMMARY(3, 1, [ovMessage(9)]) });
+    const live = liveTranscript(10);
+    const value = await mainAssemble(client, live);
+    expect(value.messages).toBe(live);
+    expect(value.contextWindow).toBe("whole");
+  });
+
+  it("сборка не главная (память к запросу) -- без состояния", async () => {
+    const { client } = server({ context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]) });
+    const value = (await engineOver(client).assemble({
+      sessionId: "9478e347-6bdc-44f5-a4e0-207fe7e4b6e3",
+      messages: liveTranscript(60),
+      tokenBudget: 12_000,
+    } as never)) as { contextWindow?: string };
+    expect(value).not.toHaveProperty("contextWindow");
+  });
+});
