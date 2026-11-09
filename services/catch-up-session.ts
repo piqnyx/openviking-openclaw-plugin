@@ -12,7 +12,7 @@ export type CatchUpClient = {
 };
 
 export type CatchUpOutcome =
-  | { kind: "wrote"; written: number; lost: number }
+  | { kind: "wrote"; written: number; lost: number; heldQuestion?: string }
   | { kind: "stopped"; written: number; error: string }
   | { kind: "skipped"; reason: string };
 
@@ -145,7 +145,8 @@ async function catchUpUnderLock(params: CatchUpParams, state: SessionState): Pro
     state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
   }
   state.held = new Set([...held.ids].slice(-MAX_HELD_IDS));
-  return written;
+  // The question waiting for its turn's continuation, named in the journal (PLAN-krug П9).
+  return written.kind === "wrote" && plan.heldQuestionId ? { ...written, heldQuestion: plan.heldQuestionId } : written;
 }
 
 function holdsAnyOf(rows: readonly { firstEntryId: string }[], ids: ReadonlySet<string>): boolean {
