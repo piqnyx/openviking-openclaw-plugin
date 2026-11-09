@@ -7,14 +7,16 @@ import { OpenVikingClient, type OVMessage, type OVMessagePart } from "../client.
 import { memoryOpenVikingConfigSchema } from "../config.js";
 import { createMemoryOpenVikingContextEngine } from "../context-engine.js";
 import { registerOpenVikingLifecycleHooks } from "../plugin/openviking-lifecycle-hooks.js";
+import type { SessionTranscriptReader } from "../services/branch-reader.js";
+import type { BranchRow } from "../services/transcript-catch-up.js";
 
 /*
- * PLAN-krug Р1, шаг 7б: сброс беседы (/new, /reset). Читателя шлюза здесь нет -- в событии
- * `before_reset` сырые сообщения ветки, у каждого номер строки (`__openclaw.id`, перезаписанная --
- * с `originalEntryId`). Обычно писать нечего: последний ход записан в конце хода. Если запись
- * последнего хода сорвалась, а следом сброс, -- его строки дописываются (без отсева шлюза, с громкой
- * отметкой) и только потом сессия уходит в архив: иначе очередь допишет их в старую сессию уже после
- * архива, и они останутся без извлечения навсегда.
+ * PLAN-krug Р1, шаг 7б, К13 (П13'): сброс беседы (/new, /reset). Шлюз кладёт в событие `before_reset`
+ * читателя сбрасываемой сессии (`readSessionTranscript`). Обычно писать нечего: последний ход записан в
+ * конце хода. Если запись последнего хода сорвалась, а следом сброс, -- его строки дописываются (по
+ * отбору шлюза «как видит модель», номера -- у сервера, громко) и только потом сессия уходит в архив:
+ * иначе очередь допишет их в старую сессию уже после архива. Шлюз старее (в событии только сообщения) --
+ * только архив, как было до 7б.
  */
 
 type Stored = OVMessage & { source_message_ids?: string[] };
@@ -63,12 +65,38 @@ function engineOver(stand: ReturnType<typeof server>) {
   return { engine, warned };
 }
 
-const message = (id: string, role: "user" | "assistant", text: string, originalEntryId?: string) => ({
-  role,
-  content: role === "user" ? text : [{ type: "text", text }],
-  timestamp: Date.UTC(2026, 10, 9, 10, 0, 0),
-  __openclaw: { id, ...(originalEntryId ? { originalEntryId } : {}) },
-});
+const T0 = Date.UTC(2026, 10, 9, 10, 0, 0);
+
+function row(id: string, role: "user" | "assistant", text: string, firstEntryId = id): BranchRow {
+  return {
+    entryId: id,
+    firstEntryId,
+    message: { role, content: role === "user" ? text : [{ type: "text", text }], timestamp: T0 },
+  };
+}
+
+/** The gateway's read of the reset session; its model view drops the rows marked as delivery copies. */
+function readerOver(branch: BranchRow[]): SessionTranscriptReader {
+  return {
+    readVisiblePage: async () => ({ kind: "page", cursor: String(branch.length - 1), rows: branch, hasMore: false }),
+    selectModelVisible: (rows) => rows.filter((candidate) => !candidate.entryId.startsWith("copy")),
+  };
+}
+
+/** The plugin's hooks over a real engine, as the gateway fires them. */
+function hooksOver(engine: ReturnType<typeof engineOver>["engine"]) {
+  const handlers = new Map<string, (event: unknown, ctx?: Record<string, unknown>) => unknown>();
+  registerOpenVikingLifecycleHooks({
+    api: { on: (name, handler) => void handlers.set(name, handler as never) },
+    rememberSessionAgentId: () => {},
+    isBypassedSession: () => false,
+    verboseRoutingInfo: () => {},
+    getContextEngine: () => engine,
+    logger: { info: () => {}, warn: () => {} },
+  });
+  return async (event: Record<string, unknown>) =>
+    await handlers.get("before_reset")?.(event, { sessionId: randomUUID(), sessionKey: "agent:main:main" });
+}
 
 const held = (id: string, role: string, text: string): Stored => ({
   id: `ov-${id}`,
@@ -79,14 +107,19 @@ const held = (id: string, role: string, text: string): Stored => ({
 });
 
 describe("сброс беседы", () => {
-  it("дописывает строки, которых Викинг не держит, громко, и только потом архивирует", async () => {
+  it("дописывает строки, которых Викинг не держит, по отбору шлюза, громко, и только потом архивирует", async () => {
     const stand = server([held("u1", "user", "привет"), held("a1", "assistant", "здравствуй")]);
     const { engine, warned } = engineOver(stand);
-    const messages = [message("u1", "user", "привет"), message("a1", "assistant", "здравствуй"), message("u2", "user", "пока"), message("a2-again", "assistant", "до встречи", "a2")];
+    const branch = [
+      row("u1", "user", "привет"),
+      row("a1", "assistant", "здравствуй"),
+      row("u2", "user", "пока"),
+      row("copy-1", "assistant", "до встречи"),
+      row("a2-again", "assistant", "до встречи", "a2"),
+    ];
 
-    const ok = await engine.commitOVSession({ sessionId: randomUUID(), sessionKey: "agent:main:main", transcriptMessages: messages } as never);
+    await hooksOver(engine)({ messages: [], reason: "new", readSessionTranscript: readerOver(branch) });
 
-    expect(ok).toBe(true);
     expect(stand.events).toEqual(["write:u2", "write:a2", "commit"]);
     expect(warned.some((line) => line.includes("before_reset"))).toBe(true);
   });
@@ -95,31 +128,26 @@ describe("сброс беседы", () => {
     const stand = server([held("u1", "user", "привет"), held("a1", "assistant", "здравствуй")]);
     const { engine, warned } = engineOver(stand);
 
-    await engine.commitOVSession({
-      sessionId: randomUUID(),
-      sessionKey: "agent:main:main",
-      transcriptMessages: [message("u1", "user", "привет"), message("a1", "assistant", "здравствуй")],
-    } as never);
+    await hooksOver(engine)({
+      messages: [],
+      reason: "new",
+      readSessionTranscript: readerOver([row("u1", "user", "привет"), row("a1", "assistant", "здравствуй")]),
+    });
 
     expect(stand.events).toEqual(["commit"]);
     expect(warned).toEqual([]);
   });
 
-  it("крюк before_reset отдаёт движку сообщения события", async () => {
-    const handlers = new Map<string, (event: unknown, ctx?: Record<string, unknown>) => unknown>();
-    const commitOVSession = vi.fn(async () => true);
-    registerOpenVikingLifecycleHooks({
-      api: { on: (name, handler) => void handlers.set(name, handler as never) },
-      rememberSessionAgentId: () => {},
-      isBypassedSession: () => false,
-      verboseRoutingInfo: () => {},
-      getContextEngine: () => ({ commitOVSession }),
-      logger: { info: () => {}, warn: () => {} },
-    });
-    const messages = [message("u1", "user", "привет")];
+  it("шлюз старее: в событии только сообщения -- только архив, ничего не пишется", async () => {
+    const stand = server([held("u1", "user", "привет")]);
+    const { engine } = engineOver(stand);
+    const messages = [
+      { role: "user", content: "привет", timestamp: T0, __openclaw: { id: "u1" } },
+      { role: "assistant", content: [{ type: "text", text: "здравствуй" }], timestamp: T0, __openclaw: { id: "a1" } },
+    ];
 
-    await handlers.get("before_reset")?.({ messages, reason: "new" }, { sessionId: "s1", sessionKey: "agent:main:main" });
+    await hooksOver(engine)({ messages, reason: "new" });
 
-    expect(commitOVSession).toHaveBeenCalledWith({ sessionId: "s1", sessionKey: "agent:main:main", transcriptMessages: messages });
+    expect(stand.events).toEqual(["commit"]);
   });
 });

@@ -338,6 +338,24 @@ describe("«догнать» для сессии", () => {
     expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"]]);
   });
 
+  it("сброс (без памяти) берёт номера у сервера, а не из памяти, и оставляет память грязной (PLAN-krug К13)", async () => {
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
+    const { client, stored } = server();
+    const catchUp = createSessionCatchUp();
+    const base = { client, ovSessionId: "s1", holdTrailingQuestion: false, peerIdOf: () => undefined, logger: logger() };
+    await catchUp({ ...base, memory: "open", reader: reader([branch[0]!]) });
+    // A write this memory never saw (another registration of the plugin, before a hot reload).
+    stored.push(held("a1", "assistant", "здравствуй"));
+
+    await catchUp({ ...base, memory: "none", reader: reader(branch) });
+    const readsAfterReset = client.getSessionContext.mock.calls.length;
+    await catchUp({ ...base, memory: "open", reader: reader(branch) });
+
+    expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"]]);
+    // Dirty after the reset: the next call asks the server again.
+    expect(client.getSessionContext.mock.calls.length).toBeGreaterThan(readsAfterReset);
+  });
+
   it("закладки нет среди строк ветки -- сверка с сервером; сервер тоже ничего из ветки не держит -- громкий пропуск, не вся ветка", async () => {
     const { client } = server({ stored: [held("old1", "user", "давнее"), held("old2", "assistant", "давний ответ")] });
     const catchUp = createSessionCatchUp();
