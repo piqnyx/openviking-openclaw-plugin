@@ -37,27 +37,28 @@ function server(options: { failWrites?: () => boolean } = {}) {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
-    if (parsed.pathname.endsWith("/messages") && init?.method === "POST" && options.failWrites?.()) {
+    const isWrite = (parsed.pathname.endsWith("/messages") || parsed.pathname.endsWith("/messages/batch")) && init?.method === "POST";
+    if (isWrite && options.failWrites?.()) {
       return new Response(JSON.stringify({ status: "error", error: { code: "UNAVAILABLE", message: "storage busy" } }), {
         status: 503,
         headers: { "Content-Type": "application/json" },
       });
     }
-    if (parsed.pathname.endsWith("/messages") && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as {
-        role: string;
-        parts: OVMessagePart[];
-        created_at?: string;
-        source_message_ids?: string[];
-      };
+    if (isWrite) {
+      type Written = { role: string; parts: OVMessagePart[]; created_at?: string; source_message_ids?: string[] };
+      const body = JSON.parse(String(init?.body)) as Written | { messages: Written[] };
+      // As the server: the batch is one append, all of it (routers/sessions.py 541-590).
+      const written = "messages" in body ? body.messages : [body];
       created = true;
-      stored.push({
-        id: `ov-${stored.length + 1}`,
-        role: body.role,
-        parts: body.parts,
-        created_at: body.created_at ?? "",
-        ...(body.source_message_ids ? { source_message_ids: body.source_message_ids } : {}),
-      });
+      for (const message of written) {
+        stored.push({
+          id: `ov-${stored.length + 1}`,
+          role: message.role,
+          parts: message.parts,
+          created_at: message.created_at ?? "",
+          ...(message.source_message_ids ? { source_message_ids: message.source_message_ids } : {}),
+        });
+      }
       return answer({ session_id: SESSION });
     }
     if (!created && init?.method !== "POST") {

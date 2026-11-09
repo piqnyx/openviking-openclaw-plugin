@@ -27,10 +27,13 @@ function server(stored: Stored[] = []) {
     const parsed = new URL(url);
     const answer = (body: unknown) =>
       new Response(JSON.stringify({ status: "ok", result: body }), { status: 200, headers: { "Content-Type": "application/json" } });
-    if (parsed.pathname.endsWith("/messages") && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { role: string; parts: OVMessagePart[]; source_message_ids?: string[] };
-      stored.push({ id: `ov-${stored.length + 1}`, role: body.role, parts: body.parts, created_at: "", ...(body.source_message_ids ? { source_message_ids: body.source_message_ids } : {}) });
-      events.push(`write:${(body.source_message_ids ?? []).join(",")}`);
+    if ((parsed.pathname.endsWith("/messages") || parsed.pathname.endsWith("/messages/batch")) && init?.method === "POST") {
+      type Written = { role: string; parts: OVMessagePart[]; source_message_ids?: string[] };
+      const body = JSON.parse(String(init.body)) as Written | { messages: Written[] };
+      for (const message of "messages" in body ? body.messages : [body]) {
+        stored.push({ id: `ov-${stored.length + 1}`, role: message.role, parts: message.parts, created_at: "", ...(message.source_message_ids ? { source_message_ids: message.source_message_ids } : {}) });
+        events.push(`write:${(message.source_message_ids ?? []).join(",")}`);
+      }
       return answer({ session_id: "s" });
     }
     if (parsed.pathname.endsWith("/context")) {

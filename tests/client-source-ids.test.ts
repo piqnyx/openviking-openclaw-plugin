@@ -28,6 +28,30 @@ function capturing(): { transport: HttpTransport; bodies: unknown[] } {
 }
 
 describe("запись сообщения с номерами строк", () => {
+  it("пакет -- один запрос на /messages/batch, у каждого сообщения свои поля (PLAN-krug К17)", async () => {
+    const urls: string[] = [];
+    const { transport: inner, bodies } = capturing();
+    const transport: HttpTransport = async (url, init) => {
+      urls.push(new URL(String(url)).pathname);
+      return await inner(url, init);
+    };
+
+    await client(transport).addSessionMessages("s1", [
+      { role: "user", parts: [{ type: "text", text: "вопрос" }], createdAt: "2026-11-09T10:00:00.000Z", sourceMessageIds: ["u1"] },
+      { role: "assistant", parts: [{ type: "text", text: "ответ" }], peerId: "eva", sourceMessageIds: ["a1"] },
+    ]);
+
+    expect(urls).toEqual(["/api/v1/sessions/s1/messages/batch"]);
+    expect(bodies).toEqual([
+      {
+        messages: [
+          { role: "user", parts: [{ type: "text", text: "вопрос" }], created_at: "2026-11-09T10:00:00.000Z", source_message_ids: ["u1"] },
+          { role: "assistant", parts: [{ type: "text", text: "ответ" }], peer_id: "eva", source_message_ids: ["a1"] },
+        ],
+      },
+    ]);
+  });
+
   it("кладёт номера строк в тело записи", async () => {
     const { transport, bodies } = capturing();
 

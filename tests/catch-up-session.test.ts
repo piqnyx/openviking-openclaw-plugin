@@ -126,6 +126,37 @@ function server(
         });
       },
     ),
+    // As the server: one append under one lock -- all or none; a message it refuses refuses the batch
+    // before anything is written (routers/sessions.py 541-590, session.py 1185-1230).
+    addSessionMessages: vi.fn(
+      async (
+        _session: string,
+        messages: ReadonlyArray<{ role: string; parts: Array<{ type: string; text?: string }>; createdAt?: string; sourceMessageIds?: readonly string[] }>,
+      ) => {
+        const texts = messages.map((message) => message.parts.map((part) => part.text ?? "").join(" "));
+        const statuses = texts.map((text) => options.refuse?.(text)).filter((status): status is number => status !== undefined);
+        const status = statuses.find((candidate) => candidate < 500) ?? statuses[0];
+        const keep = () => {
+          created = true;
+          for (const message of messages) {
+            stored.push({
+              id: `m${stored.length + 1}`,
+              role: message.role,
+              parts: message.parts as OVMessage["parts"],
+              created_at: message.createdAt ?? "",
+              ...(message.sourceMessageIds ? { source_message_ids: [...message.sourceMessageIds] } : {}),
+            });
+          }
+        };
+        if (status && status >= 500 && options.keepRefused) {
+          keep();
+        }
+        if (status) {
+          throw new OpenVikingRequestError("OpenViking request failed: refused batch", status, status >= 500 ? "UNAVAILABLE" : "INVALID_ARGUMENT");
+        }
+        keep();
+      },
+    ),
     getSessionContext: vi.fn(async () => {
       if (!created) {
         throw new OpenVikingRequestError("OpenViking request failed [NOT_FOUND]: Session not found", 404, "NOT_FOUND");
@@ -196,18 +227,49 @@ describe("«догнать» для сессии", () => {
   });
 
   it("временный сбой -- стоп; следующий раз дописывает с того же места без дублей", async () => {
-    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000), row("u2", "user", "как дела?", T0 + 2_000)];
     let down = true;
     const { client, stored } = server({ refuse: (text) => (down && text === "здравствуй" ? 503 : undefined) });
     const catchUp = createSessionCatchUp();
+    const base = { client, ovSessionId: "s1", holdTrailingQuestion: false, memory: "open" as const, peerIdOf: () => undefined };
 
-    const first = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: logger() });
+    // The chunk fails as a whole; the next call writes it one by one and stops at the failing row.
+    const asChunk = await catchUp({ ...base, reader: reader(branch), logger: logger() });
+    const first = await catchUp({ ...base, reader: reader(branch), logger: logger() });
     down = false;
-    const second = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: logger() });
+    const second = await catchUp({ ...base, reader: reader(branch), logger: logger() });
 
+    expect(asChunk).toMatchObject({ kind: "stopped", written: 0 });
     expect(first).toMatchObject({ kind: "stopped", written: 1 });
-    expect(second).toEqual({ kind: "wrote", written: 1, lost: 0 });
-    expect(textsOf(stored)).toEqual(["привет", "здравствуй"]);
+    expect(second).toEqual({ kind: "wrote", written: 2, lost: 0 });
+    expect(textsOf(stored)).toEqual(["привет", "здравствуй", "как дела?"]);
+  });
+
+  it("кусок новых строк -- одним запросом; больше 100 -- кусками по 100 (PLAN-krug К17)", async () => {
+    const branch = Array.from({ length: 101 }, (_unused, index) =>
+      row(`r${index}`, index % 2 === 0 ? "user" : "assistant", `строка ${index}`, T0 + index * 1_000),
+    );
+    const { client, stored } = server();
+
+    await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: logger() });
+
+    expect(client.addSessionMessages.mock.calls.map(([, messages]) => messages.length)).toEqual([100]);
+    expect(client.addSessionMessage).toHaveBeenCalledTimes(1);
+    expect(stored.map((message) => message.source_message_ids?.[0])).toEqual(branch.map((candidate) => candidate.entryId));
+  });
+
+  it("отказ куску по сути -- этот кусок по одному, громко только плохое (PLAN-krug К17)", async () => {
+    const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "плохое", T0 + 1_000), row("u2", "user", "дальше", T0 + 2_000)];
+    const { client, stored } = server({ refuse: (text) => (text === "плохое" ? 400 : undefined) });
+    const log = logger();
+
+    const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: log });
+
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 1 });
+    expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["u2"]]);
+    const lines = log.warn.mock.calls.map(([line]) => String(line));
+    expect(lines.filter((line) => line.includes("a1"))).toHaveLength(1);
+    expect(lines.filter((line) => /rows (u1|u2)\b/.test(line))).toEqual([]);
   });
 
   it.each([
@@ -225,6 +287,7 @@ describe("«догнать» для сессии", () => {
 
     expect(outcome).toMatchObject({ kind: "skipped" });
     expect(client.addSessionMessage).not.toHaveBeenCalled();
+    expect(client.addSessionMessages).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalled();
   });
 
@@ -239,13 +302,15 @@ describe("«догнать» для сессии", () => {
     const log = logger();
     const base = { client, ovSessionId: "s1", holdTrailingQuestion: false, memory: "open" as const, peerIdOf: () => undefined, logger: log };
 
-    for (let attempt = 1; attempt <= 4; attempt += 1) {
+    // The first call writes the three as one chunk and fails; then one by one -- the poisonous row
+    // fails on its own, four times by the fifth call, and is lost at its fifth failure.
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
       await catchUp({ ...base, reader: reader(branch) });
     }
-    const afterFour = stored.map((message) => message.source_message_ids);
+    const afterFive = stored.map((message) => message.source_message_ids);
     await catchUp({ ...base, reader: reader(branch) });
 
-    expect(afterFour).toEqual([["u1"]]);
+    expect(afterFive).toEqual([["u1"]]);
     expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["u2"]]);
     expect(log.warn.mock.calls.some(([line]) => String(line).includes("5 times"))).toBe(true);
   });
@@ -269,6 +334,7 @@ describe("«догнать» для сессии", () => {
 
     expect(outcome).toMatchObject({ kind: "skipped" });
     expect(client.addSessionMessage).not.toHaveBeenCalled();
+    expect(client.addSessionMessages).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalled();
   });
 
@@ -333,6 +399,8 @@ describe("«догнать» для сессии", () => {
     const catchUp = createSessionCatchUp();
     const base = { client, ovSessionId: "s1", holdTrailingQuestion: false, memory: "open" as const, peerIdOf: () => undefined, logger: logger() };
 
+    // The first row alone: the memory then holds it, and the late row is written by itself.
+    await catchUp({ ...base, reader: reader([branch[0]!]) });
     await catchUp({ ...base, reader: reader(branch) });
     late = false;
     await catchUp({ ...base, reader: reader(branch) });
@@ -351,6 +419,8 @@ describe("«догнать» для сессии", () => {
       selectModelVisible: (rows) => rows,
     };
 
+    // The first row alone: the memory then holds it, and the late row is written by itself.
+    await catchUp({ ...base, reader: reader([branch[0]!]) });
     await catchUp({ ...base, reader: reader(branch) });
     late = false;
     // The memory is dirty; this call asks the server, then the branch cannot be read.
@@ -386,6 +456,7 @@ describe("«догнать» для сессии", () => {
     // The process knows what it held -- rows no longer on the branch.
     await catchUp({ ...base, reader: reader([row("old1", "user", "давнее", T0), row("old2", "assistant", "давний ответ", T0 + 1_000)]) });
     client.addSessionMessage.mockClear();
+    client.addSessionMessages.mockClear();
     client.getSessionContext.mockClear();
 
     const outcome = await catchUp({
@@ -396,6 +467,7 @@ describe("«догнать» для сессии", () => {
     expect(outcome).toMatchObject({ kind: "skipped" });
     expect(client.getSessionContext).toHaveBeenCalled();
     expect(client.addSessionMessage).not.toHaveBeenCalled();
+    expect(client.addSessionMessages).not.toHaveBeenCalled();
     expect(log.warn).toHaveBeenCalled();
   });
 
