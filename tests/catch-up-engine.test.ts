@@ -319,4 +319,51 @@ describe("запись хода через «догнать», как зовёт
 
     expect(diags.find((entry) => entry.stage === "pour_skip")?.data).toMatchObject({ reason: "below_x" });
   });
+
+  // PLAN-krug П3': the gateway keeps a broken turn's question on the branch (telegram and web write it
+  // before the run: agent-runner-execute.ts admitUserTurn; attempt-session-prepare.ts then leaves it),
+  // and the model sees it next to the next question -- so only the turn still running holds it back.
+  const u0 = row("u0", { role: "user", content: "привет", timestamp: T0 - 60_000 });
+  const a0 = row("a0", { role: "assistant", content: [{ type: "text", text: "здравствуй" }], timestamp: T0 - 59_000 });
+
+  it("сорванный ход: его вопрос без ответа пишется на сборке следующего хода -- модель его видит", async () => {
+    const stand = server();
+    const { engine } = engineOver(stand);
+    await queueWith(engine, [u0, a0], "turn-earlier");
+    const broken = row("q1", { role: "user", content: "а погода?", timestamp: T0 });
+    const next = row("q2", { role: "user", content: "ты тут?", timestamp: T0 + 60_000 });
+    const branch = [u0, a0, broken, next];
+
+    await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: branch.map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch, { fence: 3 }) },
+    } as never);
+
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"], ["q1"]]);
+  });
+
+  it("посреди хода вопрос без продолжения ждёт: его ход ещё идёт", async () => {
+    const stand = server();
+    const { engine } = engineOver(stand);
+    await queueWith(engine, [u0, a0], "turn-earlier");
+
+    await hookWith(engine, [u0, a0, question]);
+
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"]]);
+  });
+
+  it("ход кончился без видимого ответа -- вопрос пишется в конце хода", async () => {
+    const stand = server();
+    const { engine } = engineOver(stand);
+    await queueWith(engine, [u0, a0], "turn-earlier");
+
+    // The reply was a silent one (NO_REPLY): the gateway's rule of what the model sees drops it.
+    await queueWith(engine, [u0, a0, question], "turn-silent");
+
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"], ["u1"]]);
+  });
 });
