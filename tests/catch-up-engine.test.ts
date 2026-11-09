@@ -407,4 +407,11 @@ describe("запись хода через «догнать», как зовёт
 
     expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"]]);
   });
+
+  it("Викинг объявляет шлюзу, что догоняет пропущенные ходы по переписке (договор 5в.1)", () => {
+    const { engine } = engineOver(server());
+
+    // With it the gateway drops a queued turn it can no longer read instead of keeping it as a plug.
+    expect(engine.info.transcriptSemantics).toMatchObject({ turnAdvancementRecovery: "transcript-catch-up-v1" });
+  });
 });
