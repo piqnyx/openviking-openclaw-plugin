@@ -107,11 +107,23 @@ function row(id: string, message: Record<string, unknown>): BranchRow {
 }
 
 /** The gateway's reader over the branch as it stands now. */
-function readerOver(branch: BranchRow[]): SessionTranscriptReader {
+/**
+ * The gateway's reader over the branch as it stands now: the cursor names the last row read; under
+ * a fence only rows before it are visible, and a cursor on the fence or past it is an error
+ * (session-accessor.sqlite-active-events.ts 228-235).
+ */
+function readerOver(branch: BranchRow[], options: { fence?: number } = {}): SessionTranscriptReader {
   return {
     readVisiblePage: async (limits) => {
-      const start = limits?.cursor ? Number(limits.cursor) : 0;
-      return { kind: "page", cursor: String(branch.length), rows: branch.slice(start), hasMore: false };
+      const last = limits?.cursor !== undefined ? Number(limits.cursor) : -1;
+      if (options.fence !== undefined && last >= options.fence) {
+        throw Object.assign(new Error("Transcript read cursor has crossed the current-turn admission fence"), {
+          name: "SessionTranscriptReadFenceError",
+        });
+      }
+      const end = options.fence !== undefined ? Math.min(options.fence, branch.length) : branch.length;
+      const rows = branch.slice(last + 1, end);
+      return { kind: "page", cursor: String(last + rows.length), rows, hasMore: false };
     },
     selectModelVisible: (rows) => rows,
   };
@@ -230,5 +242,31 @@ describe("запись хода через «догнать», как зовёт
     } as never);
     // Caught up, the window is read again once; with nothing to write, not again.
     expect(afterFirst - before).toBeGreaterThan(contextReads() - afterFirst);
+  });
+
+  it("повторная сборка после записи посреди своего хода не падает на ограде шлюза", async () => {
+    const stand = server();
+    const { engine, diags } = engineOver(stand);
+    const earlier = row("u0", { role: "user", content: "привет", timestamp: T0 - 60_000 });
+    const earlierReply = row("a0", { role: "assistant", content: [{ type: "text", text: "здравствуй" }], timestamp: T0 - 59_000 });
+    await queueWith(engine, [earlier, earlierReply], "turn-earlier");
+    const branch = [earlier, earlierReply, question, call, result];
+    const assemble = async () =>
+      await engine.assemble({
+        sessionId: SESSION,
+        sessionKey: KEY,
+        messages: branch.map((candidate) => candidate.message) as never,
+        tokenBudget: 200_000,
+        availableTools: new Set<string>(),
+        // The current question is row 2: the fence of this turn.
+        runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch, { fence: 2 }) },
+      } as never);
+
+    await assemble();
+    await hookWith(engine, branch);
+    // The model failed; the retry builds the window again under the same fence.
+    await assemble();
+
+    expect(diags.filter((entry) => entry.stage === "assemble_error")).toEqual([]);
   });
 });

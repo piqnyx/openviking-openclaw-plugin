@@ -1566,6 +1566,7 @@ export async function assembleOpenVikingSession({
         ovSessionId,
         reader,
         place: "settled",
+        memory: "fenced",
         remainder: { messages: ctx.messages, totalArchives: ctx.stats?.totalArchives },
         peerIdOf: (role) =>
           resolveOpenVikingMessagePeerId({
@@ -1918,6 +1919,7 @@ export async function afterTurnOpenVikingSession({
         ovSessionId,
         reader,
         place: path === "commitTurn" ? "settled" : "working",
+        memory: "open",
         peerIdOf: (role) =>
           resolveOpenVikingMessagePeerId({
             peerRole: cfg.peer_role ?? "assistant",

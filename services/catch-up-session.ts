@@ -16,13 +16,19 @@ export type CatchUpOutcome =
   | { kind: "stopped"; written: number; error: string }
   | { kind: "skipped"; reason: string };
 
-type SessionState = { memory?: BranchMemory; held: Set<string> };
+// Two memories of reading (PLAN-krug П2): the fenced one serves only the main assemble -- its cursor
+// stays before the current question, so the next turns' fences are ahead of it; the open one serves
+// the reads without a fence (mid-turn, the queue), whose cursor may pass the current question.
+type SessionState = { fenced?: BranchMemory; open?: BranchMemory; held: Set<string> };
 
 // The server cuts nothing at this budget (as NO_TRIM_TOKEN_BUDGET of the lifecycle service).
 const WHOLE_REMAINDER = 1_000_000_000;
 // The same request will never pass: a refusal of the request itself, not of the moment.
 const REFUSED_STATUSES = new Set([400, 413, 422]);
 const MAX_SESSIONS = 256;
+// What the session's rows Viking holds, by id, newest last: shared by both memories and not cut to
+// either one's rows -- a retry's fenced read must not forget what the open read wrote.
+const MAX_HELD_IDS = 4096;
 
 /**
  * PLAN-krug Р1, шаг 7б: «догнать» for one session -- what Viking holds (the row ids of its live
@@ -75,6 +81,8 @@ export function createSessionCatchUp() {
     ovSessionId: string;
     reader: SessionTranscriptReader;
     place: "settled" | "working";
+    /** Which memory of reading: the main assemble's fenced one, the open one, or none (a reset). */
+    memory: "fenced" | "open" | "none";
     /** The session's live messages the caller has just read (the main assemble reads them anyway). */
     remainder?: { messages?: OVMessage[]; totalArchives?: number };
     peerIdOf: (role: "user" | "assistant") => string | undefined;
@@ -90,10 +98,14 @@ export function createSessionCatchUp() {
         );
         return held;
       }
+      // An open read with no memory of its own starts where the fenced one stopped: that cursor is
+      // before the current question, good for a read without a fence (not the other way round).
+      const memoryIn =
+        params.memory === "fenced" ? state.fenced : params.memory === "open" ? (state.open ?? state.fenced) : undefined;
       const read = await readBranchSinceBookmark({
         reader: params.reader,
         seenIds: held.ids,
-        ...(state.memory ? { memory: state.memory } : {}),
+        ...(memoryIn ? { memory: memoryIn } : {}),
       });
       if (read.kind !== "rows") {
         const reason = read.kind === "missing" ? "transcript_missing" : `transcript_unavailable:${read.reason}`;
@@ -101,10 +113,10 @@ export function createSessionCatchUp() {
       }
       const plan = planTranscriptCatchUp({ rows: read.visible, seenIds: held.ids, place: params.place });
       const written = await writeInOrder(params, plan.messages, held.ids);
-      state.memory = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
-      // Only the ids of rows still kept matter: the newest of them is the bookmark.
-      const kept = new Set(state.memory.rows.map((row) => row.firstEntryId));
-      state.held = new Set([...held.ids].filter((id) => kept.has(id)));
+      if (params.memory !== "none") {
+        state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
+      }
+      state.held = new Set([...held.ids].slice(-MAX_HELD_IDS));
       return written;
     });
   };
