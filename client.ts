@@ -1034,6 +1034,8 @@ export class OpenVikingClient {
       */
       keepRecentCount?: number;
       agentId?: string;
+      /** PLAN-krug К20: told once the server has archived (phase 1), before any wait for phase 2. */
+      onArchived?: () => void;
     },
   ): Promise<CommitSessionResult> {
     const keepRecentCount =
@@ -1061,6 +1063,7 @@ export class OpenVikingClient {
       options?.agentId,
     );
 
+    options?.onArchived?.();
     if (!options?.wait || !result.task_id) {
       return result;
     }

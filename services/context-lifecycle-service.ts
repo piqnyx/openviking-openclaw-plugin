@@ -49,6 +49,8 @@ export type CommitOpenVikingSessionParams = {
     ovSessionId?: string;
   }) => void;
   isBypassedSession: (params: { sessionId?: string; sessionKey?: string }) => boolean;
+  /** PLAN-krug К20: told once the server has archived the session (phase 1). */
+  onArchived?: () => void;
 };
 
 export type CompactOpenVikingSessionResult = {
@@ -449,6 +451,7 @@ export async function commitOpenVikingSession({
   logger,
   rememberSessionAgentId,
   isBypassedSession,
+  onArchived,
 }: CommitOpenVikingSessionParams): Promise<boolean> {
   const ovId = openClawSessionToOvStorageId(sessionId, sessionKey);
   if (isBypassedSession({ sessionId, sessionKey })) {
@@ -467,6 +470,7 @@ export async function commitOpenVikingSession({
     const commitResult = await client.commitSession(ovId, {
       wait: true,
       keepRecentCount: 0,
+      ...(onArchived ? { onArchived } : {}),
     });
     const memCount = totalExtractedMemories(commitResult.memories_extracted);
     if (commitResult.status === "failed") {

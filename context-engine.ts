@@ -22,6 +22,7 @@ import {
   type AnnounceCompaction,
 } from "./services/context-lifecycle-service.js";
 import { createSessionCatchUp, type SessionCatchUp } from "./services/catch-up-session.js";
+import { createResetBarrier, type ResetBarrier } from "./services/reset-barrier.js";
 import type { SessionTranscriptReader } from "./services/branch-reader.js";
 
 type ContextEngineInfo = {
@@ -346,6 +347,8 @@ export function createMemoryOpenVikingContextEngine(params: {
   pourRetryPauseMs?: number;
   /** PLAN-krug К18: the registration's «догнать» memory -- it outlives this engine, built for one turn. */
   catchUp?: SessionCatchUp;
+  /** PLAN-krug К20: the registration's reset hold -- it outlives this engine, built for one turn. */
+  resetBarrier?: ResetBarrier;
 }): ContextEngineWithCommit {
   const {
     id,
@@ -366,6 +369,10 @@ export function createMemoryOpenVikingContextEngine(params: {
   // PLAN-krug 7б: the turns written by the gateway's row ids. К18: its memory is the registration's;
   // an engine built on its own (tests) keeps its own.
   const catchUp = params.catchUp ?? createSessionCatchUp();
+  const resetBarrier = params.resetBarrier ?? createResetBarrier();
+  // PLAN-krug К20: the engine's steps for a session wait for a reset still archiving its old conversation.
+  const afterReset = (sessionId: string, sessionKey: string | undefined) =>
+    resetBarrier.passed(openClawSessionToOvStorageId(sessionId, sessionKey));
   const diagEnabled = cfg.emitStandardDiagnostics;
   const bypassSessionPatterns = compileSessionPatterns(cfg.bypassSessionPatterns);
   const diag = (stage: string, sessionId: string, data: Record<string, unknown>) =>
@@ -417,19 +424,26 @@ export function createMemoryOpenVikingContextEngine(params: {
   }): Promise<boolean> {
     const { sessionId } = params;
     const { sessionKey } = resolveSessionIdentity(params);
-    // PLAN-krug К13: an older gateway hands no reader -- the archive only, as before 7б.
-    if (params.transcriptReader) {
-      await catchUpBeforeReset({ sessionId, sessionKey, reader: params.transcriptReader });
+    // PLAN-krug К20: held before the first await -- the gateway goes on with the new conversation at once.
+    const release = resetBarrier.hold(openClawSessionToOvStorageId(sessionId, sessionKey));
+    try {
+      // PLAN-krug К13: an older gateway hands no reader -- the archive only, as before 7б.
+      if (params.transcriptReader) {
+        await catchUpBeforeReset({ sessionId, sessionKey, reader: params.transcriptReader });
+      }
+      return await commitOpenVikingSession({
+        sessionId,
+        sessionKey,
+        getClient,
+        resolveAgentId,
+        logger,
+        rememberSessionAgentId,
+        isBypassedSession,
+        onArchived: release,
+      });
+    } finally {
+      release();
     }
-    return commitOpenVikingSession({
-      sessionId,
-      sessionKey,
-      getClient,
-      resolveAgentId,
-      logger,
-      rememberSessionAgentId,
-      isBypassedSession,
-    });
   }
 
   function extractSessionKey(runtimeContext: Record<string, unknown> | undefined): string | undefined {
@@ -489,6 +503,7 @@ export function createMemoryOpenVikingContextEngine(params: {
     },
 
     async assemble(assembleParams): Promise<AssembleResult> {
+      await afterReset(assembleParams.sessionId, resolveSessionKey(assembleParams));
       const tokenBudget = validTokenBudget(assembleParams.tokenBudget) ?? 128_000;
       const isMainAssemble =
         Object.prototype.hasOwnProperty.call(assembleParams, "availableTools") ||
@@ -529,6 +544,7 @@ export function createMemoryOpenVikingContextEngine(params: {
     },
 
     async afterTurn(afterTurnParams): Promise<void> {
+      await afterReset(afterTurnParams.sessionId, resolveSessionKey(afterTurnParams));
       // Хост зовёт afterTurn безусловно, как только метод существует
       // (src/agents/harness/context-engine-lifecycle.ts), не глядя на commitTurn.
       // Поэтому один и тот же ход может прийти обоими путями — отпечаток
@@ -574,6 +590,7 @@ export function createMemoryOpenVikingContextEngine(params: {
      */
     async commitTurn(commitParams): Promise<{ status: "committed" | "duplicate" }> {
       const sessionId = commitParams.sessionId;
+      await afterReset(sessionId, commitParams.sessionKey);
       if (!claimTurn(sessionId, `key:${commitParams.advancementKey}`)) {
         diag("commitTurn_duplicate", sessionId, {
           advancementKey: commitParams.advancementKey,
@@ -617,6 +634,7 @@ export function createMemoryOpenVikingContextEngine(params: {
     },
 
     async compact(compactParams): Promise<CompactResult> {
+      await afterReset(compactParams.sessionId, resolveSessionKey(compactParams));
       const tokenBudget = validTokenBudget(compactParams.tokenBudget) ?? 128_000;
       return compactOpenVikingSession({
         sessionId: compactParams.sessionId,
