@@ -36,10 +36,13 @@ type ContextEngineInfo = {
    * хода; ровно так и работает assemble, он берёт messages до prePromptMessageCount.
    * turnAdvancementIdempotency — commitTurn можно повторять с тем же
    * advancementKey без задвоения; обеспечено защитой в captureTurnOnce.
+   * turnAdvancementRecovery — пропущенный ход движок догоняет по переписке шлюза (PLAN-krug 5в.1, 7б):
+   * запись очереди, которую шлюз уже не может прочитать, он удаляет громко, а не держит пробкой.
    */
   transcriptSemantics?: {
     currentTurnFence?: "before-current-turn-entry-v1";
     turnAdvancementIdempotency?: "atomic-idempotent-v1";
+    turnAdvancementRecovery?: "transcript-catch-up-v1";
   };
 };
 
@@ -467,6 +470,7 @@ export function createMemoryOpenVikingContextEngine(params: {
       transcriptSemantics: {
         currentTurnFence: "before-current-turn-entry-v1",
         turnAdvancementIdempotency: "atomic-idempotent-v1",
+        turnAdvancementRecovery: "transcript-catch-up-v1",
       },
     },
 
