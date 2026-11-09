@@ -103,6 +103,8 @@ type AssembleResult = {
   messages: AgentMessage[];
   estimatedTokens: number;
   systemPromptAddition?: string;
+  /** PLAN-krug 7в.3в: the window's state on a main assembly, for the host to show (gateway's AssembleResult). */
+  contextWindow?: "partial" | "whole";
 };
 
 type IngestResult = {
@@ -509,7 +511,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         Object.prototype.hasOwnProperty.call(assembleParams, "availableTools") ||
         Object.prototype.hasOwnProperty.call(assembleParams, "citationsMode") ||
         Object.prototype.hasOwnProperty.call(assembleParams, "prompt");
-      return assembleOpenVikingSession({
+      const assembled = await assembleOpenVikingSession({
         sessionId: assembleParams.sessionId,
         sessionKey: resolveSessionKey(assembleParams),
         messages: assembleParams.messages,
@@ -541,6 +543,9 @@ export function createMemoryOpenVikingContextEngine(params: {
         ).announceCompaction,
         catchUp,
       });
+      // PLAN-krug 7в.3в: every main assembly tells the window's state, so a whole one after a partial one takes the
+      // host's line down; the assembly for a request's recall is no window and tells nothing.
+      return isMainAssemble ? { ...assembled, contextWindow: assembled.contextWindow ?? "whole" } : assembled;
     },
 
     async afterTurn(afterTurnParams): Promise<void> {
