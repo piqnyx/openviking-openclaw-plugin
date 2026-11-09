@@ -361,7 +361,7 @@ function extractPartText(content: unknown): string {
 /**
  * 结构化消息类型 - 用于 afterTurn 发送到 OpenViking
  */
-type ExtractedMessage = {
+export type ExtractedMessage = {
   role: "user" | "assistant";
   parts: Array<{
     type: "text";
@@ -393,13 +393,8 @@ function hasToolCallBlocks(content: unknown): boolean {
   );
 }
 
-export function extractNewTurnMessages(
-  messages: unknown[],
-  startIndex: number,
-): { messages: ExtractedMessage[]; newCount: number } {
-  const result: ExtractedMessage[] = [];
-  let count = 0;
-
+/** Tool-call inputs by call id across all the messages: a tool result names its call by id. */
+export function collectToolUseInputs(messages: unknown[]): Record<string, Record<string, unknown>> {
   // First pass: collect toolUse inputs indexed by toolCallId/toolUseId
   // Scan all messages (including after startIndex) to find toolUse before each toolResult
   const toolUseInputs: Record<string, Record<string, unknown>> = {};
@@ -425,78 +420,97 @@ export function extractNewTurnMessages(
       }
     }
   }
+  return toolUseInputs;
+}
 
-  for (let i = startIndex; i < messages.length; i++) {
-    const msg = messages[i] as Record<string, unknown>;
-    if (!msg || typeof msg !== "object") continue;
+/**
+ * One transcript message in capture form: `counts` -- a conversation message at all (not system,
+ * not the host's custom runtime context); `message` -- what it records, when anything.
+ */
+export function extractMessageForCapture(
+  message: unknown,
+  toolUseInputs: Record<string, Record<string, unknown>>,
+): { counts: boolean; message?: ExtractedMessage } {
+  const msg = message as Record<string, unknown>;
+  if (!msg || typeof msg !== "object") return { counts: false };
 
-    const role = msg.role as string;
-    // The host's "custom" messages are runtime-generated (its runtime context for
-    // the turn): the host hands them to the model with every prompt itself and
-    // strips them from the history it gives the engine; the loop hook leaks them.
-    // They are not the conversation and do not go to memory.
-    if (!role || role === "system" || role === "custom") continue;
+  const role = msg.role as string;
+  // The host's "custom" messages are runtime-generated (its runtime context for
+  // the turn): the host hands them to the model with every prompt itself and
+  // strips them from the history it gives the engine; the loop hook leaks them.
+  // They are not the conversation and do not go to memory.
+  if (!role || role === "system" || role === "custom") return { counts: false };
 
-    count++;
-
-    // toolResult -> type: "tool"
-    if (role === "toolResult") {
-      const toolName = typeof msg.toolName === "string" ? msg.toolName : "tool";
-      const output = formatToolResultContent(msg.content) || "";
-      // Try multiple field names for tool call ID
-      const toolCallId = (msg.toolCallId as string) || (msg.toolUseId as string) || (msg.tool_call_id as string);
-      const toolInput = toolCallId && toolUseInputs[toolCallId]
-        ? toolUseInputs[toolCallId]
-        : (typeof msg.toolInput === "object" && msg.toolInput !== null
-          ? msg.toolInput as Record<string, unknown>
-          : undefined);
-      if (output) {
-        result.push({
-          role: "assistant",
-          parts: [{
-            type: "tool",
-            toolCallId: toolCallId || undefined,
-            toolName,
-            toolInput,
-            toolOutput: output,
-            toolStatus: "completed",
-          }],
-        });
-      }
-      continue;
+  // toolResult -> type: "tool"
+  if (role === "toolResult") {
+    const toolName = typeof msg.toolName === "string" ? msg.toolName : "tool";
+    const output = formatToolResultContent(msg.content) || "";
+    // Try multiple field names for tool call ID
+    const toolCallId = (msg.toolCallId as string) || (msg.toolUseId as string) || (msg.tool_call_id as string);
+    const toolInput = toolCallId && toolUseInputs[toolCallId]
+      ? toolUseInputs[toolCallId]
+      : (typeof msg.toolInput === "object" && msg.toolInput !== null
+        ? msg.toolInput as Record<string, unknown>
+        : undefined);
+    if (output) {
+      return { counts: true, message: {
+        role: "assistant",
+        parts: [{
+          type: "tool",
+          toolCallId: toolCallId || undefined,
+          toolName,
+          toolInput,
+          toolOutput: output,
+          toolStatus: "completed",
+        }],
+      } };
     }
-
-    // user/assistant -> type: "text"
-    const content = msg.content;
-    const text = extractPartText(content);
-
-    // A tool call without text: the model's turn to the tools. Nothing to record by
-    // itself (the results carry the call), but it is where a round of results starts:
-    // an empty message, so the results of two rounds are not glued into one (11.10:
-    // the queue's closed turn glued them, the hook had recorded them by rounds, and the
-    // turn went to the server twice).
-    if (!text && role === "assistant" && hasToolCallBlocks(content)) {
-      result.push({ role: "assistant", parts: [] });
-      continue;
-    }
-
-    if (text) {
-      // 使用 sanitizeUserTextForCapture 清理所有噪音（Sender 元数据、时间戳等）
-      const cleanedText = sanitizeUserTextForCapture(text);
-      if (cleanedText) {
-        // 保持原始 role，assistant 保持 assistant，user 保持 user
-        const ovRole: "user" | "assistant" = role === "assistant" ? "assistant" : "user";
-        result.push({
-          role: ovRole,
-          parts: [{
-            type: "text",
-            text: cleanedText,
-          }],
-        });
-      }
-    }
+    return { counts: true };
   }
 
+  // user/assistant -> type: "text"
+  const content = msg.content;
+  const text = extractPartText(content);
+
+  // A tool call without text: the model's turn to the tools. Nothing to record by
+  // itself (the results carry the call), but it is where a round of results starts:
+  // an empty message, so the results of two rounds are not glued into one (11.10:
+  // the queue's closed turn glued them, the hook had recorded them by rounds, and the
+  // turn went to the server twice).
+  if (!text && role === "assistant" && hasToolCallBlocks(content)) {
+    return { counts: true, message: { role: "assistant", parts: [] } };
+  }
+
+  if (text) {
+    // 使用 sanitizeUserTextForCapture 清理所有噪音（Sender 元数据、时间戳等）
+    const cleanedText = sanitizeUserTextForCapture(text);
+    if (cleanedText) {
+      // 保持原始 role，assistant 保持 assistant，user 保持 user
+      const ovRole: "user" | "assistant" = role === "assistant" ? "assistant" : "user";
+      return { counts: true, message: {
+        role: ovRole,
+        parts: [{
+          type: "text",
+          text: cleanedText,
+        }],
+      } };
+    }
+  }
+  return { counts: true };
+}
+
+export function extractNewTurnMessages(
+  messages: unknown[],
+  startIndex: number,
+): { messages: ExtractedMessage[]; newCount: number } {
+  const result: ExtractedMessage[] = [];
+  let count = 0;
+  const toolUseInputs = collectToolUseInputs(messages);
+  for (let i = startIndex; i < messages.length; i++) {
+    const extracted = extractMessageForCapture(messages[i], toolUseInputs);
+    if (extracted.counts) count++;
+    if (extracted.message) result.push(extracted.message);
+  }
   return { messages: result, newCount: count };
 }
 
