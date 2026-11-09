@@ -12,7 +12,7 @@ import {
 } from "./text-utils.js";
 import type { RecallTraceEntry } from "./recall-trace.js";
 import { estimateAgentMessageTokens, estimateAgentMessagesTokens } from "./token-estimator.js";
-import { openClawSessionToOvStorageId } from "./routing/identity-routing.js";
+import { openClawSessionToOvStorageId, resolveOpenVikingMessagePeerId } from "./routing/identity-routing.js";
 import type { AgentMessage } from "./services/context-message-adapter.js";
 import {
   assembleOpenVikingSession,
@@ -22,6 +22,7 @@ import {
   type AnnounceCompaction,
 } from "./services/context-lifecycle-service.js";
 import { createSessionCatchUp } from "./services/catch-up-session.js";
+import { fixedBranchReader, rowsOfTranscriptMessages } from "./services/branch-reader.js";
 
 type ContextEngineInfo = {
   id: string;
@@ -184,6 +185,8 @@ export type ContextEngineWithCommit = ContextEngine & {
     sessionId: string;
     sessionKey?: string;
     runtimeContext?: Record<string, unknown>;
+    /** PLAN-krug 7б: the reset's messages, each named by its transcript row (before_reset). */
+    transcriptMessages?: unknown[];
   }) => Promise<boolean>;
 };
 
@@ -365,13 +368,53 @@ export function createMemoryOpenVikingContextEngine(params: {
   const isBypassedSession = (params: { sessionId?: string; sessionKey?: string }): boolean =>
     shouldBypassSession(params, bypassSessionPatterns);
 
+  /**
+   * PLAN-krug 7б: on a reset the turn's end has normally written the last turn already; when its
+   * write failed and the reset came first, the rows Viking lacks go in now, before the archive --
+   * after it, the queue would write them into the old session where nothing extracts them. There is
+   * no gateway reader here: they go without its rule of what the model sees, said loudly. A failure
+   * here does not hold the archive back.
+   */
+  async function catchUpBeforeReset(params: { sessionId: string; sessionKey?: string; messages: unknown[] }) {
+    const rows = rowsOfTranscriptMessages(params.messages);
+    if (rows.length === 0 || isBypassedSession({ sessionId: params.sessionId, sessionKey: params.sessionKey })) {
+      return;
+    }
+    try {
+      const ovSessionId = openClawSessionToOvStorageId(params.sessionId, params.sessionKey);
+      const agentId = resolveAgentId(params.sessionId, params.sessionKey, ovSessionId);
+      const client = await getClient(agentId);
+      const outcome = await catchUp({
+        client,
+        ovSessionId,
+        reader: fixedBranchReader(rows),
+        place: "working",
+        peerIdOf: (role) =>
+          resolveOpenVikingMessagePeerId({ peerRole: cfg.peer_role ?? "assistant", role, assistantPeerId: agentId }),
+        logger,
+      });
+      if (outcome.kind !== "skipped" && outcome.written > 0) {
+        logger.warn?.(
+          `openviking: before_reset wrote ${outcome.written} message(s) of session=${ovSessionId} that the turn's ` +
+            "end had not, without the gateway's rule of what the model sees (delivery copies or heartbeat rows may be among them)",
+        );
+      }
+    } catch (err) {
+      logger.warn?.(`openviking: before_reset could not catch up session=${params.sessionId}: ${String(err)}`);
+    }
+  }
+
   async function doCommitOVSession(params: {
     sessionId: string;
     sessionKey?: string;
     runtimeContext?: Record<string, unknown>;
+    transcriptMessages?: unknown[];
   }): Promise<boolean> {
     const { sessionId } = params;
     const { sessionKey } = resolveSessionIdentity(params);
+    if (params.transcriptMessages) {
+      await catchUpBeforeReset({ sessionId, sessionKey, messages: params.transcriptMessages });
+    }
     return commitOpenVikingSession({
       sessionId,
       sessionKey,

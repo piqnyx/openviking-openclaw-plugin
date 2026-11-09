@@ -6,7 +6,12 @@ export type OpenVikingHookContext = {
 };
 
 export type ContextEngineCommitPort = {
-  commitOVSession: (ctx: { sessionId: string; sessionKey?: string }) => Promise<boolean>;
+  commitOVSession: (ctx: {
+    sessionId: string;
+    sessionKey?: string;
+    /** PLAN-krug 7б: the reset's messages, each named by its transcript row. */
+    transcriptMessages?: unknown[];
+  }) => Promise<boolean>;
 };
 
 export type OpenVikingLifecycleHookApi = {
@@ -36,7 +41,7 @@ export function registerOpenVikingLifecycleHooks(deps: OpenVikingLifecycleHooksD
   deps.api.on("session_end", async (_event: unknown, ctx?: OpenVikingHookContext) => {
     deps.rememberSessionAgentId(ctx ?? {});
   });
-  deps.api.on("before_reset", async (_event: unknown, ctx?: OpenVikingHookContext) => {
+  deps.api.on("before_reset", async (event: unknown, ctx?: OpenVikingHookContext) => {
     if (deps.isBypassedSession(ctx)) {
       deps.verboseRoutingInfo(
         `openviking: bypassing before_reset due to session pattern match (sessionKey=${ctx?.sessionKey ?? "none"}, sessionId=${ctx?.sessionId ?? "none"})`,
@@ -47,9 +52,11 @@ export function registerOpenVikingLifecycleHooks(deps: OpenVikingLifecycleHooksD
     const contextEngine = deps.getContextEngine();
     if (sessionId && contextEngine) {
       try {
+        const messages = (event as { messages?: unknown } | undefined)?.messages;
         const ok = await contextEngine.commitOVSession({
           sessionId,
           sessionKey: ctx?.sessionKey,
+          ...(Array.isArray(messages) ? { transcriptMessages: messages } : {}),
         });
         if (ok) {
           deps.logger.info(`openviking: committed OV session on reset for session=${sessionId}`);
