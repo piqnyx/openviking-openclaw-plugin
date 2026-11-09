@@ -292,28 +292,59 @@ describe("«догнать» для сессии", () => {
     expect(log.warn).toHaveBeenCalled();
   });
 
-  it("строка, на которой сервер падает раз за разом, на пятый раз подряд -- громкая потеря, дальше пишется (PLAN-krug К15)", async () => {
+  // PLAN-krug К15, К15б (Вит 09.11: «второй вариант, 30 минут»): the catch-up runs before every model call
+  // of a turn, so five failures can come within seconds -- a row is lost only after five failures in a row
+  // AND half an hour since its first one; a short failure of the server's writes loses nothing.
+  function poisonedBranch() {
     const branch = [
       row("u1", "user", "привет", T0),
       row("a1", "assistant", "ядовитая", T0 + 1_000),
       row("u2", "user", "дальше", T0 + 2_000),
     ];
     const { client, stored } = server({ refuse: (text) => (text === "ядовитая" ? 503 : undefined) });
-    const catchUp = createSessionCatchUp();
+    let clock = T0;
+    const catchUp = createSessionCatchUp({ now: () => clock });
     const log = logger();
     const base = { client, ovSessionId: "s1", holdTrailingQuestion: false, memory: "open" as const, peerIdOf: () => undefined, logger: log };
-
-    // The first call writes the three as one chunk and fails; then one by one -- the poisonous row
-    // fails on its own, four times by the fifth call, and is lost at its fifth failure.
-    for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const at = async (minutes: number) => {
+      clock = T0 + minutes * 60_000;
       await catchUp({ ...base, reader: reader(branch) });
-    }
-    const afterFive = stored.map((message) => message.source_message_ids);
-    await catchUp({ ...base, reader: reader(branch) });
+    };
+    const ids = () => stored.map((message) => message.source_message_ids);
+    return { at, ids, log };
+  }
 
-    expect(afterFive).toEqual([["u1"]]);
-    expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["u2"]]);
-    expect(log.warn.mock.calls.some(([line]) => String(line).includes("5 times"))).toBe(true);
+  it("строка, на которой сервер падает раз за разом, -- потеря только после пяти неудач и получаса (PLAN-krug К15б)", async () => {
+    const { at, ids, log } = poisonedBranch();
+
+    // The chunk fails at once; then one by one -- the poisonous row fails ten times within 29 minutes.
+    await at(0);
+    for (let minute = 0; minute <= 29; minute += 3) {
+      await at(minute);
+    }
+    const within = ids();
+    await at(30);
+
+    expect(within).toEqual([["u1"]]);
+    expect(ids()).toEqual([["u1"], ["u2"]]);
+    expect(log.warn.mock.calls.some(([line]) => String(line).includes("30 minutes"))).toBe(true);
+  });
+
+  it("полчаса без пяти неудач -- тоже не потеря (PLAN-krug К15б)", async () => {
+    const { at, ids } = poisonedBranch();
+
+    await at(0);
+    await at(0);
+    await at(40);
+    const twoOverForty = ids();
+    await at(40);
+    await at(40);
+    const fourOverForty = ids();
+    await at(40);
+
+    expect(twoOverForty).toEqual([["u1"]]);
+    expect(fourOverForty).toEqual([["u1"]]);
+    expect(ids()).toEqual([["u1"], ["u2"]]);
   });
 
   it("новая беседа: сервер не знает сессию (404) -- пишется ветка, сессия создаётся первой записью", async () => {
