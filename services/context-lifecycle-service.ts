@@ -1171,7 +1171,7 @@ function holdSecondsOf(cfg: any): number {
  * host's own picture of compaction (file 35 of the gateway). The limit run out: the
  * turn's window is assembled by the fallback path while archives wait for their summary
  * (PLAN-krug 7в.2), and the session is not held again until that summary stands.
- * Returns the context to assemble from: read again once the summary stands.
+ * Returns the context to assemble from: read again after any wait, the summary stood or not.
  */
 async function holdForSummary(params: {
   ctx: SessionContextResult | null | undefined;
@@ -1222,9 +1222,12 @@ async function holdForSummary(params: {
     summaryHoldGivenUp.add(ovSessionId);
     logger.warn?.(
       `openviking: assemble session=${ovSessionId}: the summary did not stand within ${holdSeconds} s ` +
-        `(${wait.polls} polls); going on by the fallback path until it stands, and not holding again`,
+        `(${wait.polls} polls); going on by the answer read now (the fallback path while archives wait), ` +
+        "and not holding again until it stands",
     );
-    return ctx;
+    // PLAN-krug 7в.7б: the answer read before the wait is as old as the hold; the window goes by the
+    // server's answer as it stands now -- a summary that stood meanwhile is in it.
+    return await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
   }
   logger.info(
     `openviking: assemble session=${ovSessionId}: the summary stands after ${waitedMs} ms (${wait.polls} polls); ` +

@@ -124,15 +124,16 @@ describe("ход держится, пока сводка не встала", () 
     ]);
   });
 
-  it("предел вышел -- идёт на сырых сообщениях и не ждёт снова, пока сводка не встанет", async () => {
-    const { client, contextReads, sessionPolls } = server({ context: [1, 1, 0, 1, 0], session: [1] });
+  it("предел вышел -- не ждёт снова, пока сводка не встанет", async () => {
+    // Reads: before the wait and after it (PLAN-krug 7в.7б); the next turn; the summary stood; the next pour.
+    const { client, contextReads, sessionPolls } = server({ context: [1, 1, 1, 0, 1], session: [1] });
     const { assemble, announce, seen, holds } = stand("11111111-0000-4000-8000-000000000002", client, {
       holdForSummarySeconds: 0.02,
     });
 
     await assemble();
     expect(announce.mock.calls).toEqual([["start"], ["end", { completed: false }]]);
-    expect(contextReads()).toBe(1);
+    expect(contextReads()).toBe(2);
     expect(holds()).toEqual([
       expect.objectContaining({ data: expect.objectContaining({ outcome: "timeout" }) }),
     ]);
