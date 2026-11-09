@@ -527,8 +527,29 @@ function isSessionNotFoundError(err: unknown): boolean {
  */
 const RECOVERY_ARCHIVE_PROBES = 8;
 
-/** `turnStamps`: the moments of the turns seen in the archive, each once, oldest first. */
-type ClosedArchive = { archiveId: string; overview: string; turnStamps: number[] };
+/**
+ * `index`: the archive's number; `turnStamps`: the moments of the turns seen in the archive, each once,
+ * oldest first.
+ */
+type ClosedArchive = { archiveId: string; index: number; overview: string; turnStamps: number[] };
+
+/**
+ * PLAN-krug 7в.7а: the summary the server's answer stands on and its archive's number. The server walks
+ * from the newest archive to the first whose summary stands -- closed, or failed or still at work with
+ * its summary written whole (PLAN-gorizont 3г, 3е) -- and hands the archives after it raw, counted in
+ * `unsummarizedArchives`; one by one it hands out only closed ones.
+ */
+type StandingSummary = { overview: string; archive: number };
+
+function standingSummaryOf(ctx: SessionContextResult): StandingSummary | undefined {
+  const overview = typeof ctx.latest_archive_overview === "string" ? ctx.latest_archive_overview.trim() : "";
+  const total = ctx.stats?.totalArchives;
+  if (!overview || typeof total !== "number") {
+    return undefined;
+  }
+  const waiting = ctx.stats?.unsummarizedArchives;
+  return { overview, archive: total - (typeof waiting === "number" ? waiting : 0) };
+}
 
 type RecoveryClient = Pick<OpenVikingClient, "getSessionArchive">;
 
@@ -575,6 +596,7 @@ async function findLastClosedArchive(
         .filter((moment): moment is number => moment !== undefined);
       return {
         archiveId,
+        index,
         overview,
         turnStamps: [...new Set(moments)].sort((left, right) => left - right),
       };
@@ -920,6 +942,12 @@ async function tailByWeight(params: {
  * said after that archive ended, in order and without a gap; what still does not
  * fit is cut from the old end and counted.
  *
+ * The summary the server's answer stands on (`standing`, PLAN-krug 7в.7а) may be
+ * newer than any closed archive: its archive failed or is still at work with the
+ * summary written whole. The window takes the newest summary in hand; the tail
+ * still begins where the last closed archive ended -- not after the summary's
+ * end, so more is given again, nothing is left out.
+ *
  * The messages after the archive are taken from the live transcript, not from
  * the server: the server will not hand out the messages of a failed archive, and
  * the live transcript has them all. Where the tail begins is told by
@@ -945,6 +973,7 @@ async function assembleWithoutFreshSummary(params: {
   runtimeSettings?: unknown;
   client?: RecoveryClient;
   totalArchives?: number;
+  standing?: StandingSummary;
   extra?: Record<string, unknown>;
 }): Promise<AssembleOpenVikingSessionResult> {
   const { diag, logger, roughEstimate, ovSessionId, reason, liveMessages, originalTokens, tokenBudget, extra } =
@@ -988,9 +1017,14 @@ async function assembleWithoutFreshSummary(params: {
     }
   }
 
-  const instruction = archive ? buildInstructionPrompt() : { text: "", tokens: 0 };
+  // An archive found closed at or after the standing summary's is that archive, or one closed since the
+  // answer: its own summary and its own boundary, with no gap between them.
+  const standing =
+    params.standing && !(archive && archive.index >= params.standing.archive) ? params.standing : undefined;
+  const overview = standing ? standing.overview : archive?.overview;
+  const instruction = overview ? buildInstructionPrompt() : { text: "", tokens: 0 };
   const budgets = allocateContextBudget(tokenBudget, instruction.tokens);
-  const summary = buildArchiveMemory(archive?.overview, [], budgets.archiveMemory, roughEstimate);
+  const summary = buildArchiveMemory(overview, [], budgets.archiveMemory, roughEstimate);
 
   const boundary = archive ? boundaryBeforeArchiveEnd(liveMessages, archive.turnStamps) : -1;
   const boundaryFound = boundary >= 0;
@@ -1033,7 +1067,7 @@ async function assembleWithoutFreshSummary(params: {
     chosen = await tailByWeight({ ...tailCut, weigh: null });
   }
   let kept = chosen ? tail.slice(chosen.start) : tail.slice();
-  if (!archive) {
+  if (!overview) {
     // Nothing stands before the tail, so it has to open with the user's turn.
     const firstUser = kept.findIndex((message) => message?.role === "user");
     kept = firstUser >= 0 ? kept.slice(firstUser) : [];
@@ -1056,10 +1090,16 @@ async function assembleWithoutFreshSummary(params: {
   logger.warn?.(
     `openviking: no fresh summary for session=${ovSessionId} (${reason}): the transcript is ` +
       `${originalTokens} tokens against a budget of ${tokenBudget}, so it was assembled from ` +
-      `${archive ? `the summary of ${archive.archiveId}` : "no summary (no closed archive in reach)"} ` +
+      `${
+        standing
+          ? "the summary the server's answer stands on"
+          : archive
+            ? `the summary of ${archive.archiveId}`
+            : "no summary (no closed archive in reach)"
+      } ` +
       `and ${kept.length} live messages` +
-      (boundaryFound
-        ? " from the turn the archive ends in"
+      (archive && boundaryFound
+        ? ` from the turn ${archive.archiveId} ends in`
         : " by budget, where the archive ends could not be told") +
       (droppedMessages > 0
         ? `; dropped ${droppedMessages} oldest ${chosen?.priced ? `above ${keepRecentTokens} by the counter` : "beyond the floor, unweighed"}`
@@ -1070,6 +1110,7 @@ async function assembleWithoutFreshSummary(params: {
     passthrough: false,
     recovered: true,
     reason,
+    summaryFrom: standing ? "context" : archive ? "archive" : null,
     archiveId: archive?.archiveId ?? null,
     boundaryFound,
     ...(search ? { boundary: search } : {}),
@@ -1610,6 +1651,7 @@ export async function assembleOpenVikingSession({
           tokenBudget,
           client,
           totalArchives: ctx.stats?.totalArchives,
+          standing: standingSummaryOf(ctx),
           extra: { catchUp: outcome },
         });
       }
@@ -1661,6 +1703,7 @@ export async function assembleOpenVikingSession({
         tokenBudget,
         client,
         totalArchives,
+        standing: standingSummaryOf(ctx),
         extra: { archiveCount: totalArchives ?? 0, activeCount, unsummarizedArchives: waitingSummaries ?? null },
       });
     }

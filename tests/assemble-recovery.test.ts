@@ -384,8 +384,9 @@ describe("запасной путь и сводка, на которой сто�
   it("архив закрылся уже после ответа и он новее стоящей сводки: его сводка и его граница", async () => {
     const live = liveTranscript(60);
     const { client } = server({
-      context: standingOn3g(1),
-      // archive_003 ждал сводки, когда сервер отвечал, и закрылся раньше, чем плагин его спросил.
+      context: standingOn3g(2),
+      // archive_003 и archive_004 ждали сводки, когда сервер отвечал; archive_003 закрылся раньше, чем плагин
+      // его спросил, archive_004 ждёт.
       archives: {
         archive_003: { overview: "ПЕРЕСКАЗ-003", lastMessageIndex: 49 },
         archive_001: { overview: "ПЕРЕСКАЗ-СТАРШИЙ", lastMessageIndex: 39 },
