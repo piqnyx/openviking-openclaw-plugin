@@ -123,6 +123,8 @@ export type OVMessage = {
   role: string;
   parts: OVMessagePart[];
   created_at: string;
+  /** The gateway transcript rows the message was written from (PLAN-krug Р1); absent on older rows. */
+  source_message_ids?: string[];
 };
 
 export type PreArchiveAbstract = {
@@ -896,18 +898,24 @@ export class OpenVikingClient {
     actorPeerId?: string,
     createdAt?: string,
     peerId?: string,
+    /** PLAN-krug Р1: the gateway transcript rows the message was made of (their first ids). */
+    sourceMessageIds?: readonly string[],
   ): Promise<void> {
     const body: {
       role: string;
       peer_id?: string;
       parts: typeof parts;
       created_at?: string;
+      source_message_ids?: string[];
     } = { role, parts };
     if (createdAt) {
       body.created_at = createdAt;
     }
     if (peerId) {
       body.peer_id = peerId;
+    }
+    if (sourceMessageIds && sourceMessageIds.length > 0) {
+      body.source_message_ids = [...sourceMessageIds];
     }
     await this.emitRoutingDebug(
       "session message POST (with parts)",
