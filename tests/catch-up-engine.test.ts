@@ -201,7 +201,7 @@ describe("запись хода через «догнать», как зовёт
 
   it("без читателя шлюза -- прежняя запись и одно предупреждение", async () => {
     const stand = server();
-    const { engine, warned } = engineOver(stand);
+    const { engine, warned, diags } = engineOver(stand);
     const turns = [
       [question.message, reply.message],
       [{ role: "user", content: "а завтра?", timestamp: T0 + 60_000 }, { role: "assistant", content: [{ type: "text", text: "сухо" }], timestamp: T0 + 61_000 }],
@@ -213,6 +213,8 @@ describe("запись хода через «догнать», как зовёт
 
     expect(stand.stored.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(warned.filter((line) => line.includes("readSessionTranscript"))).toHaveLength(1);
+    // The old way keeps its journal (inventory З7).
+    expect(diags.filter((entry) => entry.stage === "afterTurn_entry")).toHaveLength(2);
   });
 
   it("главная сборка дописывает ход, который Викинг не держит, и строит окно уже с ним", async () => {

@@ -1941,6 +1941,22 @@ export async function afterTurnOpenVikingSession({
     if (catchUp && reader) {
       client = await getClient(agentId);
       const senderRoleId = toRoleId(sender.senderId);
+      // The same journal as the old way (inventory З7).
+      const entryMessages = rawMessages ?? [];
+      const entryStart =
+        typeof prePromptMessageCount === "number" && prePromptMessageCount >= 0 ? prePromptMessageCount : 0;
+      diag(
+        "afterTurn_entry",
+        ovSessionId,
+        afterTurnEntryData({
+          messages: entryMessages,
+          start: entryStart,
+          newCount: extractNewTurnMessages(entryMessages, entryStart).newCount,
+          sender,
+          runtimeContext,
+          runtimeSettings,
+        }),
+      );
       // PLAN-krug П6': a failed catch-up is said and does not cancel the pour-off check below.
       try {
         const outcome = await catchUp({
@@ -2007,32 +2023,11 @@ export async function afterTurnOpenVikingSession({
       }
 
       const turnMessages = messages.slice(start) as AgentMessage[];
-      const newMessages = turnMessages.filter((m: AgentMessage) => {
-        const role = (m as Record<string, unknown>).role as string;
-        return role === "user" || role === "assistant";
-      }) as AgentMessage[];
-      const newMsgFull = messageDigest(newMessages);
-      const newTurnTokens = newMsgFull.reduce((sum, digest) => sum + digest.tokens, 0);
-
-      const promptCache = runtimeContext?.promptCache as
-        | { lastCallUsage?: Record<string, unknown>; retention?: string }
-        | undefined;
-      diag("afterTurn_entry", ovSessionId, {
-        totalMessages: messages.length,
-        newMessageCount: newCount,
-        prePromptMessageCount: start,
-        newTurnTokens,
-        senderIdFound: sender.found,
-        senderId: sender.senderId ?? null,
-        // What the host hands on for the pour-off by X (PLAN-gorizont 4б): the
-        // window's weight, the budget, the last call's usage, and the model.
-        window: runtimeContext?.currentTokenCount ?? null,
-        hostTokenBudget: runtimeContext?.tokenBudget ?? null,
-        lastCallUsage: promptCache?.lastCallUsage ?? null,
-        runtimeContextKeys: Object.keys(runtimeContext ?? {}),
-        model: modelOf(runtimeSettings) ?? null,
-        messages: newMsgFull,
-      });
+      diag(
+        "afterTurn_entry",
+        ovSessionId,
+        afterTurnEntryData({ messages, start, newCount, sender, runtimeContext, runtimeSettings }),
+      );
 
       client = await getClient(agentId);
       const createdAt = pickLatestCreatedAt(turnMessages);
@@ -2237,6 +2232,42 @@ export async function afterTurnOpenVikingSession({
       senderId: sender.senderId ?? null,
     });
   }
+}
+
+/** The afterTurn_entry journal (inventory З7): what the turn hands over, and what the host gives for the pour-off. */
+function afterTurnEntryData(params: {
+  messages: AgentMessage[];
+  start: number;
+  newCount: number;
+  sender: { found: boolean; senderId?: string };
+  runtimeContext?: Record<string, unknown>;
+  runtimeSettings?: unknown;
+}): Record<string, unknown> {
+  const newMessages = (params.messages.slice(params.start) as AgentMessage[]).filter((m: AgentMessage) => {
+    const role = (m as Record<string, unknown>).role as string;
+    return role === "user" || role === "assistant";
+  }) as AgentMessage[];
+  const newMsgFull = messageDigest(newMessages);
+  const newTurnTokens = newMsgFull.reduce((sum, digest) => sum + digest.tokens, 0);
+  const promptCache = params.runtimeContext?.promptCache as
+    | { lastCallUsage?: Record<string, unknown>; retention?: string }
+    | undefined;
+  return {
+    totalMessages: params.messages.length,
+    newMessageCount: params.newCount,
+    prePromptMessageCount: params.start,
+    newTurnTokens,
+    senderIdFound: params.sender.found,
+    senderId: params.sender.senderId ?? null,
+    // What the host hands on for the pour-off by X (PLAN-gorizont 4б): the
+    // window's weight, the budget, the last call's usage, and the model.
+    window: params.runtimeContext?.currentTokenCount ?? null,
+    hostTokenBudget: params.runtimeContext?.tokenBudget ?? null,
+    lastCallUsage: promptCache?.lastCallUsage ?? null,
+    runtimeContextKeys: Object.keys(params.runtimeContext ?? {}),
+    model: modelOf(params.runtimeSettings) ?? null,
+    messages: newMsgFull,
+  };
 }
 
 function validTokenCount(value: unknown): number | undefined {
