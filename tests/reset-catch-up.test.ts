@@ -67,19 +67,19 @@ function engineOver(stand: ReturnType<typeof server>) {
 
 const T0 = Date.UTC(2026, 10, 9, 10, 0, 0);
 
-function row(id: string, role: "user" | "assistant", text: string, firstEntryId = id): BranchRow {
+function row(id: string, role: "user" | "assistant", text: string, firstEntryId = id, extra: Record<string, unknown> = {}): BranchRow {
   return {
     entryId: id,
     firstEntryId,
-    message: { role, content: role === "user" ? text : [{ type: "text", text }], timestamp: T0 },
+    message: { role, content: role === "user" ? text : [{ type: "text", text }], timestamp: T0, ...extra },
   };
 }
 
-/** The gateway's read of the reset session; its model view drops the rows marked as delivery copies. */
+/** The gateway's read of the reset session; its model view drops the messages marked as delivery copies. */
 function readerOver(branch: BranchRow[]): SessionTranscriptReader {
   return {
     readVisiblePage: async () => ({ kind: "page", cursor: String(branch.length - 1), rows: branch, hasMore: false }),
-    selectModelVisible: (rows) => rows.filter((candidate) => !candidate.entryId.startsWith("copy")),
+    selectModelVisible: (rows) => rows.filter((candidate) => (candidate.message as { mirror?: boolean }).mirror !== true),
   };
 }
 
@@ -114,7 +114,7 @@ describe("сброс беседы", () => {
       row("u1", "user", "привет"),
       row("a1", "assistant", "здравствуй"),
       row("u2", "user", "пока"),
-      row("copy-1", "assistant", "до встречи"),
+      row("copy-1", "assistant", "до встречи", "copy-1", { mirror: true }),
       row("a2-again", "assistant", "до встречи", "a2"),
     ];
 
