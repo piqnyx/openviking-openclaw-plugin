@@ -228,6 +228,28 @@ describe("«догнать» для сессии", () => {
     expect(log.warn).toHaveBeenCalled();
   });
 
+  it("строка, на которой сервер падает раз за разом, на пятый раз подряд -- громкая потеря, дальше пишется (PLAN-krug К15)", async () => {
+    const branch = [
+      row("u1", "user", "привет", T0),
+      row("a1", "assistant", "ядовитая", T0 + 1_000),
+      row("u2", "user", "дальше", T0 + 2_000),
+    ];
+    const { client, stored } = server({ refuse: (text) => (text === "ядовитая" ? 503 : undefined) });
+    const catchUp = createSessionCatchUp();
+    const log = logger();
+    const base = { client, ovSessionId: "s1", holdTrailingQuestion: false, memory: "open" as const, peerIdOf: () => undefined, logger: log };
+
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      await catchUp({ ...base, reader: reader(branch) });
+    }
+    const afterFour = stored.map((message) => message.source_message_ids);
+    await catchUp({ ...base, reader: reader(branch) });
+
+    expect(afterFour).toEqual([["u1"]]);
+    expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["u2"]]);
+    expect(log.warn.mock.calls.some(([line]) => String(line).includes("5 times"))).toBe(true);
+  });
+
   it("новая беседа: сервер не знает сессию (404) -- пишется ветка, сессия создаётся первой записью", async () => {
     const branch = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
     const { client, stored } = server({ unknownUntilWritten: true });
