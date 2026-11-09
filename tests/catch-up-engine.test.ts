@@ -429,7 +429,7 @@ describe("память «догнать» между ходами: движок 
 
   it("следующий ход читает ветку с места, где остановился прошлый, а не с начала", async () => {
     const stand = server();
-    let factory: ((ctx?: unknown) => unknown) | undefined;
+    let factory: (() => unknown) | undefined;
     registerOpenVikingContextEngine({
       api: { registerContextEngine: (_id, registered) => void (factory = registered) },
       plugin: { id: "openviking", name: "OpenViking" },
@@ -473,6 +473,8 @@ describe("память «догнать» между ходами: движок 
     const greetingReply = row("a0", { role: "assistant", content: [{ type: "text", text: "здравствуй" }], timestamp: T0 - 59_000 });
     const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
 
+    // A dialog Viking already holds (a brand-new session has no window to catch up against).
+    await queueWith(engineOfTurn(), [greeting, greetingReply], "turn-earlier");
     const first = engineOfTurn();
     await assembleTurn(first, [greeting, greetingReply, question], servedRows([greeting, greetingReply, question], { fence: 2 }).reader);
     await queueWith(first, [greeting, greetingReply, question, reply], "turn-first");
