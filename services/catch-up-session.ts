@@ -63,16 +63,16 @@ export function createSessionCatchUp() {
   const states = new Map<string, SessionState>();
   const locks = new Map<string, Promise<unknown>>();
 
+  // By recency of use (PLAN-krug П8): a touch moves the session to the end, and the one left
+  // untouched longest goes first -- not the main chat because it was the first one seen.
   const stateOf = (ovSessionId: string): SessionState => {
-    let state = states.get(ovSessionId);
-    if (!state) {
-      state = { held: new Set() };
-      states.set(ovSessionId, state);
-      if (states.size > MAX_SESSIONS) {
-        const oldest = states.keys().next().value;
-        if (oldest !== undefined) {
-          states.delete(oldest);
-        }
+    const state = states.get(ovSessionId) ?? { held: new Set<string>() };
+    states.delete(ovSessionId);
+    states.set(ovSessionId, state);
+    if (states.size > MAX_SESSIONS) {
+      const oldest = states.keys().next().value;
+      if (oldest !== undefined) {
+        states.delete(oldest);
       }
     }
     return state;
