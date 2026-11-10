@@ -31,6 +31,10 @@ type State = {
   /** PLAN-krug 7в.7г: слив или чтение ответа ломается (500). */
   failCommit?: boolean;
   failContext?: boolean;
+  /** Слив лёг на сервере, а ответ на него -- ошибка. */
+  commitLandsButFails?: boolean;
+  /** После слива чтение ответа ломается. */
+  failContextAfterCommit?: boolean;
 };
 
 type Stand = { client: OpenVikingClient; commits: Array<Record<string, unknown>>; state: State; asked: string[] };
@@ -77,6 +81,14 @@ function server(given: Partial<State> = {}): Stand {
     }
     if (parsed.pathname.endsWith("/context") && state.failContext) {
       return broken();
+    }
+    if (parsed.pathname.endsWith("/commit") && state.commitLandsButFails) {
+      state.unsummarized += 1;
+      state.sessionPolls = 0;
+      return broken();
+    }
+    if (parsed.pathname.endsWith("/commit") && state.failContextAfterCommit) {
+      state.failContext = true;
     }
     if (parsed.pathname.endsWith("/commit")) {
       commits.push(init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {});
@@ -278,6 +290,48 @@ describe("весы молчат в конце хода", () => {
     stand.state.failCommit = false;
     await startOfTurn(engine, sessionId, vi.fn());
     expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
+  });
+
+  // Review of 7в.7г: going on by the answer read before a pour that was made would send the whole window the
+  // pour took away (about X), while the host hears the compaction; the turn fails as it did, the end told.
+  it("слив сделан, а ответ после него не читается -- сбой сборки, как был, конец со сжатием", async () => {
+    const stand = server();
+    let silent = true;
+    const { price } = scales(() => silent);
+    const { engine, diags } = engineOver(stand, price);
+    const sessionId = `${SESSION}-poured-unread`;
+    await endOfTurn(engine, sessionId, X);
+    silent = false;
+    stand.state.failContextAfterCommit = true;
+    const announce = vi.fn();
+
+    await startOfTurn(engine, sessionId, announce);
+
+    expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
+    expect(diags.filter((d) => d.stage === "assemble_error")).toHaveLength(1);
+    expect(announce.mock.calls).toEqual([
+      ["start"],
+      ["end", { completed: true, compacted: true, tokensAfter: 185_000 }],
+    ]);
+  });
+
+  it("слив лёг, а сервер ответил ошибкой -- архив ждёт сводку, слив больше не должен", async () => {
+    const stand = server();
+    let silent = true;
+    const { price } = scales(() => silent);
+    const { engine, diags } = engineOver(stand, price);
+    const sessionId = `${SESSION}-landed-broke`;
+    await endOfTurn(engine, sessionId, X);
+    silent = false;
+    stand.state.commitLandsButFails = true;
+
+    await startOfTurn(engine, sessionId, vi.fn());
+    stand.state.commitLandsButFails = false;
+    const holdsBefore = diags.filter((d) => d.stage === "pour_hold").length;
+    await startOfTurn(engine, sessionId, vi.fn());
+
+    expect(diags.filter((d) => d.stage === "pour_hold").length).toBe(holdsBefore);
+    expect(stand.commits).toEqual([]);
   });
 
   it("ответ сервера не читается с начала слива -- сбой сборки, как был, но конец объявлен", async () => {
