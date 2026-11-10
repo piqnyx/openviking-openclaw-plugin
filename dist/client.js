@@ -11,6 +11,20 @@ import { defaultResourcePackager, } from "./adapters/resource-packager.js";
 function userSessionUri(sessionId) {
     return `viking://user/sessions/${encodeURIComponent(sessionId)}`;
 }
+/**
+ * The server answered with an error: its HTTP status and its own code, for a caller that tells a
+ * refused request (the same request will never pass) from a passing trouble.
+ */
+export class OpenVikingRequestError extends Error {
+    status;
+    code;
+    constructor(message, status, code) {
+        super(message);
+        this.status = status;
+        this.code = code;
+        this.name = "OpenVikingRequestError";
+    }
+}
 const RESOURCE_ROOT_URI = "viking://resources";
 export function validateRemovableResourceUri(value) {
     const uri = value.trim().replace(/\/+$/, "");
@@ -232,7 +246,7 @@ export class OpenVikingClient {
             if (!response.ok || payload.status === "error") {
                 const code = payload.error?.code ? ` [${payload.error.code}]` : "";
                 const message = payload.error?.message ?? `HTTP ${response.status}`;
-                throw new Error(`OpenViking request failed${code}: ${message}`);
+                throw new OpenVikingRequestError(`OpenViking request failed${code}: ${message}`, response.status, payload.error?.code);
             }
             return (payload.result ?? payload);
         }
@@ -484,13 +498,18 @@ export class OpenVikingClient {
             await this.resourcePackager.cleanup(packagedSource);
         }
     }
-    async addSessionMessage(sessionId, role, parts, actorPeerId, createdAt, peerId) {
+    async addSessionMessage(sessionId, role, parts, actorPeerId, createdAt, peerId, 
+    /** PLAN-krug Р1: the gateway transcript rows the message was made of (their first ids). */
+    sourceMessageIds) {
         const body = { role, parts };
         if (createdAt) {
             body.created_at = createdAt;
         }
         if (peerId) {
             body.peer_id = peerId;
+        }
+        if (sourceMessageIds && sourceMessageIds.length > 0) {
+            body.source_message_ids = [...sourceMessageIds];
         }
         await this.emitRoutingDebug("session message POST (with parts)", {
             path: `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages`,
@@ -504,6 +523,26 @@ export class OpenVikingClient {
             method: "POST",
             body: JSON.stringify(body),
         }, undefined, actorPeerId);
+    }
+    /**
+     * PLAN-krug К17: several messages in one request -- the server appends them under one session
+     * lock, all or none (routers/sessions.py 541-590); up to 100 a request (110-114).
+     */
+    async addSessionMessages(sessionId, messages, actorPeerId) {
+        const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages/batch`;
+        const body = {
+            messages: messages.map((message) => ({
+                role: message.role,
+                parts: message.parts,
+                ...(message.createdAt ? { created_at: message.createdAt } : {}),
+                ...(message.peerId ? { peer_id: message.peerId } : {}),
+                ...(message.sourceMessageIds && message.sourceMessageIds.length > 0
+                    ? { source_message_ids: [...message.sourceMessageIds] }
+                    : {}),
+            })),
+        };
+        await this.emitRoutingDebug("session messages batch POST", { path, sessionId, count: messages.length }, actorPeerId);
+        await this.request(path, { method: "POST", body: JSON.stringify(body) }, undefined, actorPeerId);
     }
     /** GET session — server auto-creates if absent; returns session meta including message stats and token usage. */
     async getSession(sessionId, actorPeerId) {
@@ -531,6 +570,7 @@ export class OpenVikingClient {
             body.keep_recent_count = keepRecentCount;
         }
         const result = await this.request(`/api/v1/sessions/${encodeURIComponent(sessionId)}/commit`, { method: "POST", body: JSON.stringify(body) }, undefined, options?.agentId);
+        options?.onArchived?.();
         if (!options?.wait || !result.task_id) {
             return result;
         }

@@ -1,3 +1,4 @@
+import { resetEventReader } from "../services/branch-reader.js";
 export function registerOpenVikingLifecycleHooks(deps) {
     deps.api.on("session_start", async (_event, ctx) => {
         deps.rememberSessionAgentId(ctx ?? {});
@@ -5,7 +6,7 @@ export function registerOpenVikingLifecycleHooks(deps) {
     deps.api.on("session_end", async (_event, ctx) => {
         deps.rememberSessionAgentId(ctx ?? {});
     });
-    deps.api.on("before_reset", async (_event, ctx) => {
+    deps.api.on("before_reset", async (event, ctx) => {
         if (deps.isBypassedSession(ctx)) {
             deps.verboseRoutingInfo(`openviking: bypassing before_reset due to session pattern match (sessionKey=${ctx?.sessionKey ?? "none"}, sessionId=${ctx?.sessionId ?? "none"})`);
             return;
@@ -14,9 +15,11 @@ export function registerOpenVikingLifecycleHooks(deps) {
         const contextEngine = deps.getContextEngine();
         if (sessionId && contextEngine) {
             try {
+                const reader = resetEventReader(event);
                 const ok = await contextEngine.commitOVSession({
                     sessionId,
                     sessionKey: ctx?.sessionKey,
+                    ...(reader ? { transcriptReader: reader } : {}),
                 });
                 if (ok) {
                     deps.logger.info(`openviking: committed OV session on reset for session=${sessionId}`);
