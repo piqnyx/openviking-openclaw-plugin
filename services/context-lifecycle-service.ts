@@ -2267,8 +2267,9 @@ export async function afterTurnOpenVikingSession({
       if (catchUp && !warnedOfNoTranscriptReader) {
         warnedOfNoTranscriptReader = true;
         logger.warn?.(
-          "openviking: the gateway hands no readSessionTranscript; turns are recorded the old way, " +
-            "guessed by the server's tail, and rows the model never sees may go to memory",
+          "openviking: the gateway hands no readSessionTranscript; turns of a session Viking holds by gateway " +
+            "row ids are left to the catch-up, others are recorded the old way, guessed by the server's tail, " +
+            "and rows the model never sees may go to memory",
         );
       }
       const messages = rawMessages ?? [];
@@ -2340,11 +2341,21 @@ export async function afterTurnOpenVikingSession({
       // gateway's reader -- a rare path of a new gateway -- is not written the old way, or the next catch-up
       // with a reader writes its rows again; that catch-up writes them once, by their ids. Known from this
       // process's catch-up (a turn's assemble, with its reader, comes before the turn's end) or from the
-      // queue's read of the tail. An older gateway never gives row ids, and its turns go the old way as before.
+      // queue's read of the tail. An older gateway never gives row ids: a session it began goes the old way as
+      // before; one a newer gateway wrote by row ids (a rollback of the gateway alone) stands, loudly, until the
+      // reader comes back -- its catch-up then writes the reply, the question goes in a second time (reviewers'
+      // run, 10.11). Rollback order: the plugin, then the gateway (PLAN-krug шаг 11).
       const ownedByCatchUp =
         catchUp?.holdsRowsOf?.(ovSessionId) === true ||
         tail?.some((message) => (message.source_message_ids?.length ?? 0) > 0) === true;
       if (ownedByCatchUp) {
+        // Loud each time (final reviewers, 10.11): on a gateway older than the reader -- one rolled back alone,
+        // the plugin kept -- every turn of such a session stands here until a gateway with the reader comes back.
+        logger.warn?.(
+          `openviking: session=${ovSessionId}: a turn came without the gateway's transcript reader; Viking holds ` +
+            "this session by gateway row ids, so the turn is not recorded the old way -- the next catch-up with " +
+            "the reader writes it (a gateway older than PLAN-krug brings none: roll the plugin back with it)",
+        );
         diag("afterTurn_skip", ovSessionId, { reason: "catch_up_owns_session", path });
       } else {
         let skipped = 0;
