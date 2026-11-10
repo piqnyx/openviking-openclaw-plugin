@@ -1319,18 +1319,6 @@ async function holdForSummary(params: {
 }
 
 /**
- * PLAN-gorizont 5а (11.10, решение Вита): what the held turn waits for before the model
- * is asked. A pour-off the handle's silence put off at the end of the last turn is made
- * here: the handle is asked again every pause until it answers or the hold runs out;
- * answered -- the pour-off is committed, and the summary is waited for as after any
- * pour (holdForSummary). The host is told once for the whole wait, the way it is told
- * of the summary hold; the end carries `compacted` and `tokensAfter` when a pour-off was
- * made, so the host counts it as the session's compaction (gateway files 37 and 38).
- * The handle silent for the whole hold: the turn goes on with the window as it is --
- * the proxy's gate weighs every request exactly and refuses what does not fit, so
- * nothing unweighed reaches the door -- and the mark stays for the next turn.
- */
-/**
  * PLAN-krug 7в.7г: a pour-off made at the start of the turn, and the server's answer after it not read. The
  * answer from before the pour still names the summary it stands on; the archive the pour made waits for one.
  */
@@ -1343,6 +1331,18 @@ class PourMadeAnswerUnread extends Error {
   }
 }
 
+/**
+ * PLAN-gorizont 5а (11.10, решение Вита): what the held turn waits for before the model
+ * is asked. A pour-off the handle's silence put off at the end of the last turn is made
+ * here: the handle is asked again every pause until it answers or the hold runs out;
+ * answered -- the pour-off is committed, and the summary is waited for as after any
+ * pour (holdForSummary). The host is told once for the whole wait, the way it is told
+ * of the summary hold; the end carries `compacted` and `tokensAfter` when a pour-off was
+ * made, so the host counts it as the session's compaction (gateway files 37 and 38).
+ * The handle silent for the whole hold: the turn goes on with the window as it is --
+ * the proxy's gate weighs every request exactly and refuses what does not fit, so
+ * nothing unweighed reaches the door -- and the mark stays for the next turn.
+ */
 async function settleWindow(params: {
   client: Pick<OpenVikingClient, "getSession" | "getTask" | "getSessionContext" | "commitSession">;
   ovSessionId: string;
