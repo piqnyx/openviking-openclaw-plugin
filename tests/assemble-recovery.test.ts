@@ -914,14 +914,20 @@ describe("запасной путь весит то, что увидит мод�
 
 describe("окно не теряет выдачу повторного номера вызова (PLAN-krug 7в.5-3, НВ5-1)", () => {
   // Сервер хранит вызовы разных ходов под одним номером; починка пар окна выбрасывала выдачу второго как дубль.
-  const toolsOf = (messages: AgentMessage[]) => ({
-    calls: messages.flatMap((m) =>
+  // Каждый вызов -- и выдача сразу за ним, под его номером: тексты выдач по порядку вызовов.
+  const outputsOfCalls = (messages: AgentMessage[]) =>
+    messages.flatMap((m, index) =>
       m.role === "assistant" && Array.isArray(m.content)
-        ? (m.content as Array<{ type?: string; id?: string }>).filter((b) => b.type === "toolCall").map((b) => b.id)
+        ? (m.content as Array<{ type?: string; id?: string }>)
+            .filter((b) => b.type === "toolCall")
+            .map((b, k) => {
+              const result = messages[index + 1 + k] as { role?: string; toolCallId?: string; content?: unknown };
+              return result?.role === "toolResult" && result.toolCallId === b.id
+                ? JSON.stringify(result.content)
+                : `(нет выдачи у ${String(b.id)})`;
+            })
         : [],
-    ),
-    results: messages.flatMap((m) => (m.role === "toolResult" ? [(m as { toolCallId?: string }).toolCallId] : [])),
-  });
+    );
 
   it("главный путь: обе выдачи в окне, у каждого вызова своя", async () => {
     const at = (i: number) => new Date(START + i * 60_000).toISOString();
@@ -953,10 +959,10 @@ describe("окно не теряет выдачу повторного номе�
     expect(outcome).toMatchObject({ passthrough: false });
     expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-первый");
     expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-второй");
-    const { calls, results } = toolsOf(value.messages);
-    expect(calls).toHaveLength(2);
-    expect(new Set(calls).size).toBe(2);
-    expect(results).toEqual(calls);
+    const outputs = outputsOfCalls(value.messages);
+    expect(outputs).toHaveLength(2);
+    expect(outputs[0]).toContain("ВЫДАЧА-первый");
+    expect(outputs[1]).toContain("ВЫДАЧА-второй");
   });
 
   it("запасной путь: урезанное окно тоже держит обе выдачи", async () => {
@@ -985,10 +991,48 @@ describe("окно не теряет выдачу повторного номе�
     expect(outcome).toMatchObject({ recovered: true });
     expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-первый");
     expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-второй");
-    const { calls, results } = toolsOf(value.messages);
-    expect(calls).toHaveLength(2);
-    expect(new Set(calls).size).toBe(2);
-    expect(results).toEqual(calls);
+    const outputs = outputsOfCalls(value.messages);
+    expect(outputs).toHaveLength(2);
+    expect(outputs[0]).toContain("ВЫДАЧА-первый");
+    expect(outputs[1]).toContain("ВЫДАЧА-второй");
+  });
+});
+
+describe("прерванный вызов с тем же номером не забирает чужую выдачу (PLAN-krug 7в.7, проверяющий кода)", () => {
+  it("запасной путь: оборванный вызов без выдачи, потом тот же номер с выдачей -- выдача у своего вызова", async () => {
+    // Шлюз пишет оборванный вызов без выдачи (обрыв потока); номера у провайдера повторяются.
+    const live = liveTranscript(54);
+    live.push(
+      ...([
+      { role: "user", content: "вопрос первый", timestamp: START + 54 * 60_000 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_115472", name: "read", arguments: { path: "первый" } }],
+        stopReason: "aborted",
+        timestamp: START + 55 * 60_000,
+      },
+      { role: "user", content: "вопрос второй", timestamp: START + 56 * 60_000 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_115472", name: "read", arguments: { path: "второй" } }],
+        timestamp: START + 57 * 60_000,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_115472",
+        toolName: "read",
+        content: [{ type: "text", text: "ВЫДАЧА-второй" }],
+        isError: false,
+        timestamp: START + 57 * 60_000 + 1,
+      },
+      { role: "assistant", content: [{ type: "text", text: "прочла второй" }], timestamp: START + 58 * 60_000 },
+      ] as AgentMessage[]),
+    );
+    const { client } = server({ down: true });
+    const { value } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-второй");
+    expect(JSON.stringify(value.messages)).not.toContain("missing tool result");
   });
 });
 
