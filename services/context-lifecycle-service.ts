@@ -1330,6 +1330,19 @@ async function holdForSummary(params: {
  * the proxy's gate weighs every request exactly and refuses what does not fit, so
  * nothing unweighed reaches the door -- and the mark stays for the next turn.
  */
+/**
+ * PLAN-krug 7в.7г: a pour-off made at the start of the turn, and the server's answer after it not read. The
+ * answer from before the pour still names the summary it stands on; the archive the pour made waits for one.
+ */
+class PourMadeAnswerUnread extends Error {
+  readonly answer: SessionContextResult;
+  constructor(answer: SessionContextResult, cause: unknown) {
+    super(`the context could not be read again after the pour-off: ${String(cause)}`);
+    this.name = "PourMadeAnswerUnread";
+    this.answer = answer;
+  }
+}
+
 async function settleWindow(params: {
   client: Pick<OpenVikingClient, "getSession" | "getTask" | "getSessionContext" | "commitSession">;
   ovSessionId: string;
@@ -1520,10 +1533,10 @@ async function settleWindow(params: {
     ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
   } catch (err) {
     if (outcome === "poured") {
-      // The answer from before a pour that was made holds the whole window the pour took away: the assembly
-      // fails, as it did; the host hears the pour made (it counts the compaction).
+      // The answer from before a pour that was made holds the whole window the pour took away: the window
+      // goes by the fallback path with its summary (the assembly's catch); the host hears the pour made.
       announce("end", { completed: true });
-      throw err;
+      throw answered ? new PourMadeAnswerUnread(answered, err) : err;
     }
     logger.warn?.(
       `openviking: assemble session=${ovSessionId}: the context could not be read again after the held ` +
@@ -1714,18 +1727,44 @@ export async function assembleOpenVikingSession({
   try {
     const agentId = resolveAgentId(sessionId ?? sessionKey ?? ovSessionId, sessionKey, ovSessionId);
     const client = await getClient(agentId);
-    let ctx = await settleWindow({
-      client,
-      ovSessionId,
-      cfg,
-      logger,
-      diag,
-      announceCompaction,
-      pollIntervalMs,
-      pourRetryPauseMs,
-      runtimeSettings,
-      priceHandle,
-    });
+    let ctx: SessionContextResult | null | undefined;
+    try {
+      ctx = await settleWindow({
+        client,
+        ovSessionId,
+        cfg,
+        logger,
+        diag,
+        announceCompaction,
+        pollIntervalMs,
+        pourRetryPauseMs,
+        runtimeSettings,
+        priceHandle,
+      });
+    } catch (err) {
+      if (!(err instanceof PourMadeAnswerUnread)) {
+        throw err;
+      }
+      logger.warn?.(
+        `openviking: assemble session=${ovSessionId}: ${err.message}; this turn's window is built from the ` +
+          "live transcript, the archive the pour-off made waiting for its summary",
+      );
+      return await assembleWithoutFreshSummary({
+        ...recoveryBits,
+        diag,
+        logger,
+        roughEstimate,
+        ovSessionId,
+        reason: "pour_reread_failed",
+        liveMessages: messages,
+        originalTokens,
+        tokenBudget,
+        client,
+        totalArchives: err.answer.stats?.totalArchives,
+        standing: standingSummaryOf(err.answer),
+        extra: { error: err.message },
+      });
+    }
     if (ctx) {
       if (newestSummaryFailed(ctx)) {
         summaryFailedSessions.add(ovSessionId);
