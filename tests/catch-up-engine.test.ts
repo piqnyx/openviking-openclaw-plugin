@@ -229,7 +229,7 @@ describe("запись хода через «догнать», как зовёт
   // читателя (редкий путь нового шлюза) по-старому не пишется -- иначе следующее «догнать» записало бы его снова.
   it("без читателя, а сессию уже ведёт «догнать», -- ход по-старому не пишется, его пишет «догнать» один раз", async () => {
     const stand = server();
-    const { engine, diags } = engineOver(stand);
+    const { engine, diags, warned } = engineOver(stand);
     await queueWith(engine, [question, reply], "turn-written");
     const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
     const nextReply = row("a2", { role: "assistant", content: [{ type: "text", text: "сухо" }], timestamp: T0 + 61_000 });
@@ -241,6 +241,8 @@ describe("запись хода через «догнать», как зовёт
       sessionKey: KEY,
     } as never);
     expect(diags.find((entry) => entry.stage === "afterTurn_skip")?.data).toMatchObject({ reason: "catch_up_owns_session" });
+    // Проверяющие шага 10: пропуск громкий -- на старом шлюзе (откат одного шлюза) так стоит каждый ход.
+    expect(warned.filter((line) => line.includes(`session=${SESSION}`) && line.includes("not recorded the old way"))).toHaveLength(1);
     await queueWith(engine, [question, reply, next, nextReply], "turn-after");
 
     expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"], ["u2"], ["a2"]]);
