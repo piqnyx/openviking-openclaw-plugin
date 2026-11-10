@@ -361,10 +361,14 @@ export function repairToolUseResultPairing(
   // displaced (e.g. after user turns) or duplicated. Repair by:
   // - moving matching toolResult messages directly after their assistant toolCall turn
   // - inserting synthetic error toolResults for missing ids
-  // - dropping duplicate toolResults for the same id (anywhere in the transcript)
+  // - dropping duplicate toolResults for the same tool-call occurrence
+  // PLAN-krug 7в.5-3: ids can repeat on later turns (the provider's ids are opaque, and the memory
+  // server keeps calls from different turns under one id), as the gateway's own pairing now holds
+  // (`classifyToolUseResultPairing`): a result seen for one turn's call no longer drops the result of a
+  // later turn's call with the same id -- the duplicates are counted per turn.
   const out: AgentMessage[] = [];
   const added: Array<Extract<AgentMessage, { role: "toolResult" }>> = [];
-  const seenToolResultIds = new Set<string>();
+  let seenToolResultIds = new Set<string>();
   let droppedDuplicateCount = 0;
   let droppedOrphanCount = 0;
   let moved = false;
@@ -411,6 +415,7 @@ export function repairToolUseResultPairing(
       out.push(msg);
       continue;
     }
+    seenToolResultIds = new Set<string>();
 
     const toolCallIds = new Set(toolCalls.map((t) => t.id));
     const toolCallNamesById = new Map(toolCalls.map((t) => [t.id, t.name] as const));

@@ -357,10 +357,10 @@ function canonicalizeAgentMessages(messages: AgentMessage[]): AgentMessage[] {
 
 export function sanitizeAgentMessagesForProvider(messages: AgentMessage[]): AgentMessage[] {
   normalizeAssistantContent(messages);
-  // PLAN-krug 7в.5-3: the server keeps calls from different turns under one id, and the pairing below drops a
-  // result whose id it has seen anywhere before -- the later call went to the model without its output. The ids
-  // are made unique and strict first, the way the gateway makes them before a send (tool-call-id.ts).
-  const canonical = withUniqueToolCallIds(canonicalizeAgentMessages(messages));
+  // The ids are not rewritten before the pairing: a rewrite in order of occurrence binds a later call's result
+  // to an older call left without one (a stream cut). As the gateway does: pairs by the raw ids first, the ids
+  // made unique after, at the send (and in the price body, `priceMessagesOf`).
+  const canonical = canonicalizeAgentMessages(messages);
   // Defense in depth (issue #1724):
   //   1) sanitizeToolUseResultPairing may strip orphaned tool_use/tool_result,
   //      potentially creating new user-user or assistant-assistant adjacencies.
