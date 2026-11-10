@@ -1,7 +1,7 @@
 import { agentIdFromFactoryContext, type ContextEngineFactoryContext } from "../routing/factory-agent-id.js";
 import { SYSTEM_AGENT_ID } from "../agent-keys.js";
 import type { HistoryForModel } from "../price-handle.js";
-import { createFileCatchUpBookmarks, DEFAULT_CATCH_UP_BOOKMARKS_PATH } from "../services/catch-up-bookmarks.js";
+import { catchUpBookmarksPath, createFileCatchUpBookmarks } from "../services/catch-up-bookmarks.js";
 import { createSessionCatchUp, type SessionCatchUp } from "../services/catch-up-session.js";
 import { createResetBarrier, type ResetBarrier } from "../services/reset-barrier.js";
 
@@ -101,7 +101,7 @@ export function registerOpenVikingContextEngine<
   // registration and handed to each, or every turn reads the gateway's branch from its start again.
   // PLAN-krug 7г: where the catch-up stopped is kept on disk, for a session archived whole (a reset) once
   // the process restarts.
-  const catchUp = createSessionCatchUp({ bookmarks: createFileCatchUpBookmarks(DEFAULT_CATCH_UP_BOOKMARKS_PATH) });
+  const catchUp = createSessionCatchUp({ bookmarks: createFileCatchUpBookmarks(catchUpBookmarksPath()) });
   const resetBarrier = createResetBarrier();
   // PLAN-krug 7в.5: whether the gateway hands its view of history is said once for the process, not at every turn.
   let toldOfView = false;

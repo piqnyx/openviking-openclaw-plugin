@@ -32,6 +32,8 @@ type SessionState = {
   failing?: { ids: string; times: number; since: number };
   /** PLAN-krug 7г: the bookmark last put on disk, so an unchanged one is not written again. */
   saved?: string;
+  /** PLAN-krug 7г: the bookmark read from disk once for this process -- null: none there, or not on the branch. */
+  fromDisk?: string | null;
 };
 
 type CatchUpParams = {
@@ -73,9 +75,10 @@ const MAX_BATCH = 100;
  * at a time. A refused message is lost loudly and not tried again; a passing trouble stops the
  * catch-up, and the next one resumes from the same row after reading what Viking holds.
  *
- * Never the whole conversation again: an empty remainder while archives exist (a compaction kept
- * nothing) or live messages with no row ids (a session written before row ids) give no bookmark --
- * a loud skip, as long as this process knows nothing of the session (7г handles both).
+ * Never the whole conversation again: an empty remainder while archives exist (a reset or a compaction
+ * kept nothing) gives its bookmark from disk (PLAN-krug 7г), none there -- a loud skip; live messages with
+ * no row ids (a session written before row ids) -- a loud skip, as long as this process knows nothing of
+ * the session (Вит 10.11: no such sessions are left at the rollout).
  *
  * The state lives with this function, made once per plugin registration (PLAN-krug К18): the gateway
  * builds an engine for each logical turn, the registration hands each the same memory.
@@ -169,6 +172,10 @@ async function catchUpUnderLock(
       }
     }
     if (held.ids.size > 0 && !holdsAnyOf(read.visible, held.ids)) {
+      if (held.fromDisk) {
+        // Not tried again in this process: the branch is not read on every call only to miss again.
+        state.fromDisk = null;
+      }
       return skippedLoudly(params, "bookmark_not_on_branch");
     }
   }
@@ -236,7 +243,9 @@ async function heldIds(
   state: SessionState,
   options: { fromServer: boolean },
   bookmarks: CatchUpBookmarks | undefined,
-): Promise<{ kind: "held"; ids: Set<string>; fromServer: boolean } | { kind: "skipped"; reason: string }> {
+): Promise<
+  { kind: "held"; ids: Set<string>; fromServer: boolean; fromDisk?: boolean } | { kind: "skipped"; reason: string }
+> {
   // What this process wrote is current while its memory is clean; the server is asked when the
   // process knows nothing, when the memory is dirty or out of date, or when the caller read it anyway.
   if (!params.remainder && state.held.size > 0 && !options.fromServer) {
@@ -276,10 +285,13 @@ async function heldIds(
   }
   if (remainder.totalArchives > 0) {
     // PLAN-krug 7г: everything archived (a reset, a manual compaction) and nothing in memory -- where the
-    // catch-up stopped is on disk; the caller checks the row is on the branch, as any bookmark.
-    const saved = await savedBookmark(params, bookmarks);
-    if (saved) {
-      return { kind: "held", ids: new Set([saved]), fromServer: true };
+    // catch-up stopped is on disk (read once for this process); the caller checks the row is on the branch,
+    // as any bookmark.
+    if (state.fromDisk === undefined) {
+      state.fromDisk = (await savedBookmark(params, bookmarks)) ?? null;
+    }
+    if (state.fromDisk) {
+      return { kind: "held", ids: new Set([state.fromDisk]), fromServer: true, fromDisk: true };
     }
     return { kind: "skipped", reason: "empty_remainder_with_archives" };
   }
