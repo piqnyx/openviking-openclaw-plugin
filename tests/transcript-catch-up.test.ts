@@ -119,6 +119,24 @@ describe("«догнать»: что писать в Викинг", () => {
     expect(working.messages.map((message) => message.sourceIds)).toEqual([["u2"]]);
   });
 
+  // Проверяющий плагина (10.11): вопрос и дописка без ответа в конце ветки -- держатся оба; первый, записанный
+  // раньше ответа, шёл бы в окно следующего хода рядом с тем же вопросом в подсказке шлюза.
+  it("несколько вопросов без ответа в конце -- держатся все, пишутся иначе", () => {
+    const rows = [
+      user("u1", "привет", T0),
+      answer("a1", "здравствуй", T0 + 1_000),
+      user("u2", "ты тут?", T0 + 60_000),
+      user("u3", "и ещё вот что", T0 + 61_000),
+    ];
+    const seenIds = new Set(["u1", "a1"]);
+
+    const settled = planTranscriptCatchUp({ rows, seenIds, holdTrailingQuestion: true });
+    const working = planTranscriptCatchUp({ rows, seenIds, holdTrailingQuestion: false });
+
+    expect(settled).toEqual({ messages: [], heldQuestionId: "u3" });
+    expect(working.messages.flatMap((message) => message.sourceIds)).toEqual(["u2", "u3"]);
+  });
+
   it("без единой строки в Викинге пишет ветку целиком", () => {
     const rows = [user("u1", "привет", T0), answer("a1", "здравствуй", T0 + 1_000)];
 

@@ -225,6 +225,27 @@ describe("запись хода через «догнать», как зовёт
     expect(diags.filter((entry) => entry.stage === "afterTurn_entry")).toHaveLength(2);
   });
 
+  // Проверяющий плагина (10.11): сессию, которую Викинг уже держит по номерам строк, ведёт «догнать»; ход без
+  // читателя (редкий путь нового шлюза) по-старому не пишется -- иначе следующее «догнать» записало бы его снова.
+  it("без читателя, а сессию уже ведёт «догнать», -- ход по-старому не пишется, его пишет «догнать» один раз", async () => {
+    const stand = server();
+    const { engine, diags } = engineOver(stand);
+    await queueWith(engine, [question, reply], "turn-written");
+    const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
+    const nextReply = row("a2", { role: "assistant", content: [{ type: "text", text: "сухо" }], timestamp: T0 + 61_000 });
+
+    await engine.commitTurn?.({
+      advancementKey: "turn-no-reader",
+      messages: [next.message, nextReply.message] as never,
+      sessionId: SESSION,
+      sessionKey: KEY,
+    } as never);
+    expect(diags.find((entry) => entry.stage === "afterTurn_skip")?.data).toMatchObject({ reason: "catch_up_owns_session" });
+    await queueWith(engine, [question, reply, next, nextReply], "turn-after");
+
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"], ["u2"], ["a2"]]);
+  });
+
   it("главная сборка дописывает ход, который Викинг не держит, и строит окно уже с ним", async () => {
     const stand = server();
     const { engine } = engineOver(stand);
