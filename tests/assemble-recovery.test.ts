@@ -178,7 +178,31 @@ type Cut = {
   catchUp?: "stopped";
   /** PLAN-krug 7в.5: вид истории шлюза, который движок привязывает к ручке. */
   historyForModel?: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
+  /** Ворота прокси: выдача с номером, не объявленным раньше, -- отказ, веса нет (gatekeeper.py 518–525). */
+  gate?: boolean;
 };
+
+/** Те же весы за воротами прокси: выдача без объявленного раньше вызова -- отказ, вердикта нет. */
+function gatedCharsHandle() {
+  const inner = charsHandle();
+  return {
+    url: inner.url,
+    price: async (body: Record<string, unknown>) => {
+      const declared = new Set<string>();
+      for (const m of (body as { messages: Array<Record<string, unknown>> }).messages) {
+        for (const call of (m.tool_calls as Array<{ id?: string }> | undefined) ?? []) {
+          if (call.id) {
+            declared.add(call.id);
+          }
+        }
+        if (m.role === "tool" && m.tool_call_id !== "" && !declared.has(String(m.tool_call_id))) {
+          return null;
+        }
+      }
+      return await inner.price(body);
+    },
+  };
+}
 
 /** Весы, которые молчат: вердикта нет ни на одно тело (шторм). */
 function silentHandle() {
@@ -203,7 +227,7 @@ function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVik
       ? {}
       : {
           priceHandle: {
-            ...(cut.handle === "silent" ? silentHandle() : charsHandle()),
+            ...(cut.handle === "silent" ? silentHandle() : cut.gate ? gatedCharsHandle() : charsHandle()),
             ...(cut.historyForModel ? { historyForModel: cut.historyForModel } : {}),
           },
         }),
@@ -1033,6 +1057,59 @@ describe("прерванный вызов с тем же номером не з�
 
     expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-второй");
     expect(JSON.stringify(value.messages)).not.toContain("missing tool result");
+  });
+});
+
+describe("выдачи внутри одного хода раздаются вызовам по вхождению (PLAN-krug 7в.5-3, проверяющий кода)", () => {
+  const ask = (n: number, text: string): AgentMessage =>
+    ({ role: "user", content: `вопрос ${text}`, timestamp: START + n * 60_000 }) as AgentMessage;
+  const outputOf = (n: number, text: string): AgentMessage =>
+    ({
+      role: "toolResult",
+      toolCallId: "call_115472",
+      toolName: "read",
+      content: [{ type: "text", text: `ВЫДАЧА-${text}` }],
+      isError: false,
+      timestamp: START + n * 60_000 + 1,
+    }) as AgentMessage;
+  const callOf = (text: string) => ({ type: "toolCall", id: "call_115472", name: "read", arguments: { path: text } });
+
+  it("дубль выдачи в ходе выбрасывается: в окне одна, ворота прокси тело хвоста принимают", async () => {
+    const live = liveTranscript(54);
+    live.push(
+      ask(54, "раз"),
+      { role: "assistant", content: [callOf("раз")], timestamp: START + 55 * 60_000 } as AgentMessage,
+      outputOf(55, "раз"),
+      outputOf(55, "раз"),
+      { role: "assistant", content: [{ type: "text", text: "прочла" }], timestamp: START + 56 * 60_000 } as AgentMessage,
+    );
+    const { client } = server({ down: true });
+    const { value, outcome } = await assemble(live, 12_000, client, {
+      keepRecentTokens: 12_000,
+      keepRecentFloor: 4,
+      gate: true,
+    });
+
+    expect(value.messages.filter((m) => m.role === "toolResult")).toHaveLength(1);
+    expect(outcome).toMatchObject({ recovered: true, priced: true });
+  });
+
+  it("два вызова с одним номером в одном сообщении -- у каждого своя выдача", async () => {
+    const live = liveTranscript(54);
+    live.push(
+      ask(54, "оба"),
+      { role: "assistant", content: [callOf("раз"), callOf("два")], timestamp: START + 55 * 60_000 } as AgentMessage,
+      outputOf(55, "раз"),
+      outputOf(55, "два"),
+      { role: "assistant", content: [{ type: "text", text: "прочла оба" }], timestamp: START + 56 * 60_000 } as AgentMessage,
+    );
+    const { client } = server({ down: true });
+    const { value } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    const text = JSON.stringify(value.messages);
+    expect(text).toContain("ВЫДАЧА-раз");
+    expect(text).toContain("ВЫДАЧА-два");
+    expect(text).not.toContain("missing tool result");
   });
 });
 
