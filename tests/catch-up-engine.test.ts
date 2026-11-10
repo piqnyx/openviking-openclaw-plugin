@@ -246,6 +246,28 @@ describe("запись хода через «догнать», как зовёт
     expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"], ["u2"], ["a2"]]);
   });
 
+  it("конец хода без читателя в сессии, которую ведёт «догнать», -- по-старому не пишется, ответ сервера не читается", async () => {
+    const stand = server();
+    const { engine, diags } = engineOver(stand);
+    await queueWith(engine, [question, reply], "turn-written");
+    const contextReads = () => stand.transport.mock.calls.filter(([url]) => new URL(String(url)).pathname.endsWith("/context")).length;
+    const before = contextReads();
+    const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
+    const nextReply = row("a2", { role: "assistant", content: [{ type: "text", text: "сухо" }], timestamp: T0 + 61_000 });
+
+    await engine.afterTurn?.({
+      sessionId: SESSION,
+      sessionFile: "/tmp/s.jsonl",
+      messages: [next.message, nextReply.message] as never,
+      prePromptMessageCount: 0,
+      runtimeContext: { sessionKey: KEY, senderId: "1" },
+    } as never);
+
+    expect(diags.find((entry) => entry.stage === "afterTurn_skip")?.data).toMatchObject({ reason: "catch_up_owns_session" });
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"]]);
+    expect(contextReads()).toBe(before);
+  });
+
   it("главная сборка дописывает ход, который Викинг не держит, и строит окно уже с ним", async () => {
     const stand = server();
     const { engine } = engineOver(stand);
