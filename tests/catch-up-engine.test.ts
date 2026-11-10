@@ -25,7 +25,7 @@ const T0 = Date.UTC(2026, 10, 9, 10, 0, 0);
 
 type Stored = OVMessage & { source_message_ids?: string[] };
 
-function server(options: { failWrites?: () => boolean } = {}) {
+function server(options: { failWrites?: () => boolean; failContext?: () => boolean } = {}) {
   const stored: Stored[] = [];
   const commits: unknown[] = [];
   // As the server: a session never written to is unknown to reads; the first write creates it.
@@ -64,6 +64,12 @@ function server(options: { failWrites?: () => boolean } = {}) {
     if (!created && init?.method !== "POST") {
       return new Response(JSON.stringify({ status: "error", error: { code: "NOT_FOUND", message: "Session not found" } }), {
         status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (parsed.pathname.endsWith("/context") && options.failContext?.()) {
+      return new Response(JSON.stringify({ status: "error", error: { code: "INTERNAL", message: "storage busy" } }), {
+        status: 500,
         headers: { "Content-Type": "application/json" },
       });
     }
@@ -301,6 +307,36 @@ describe("запись хода через «догнать», как зовёт
 
     expect(diags.find((entry) => entry.stage === "assemble_result")?.data).toMatchObject({ reason: "catch_up_stopped" });
     expect(warned.some((line) => line.includes("catch-up did not complete"))).toBe(true);
+  });
+
+  // PLAN-krug 7в.7г (НД-3): the rows are written and the answer in hand is from before them; a passing error
+  // of the read after the write sends the window by the live transcript, as when the catch-up did not complete.
+  it("сборка: «догнать» дописало, а перечитать ответ не вышло -- запасной путь, не сбой сборки", async () => {
+    let reads = -1;
+    const stand = server({ failContext: () => reads >= 0 && ++reads === 2 });
+    const { engine, diags, warned } = engineOver(stand);
+    await queueWith(engine, [question, reply], "turn-written");
+    const next = row("u2", { role: "user", content: "а завтра?", timestamp: T0 + 60_000 });
+    const nextReply = row("a2", { role: "assistant", content: [{ type: "text", text: "сухо" }], timestamp: T0 + 61_000 });
+    const branch = [question, reply, next, nextReply];
+    reads = 0;
+
+    const assembled = await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: branch.map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch) },
+    } as never);
+
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"], ["u2"], ["a2"]]);
+    expect(diags.filter((entry) => entry.stage === "assemble_error")).toEqual([]);
+    expect(diags.find((entry) => entry.stage === "assemble_result")?.data).toMatchObject({
+      reason: "catch_up_reread_failed",
+    });
+    expect(JSON.stringify(assembled.messages)).toContain("сухо");
+    expect(warned.some((line) => line.includes("could not be read again"))).toBe(true);
   });
 
   it("сбой «догнать» в конце хода слив по X не отменяет", async () => {

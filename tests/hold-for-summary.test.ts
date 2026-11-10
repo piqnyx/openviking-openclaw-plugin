@@ -184,6 +184,21 @@ describe("ход держится, пока сводка не встала", () 
 
   // PLAN-krug 7в.7б (НР-1): a server that does not answer after the wait leaves the answer from before it,
   // not a window built as after an error, with no summary at all.
+  // PLAN-krug 7в.7г (НД-3): a passing error of the read after the summary stood must not cost the turn its
+  // summary -- the answer from before the wait still names the archives and their summary.
+  it("сводка встала, а перечитать ответ не вышло -- окно по ответу до ожидания, не сбой сборки", async () => {
+    const { client, contextReads } = server({ context: [1, -1], session: [1, 0] });
+    const { assemble, seen } = stand("11111111-0000-4000-8000-000000000009", client, {});
+
+    await assemble();
+
+    expect(contextReads()).toBe(2);
+    expect(seen.filter((entry) => entry.stage === "assemble_error")).toEqual([]);
+    expect(seen.filter((entry) => entry.stage === "assemble_result").at(-1)?.data).toMatchObject({
+      reason: "no_fresh_summary",
+    });
+  });
+
   it("предел вышел, а ответа после ожидания нет -- окно по ответу до ожидания", async () => {
     const { client } = server({ context: [1, -1], session: [1] });
     const { assemble, seen } = stand("11111111-0000-4000-8000-000000000007", client, {
