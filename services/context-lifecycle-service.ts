@@ -624,13 +624,17 @@ async function findLastClosedArchive(
  * of a turn BEFORE the one the archive ends in -- the latest such turn the live
  * transcript knows -- or -1 when that cannot be told.
  *
- * The plugin stamps every message of a turn with one moment, that of the turn's
- * last message (`pickLatestCreatedAt`), and the server hands it back as it got
- * it. The archive is cut by a count of messages (`keep_recent_count`), not by
+ * Older records stamp every message of a turn with one moment, that of the
+ * turn's last message (`pickLatestCreatedAt`), and the server hands it back as it
+ * got it. The archive is cut by a count of messages (`keep_recent_count`), not by
  * turns, so it may end in the middle of a turn -- and the stamp of its last
  * message then names a live message that comes AFTER the archive's end. Cutting
  * there would leave out what the archive never took. So the turn the archive
  * ends in is given whole, and the cut is made where the turn before it ended.
+ * Records written by the catch-up (PLAN-krug Р1) carry each message's own moment
+ * (a run of tool results, the newest of its rows): there the step back is one
+ * message, and the archive's last message is given again -- more, never less
+ * (PLAN-krug 7в.7: an exact cut would save that one message).
  *
  * The moment is matched exactly and the cut is made by place, not by time: a
  * message sent while the model was still answering stands later in the
