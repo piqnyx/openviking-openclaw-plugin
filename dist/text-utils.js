@@ -57,12 +57,14 @@ function looksLikeMetadataJsonBlock(content) {
     return matchedKeys.size >= 3;
 }
 const TOOL_PLACEHOLDER_RE = /^\s*\[tool(?::\s*|Use:\s*)[^\]]+\]\s*$/i;
-// The news digest's service trigger (digest PLAN, stage 6): a user turn opening with this marker was
-// sent by a script only to start Eva's turn, and the rest names the kind of turn ("Эва спрашивает
-// Вита, рассказать ли новости дня" and three more). Memory keeps that phrase, not the marker -- as the
+// The service triggers -- the news digest's (digest PLAN, stage 6) and the weather watch's (piqnyx/weather
+// PLAN, step 5): a user turn opening with one of these markers was sent by a script only to start Eva's
+// turn, and the rest names the kind of turn ("Эва спрашивает Вита, рассказать ли новости дня", "Эва по своей
+// инициативе предупреждает Вита о погоде" and more). Memory keeps that phrase, not the marker -- as the
 // graphiti plugin's messageRules do; the web hides the same message by the same first line (gateway
-// fork patch 59). Matched after the cleaning, so injected blocks above it do not hide it.
-const DIGEST_TRIGGER_HEAD_RE = /^::digest-trigger::(?=\s|$)/;
+// fork patch 59, SERVICE_TRIGGER_MARKERS). Matched after the cleaning, so injected blocks above it do not
+// hide it.
+const SERVICE_TRIGGER_HEAD_RE = /^::(?:digest|weather)-trigger::(?=\s|$)/;
 export function sanitizeUserTextForCapture(text) {
     // Drop legacy synthetic tool placeholders before they reach memory extraction.
     if (TOOL_PLACEHOLDER_RE.test(text)) {
@@ -93,7 +95,7 @@ export function sanitizeUserTextForCapture(text) {
         .replace(/\u0000/g, "")
         .replace(/\s+/g, " ")
         .trim();
-    return cleaned.replace(DIGEST_TRIGGER_HEAD_RE, "").trim();
+    return cleaned.replace(SERVICE_TRIGGER_HEAD_RE, "").trim();
 }
 export function stripOpenVikingContextInjection(text) {
     return text
@@ -329,9 +331,8 @@ function hasToolCallBlocks(content) {
             return type === "toolCall" || type === "toolUse" || type === "tool_call";
         }));
 }
-export function extractNewTurnMessages(messages, startIndex) {
-    const result = [];
-    let count = 0;
+/** Tool-call inputs by call id across all the messages: a tool result names its call by id. */
+export function collectToolUseInputs(messages) {
     // First pass: collect toolUse inputs indexed by toolCallId/toolUseId
     // Scan all messages (including after startIndex) to find toolUse before each toolResult
     const toolUseInputs = {};
@@ -358,31 +359,36 @@ export function extractNewTurnMessages(messages, startIndex) {
             }
         }
     }
-    for (let i = startIndex; i < messages.length; i++) {
-        const msg = messages[i];
-        if (!msg || typeof msg !== "object")
-            continue;
-        const role = msg.role;
-        // The host's "custom" messages are runtime-generated (its runtime context for
-        // the turn): the host hands them to the model with every prompt itself and
-        // strips them from the history it gives the engine; the loop hook leaks them.
-        // They are not the conversation and do not go to memory.
-        if (!role || role === "system" || role === "custom")
-            continue;
-        count++;
-        // toolResult -> type: "tool"
-        if (role === "toolResult") {
-            const toolName = typeof msg.toolName === "string" ? msg.toolName : "tool";
-            const output = formatToolResultContent(msg.content) || "";
-            // Try multiple field names for tool call ID
-            const toolCallId = msg.toolCallId || msg.toolUseId || msg.tool_call_id;
-            const toolInput = toolCallId && toolUseInputs[toolCallId]
-                ? toolUseInputs[toolCallId]
-                : (typeof msg.toolInput === "object" && msg.toolInput !== null
-                    ? msg.toolInput
-                    : undefined);
-            if (output) {
-                result.push({
+    return toolUseInputs;
+}
+/**
+ * One transcript message in capture form: `counts` -- a conversation message at all (not system,
+ * not the host's custom runtime context); `message` -- what it records, when anything.
+ */
+export function extractMessageForCapture(message, toolUseInputs) {
+    const msg = message;
+    if (!msg || typeof msg !== "object")
+        return { counts: false };
+    const role = msg.role;
+    // The host's "custom" messages are runtime-generated (its runtime context for
+    // the turn): the host hands them to the model with every prompt itself and
+    // strips them from the history it gives the engine; the loop hook leaks them.
+    // They are not the conversation and do not go to memory.
+    if (!role || role === "system" || role === "custom")
+        return { counts: false };
+    // toolResult -> type: "tool"
+    if (role === "toolResult") {
+        const toolName = typeof msg.toolName === "string" ? msg.toolName : "tool";
+        const output = formatToolResultContent(msg.content) || "";
+        // Try multiple field names for tool call ID
+        const toolCallId = msg.toolCallId || msg.toolUseId || msg.tool_call_id;
+        const toolInput = toolCallId && toolUseInputs[toolCallId]
+            ? toolUseInputs[toolCallId]
+            : (typeof msg.toolInput === "object" && msg.toolInput !== null
+                ? msg.toolInput
+                : undefined);
+        if (output) {
+            return { counts: true, message: {
                     role: "assistant",
                     parts: [{
                             type: "tool",
@@ -392,37 +398,48 @@ export function extractNewTurnMessages(messages, startIndex) {
                             toolOutput: output,
                             toolStatus: "completed",
                         }],
-                });
-            }
-            continue;
+                } };
         }
-        // user/assistant -> type: "text"
-        const content = msg.content;
-        const text = extractPartText(content);
-        // A tool call without text: the model's turn to the tools. Nothing to record by
-        // itself (the results carry the call), but it is where a round of results starts:
-        // an empty message, so the results of two rounds are not glued into one (11.10:
-        // the queue's closed turn glued them, the hook had recorded them by rounds, and the
-        // turn went to the server twice).
-        if (!text && role === "assistant" && hasToolCallBlocks(content)) {
-            result.push({ role: "assistant", parts: [] });
-            continue;
-        }
-        if (text) {
-            // 使用 sanitizeUserTextForCapture 清理所有噪音（Sender 元数据、时间戳等）
-            const cleanedText = sanitizeUserTextForCapture(text);
-            if (cleanedText) {
-                // 保持原始 role，assistant 保持 assistant，user 保持 user
-                const ovRole = role === "assistant" ? "assistant" : "user";
-                result.push({
+        return { counts: true };
+    }
+    // user/assistant -> type: "text"
+    const content = msg.content;
+    const text = extractPartText(content);
+    // A tool call without text: the model's turn to the tools. Nothing to record by
+    // itself (the results carry the call), but it is where a round of results starts:
+    // an empty message, so the results of two rounds are not glued into one (11.10:
+    // the queue's closed turn glued them, the hook had recorded them by rounds, and the
+    // turn went to the server twice).
+    if (!text && role === "assistant" && hasToolCallBlocks(content)) {
+        return { counts: true, message: { role: "assistant", parts: [] } };
+    }
+    if (text) {
+        // 使用 sanitizeUserTextForCapture 清理所有噪音（Sender 元数据、时间戳等）
+        const cleanedText = sanitizeUserTextForCapture(text);
+        if (cleanedText) {
+            // 保持原始 role，assistant 保持 assistant，user 保持 user
+            const ovRole = role === "assistant" ? "assistant" : "user";
+            return { counts: true, message: {
                     role: ovRole,
                     parts: [{
                             type: "text",
                             text: cleanedText,
                         }],
-                });
-            }
+                } };
         }
+    }
+    return { counts: true };
+}
+export function extractNewTurnMessages(messages, startIndex) {
+    const result = [];
+    let count = 0;
+    const toolUseInputs = collectToolUseInputs(messages);
+    for (let i = startIndex; i < messages.length; i++) {
+        const extracted = extractMessageForCapture(messages[i], toolUseInputs);
+        if (extracted.counts)
+            count++;
+        if (extracted.message)
+            result.push(extracted.message);
     }
     return { messages: result, newCount: count };
 }

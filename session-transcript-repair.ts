@@ -361,27 +361,17 @@ export function repairToolUseResultPairing(
   // displaced (e.g. after user turns) or duplicated. Repair by:
   // - moving matching toolResult messages directly after their assistant toolCall turn
   // - inserting synthetic error toolResults for missing ids
-  // - dropping duplicate toolResults for the same id (anywhere in the transcript)
+  // - dropping duplicate toolResults for the same tool-call occurrence
+  // PLAN-krug 7в.5-3: as the gateway's own pairing holds (`classifyToolUseResultPairing`): ids can repeat
+  // on later turns (the provider's ids are opaque, and the memory server keeps calls from different turns
+  // under one id), and within a turn the results go to the calls one by one, by occurrence -- a result
+  // beyond the calls of its id is the duplicate.
   const out: AgentMessage[] = [];
   const added: Array<Extract<AgentMessage, { role: "toolResult" }>> = [];
-  const seenToolResultIds = new Set<string>();
   let droppedDuplicateCount = 0;
   let droppedOrphanCount = 0;
   let moved = false;
   let changed = false;
-
-  const pushToolResult = (msg: Extract<AgentMessage, { role: "toolResult" }>) => {
-    const id = extractToolResultId(msg);
-    if (id && seenToolResultIds.has(id)) {
-      droppedDuplicateCount += 1;
-      changed = true;
-      return;
-    }
-    if (id) {
-      seenToolResultIds.add(id);
-    }
-    out.push(msg);
-  };
 
   for (let i = 0; i < messages.length; i += 1) {
     const msg = messages[i];
@@ -414,8 +404,12 @@ export function repairToolUseResultPairing(
 
     const toolCallIds = new Set(toolCalls.map((t) => t.id));
     const toolCallNamesById = new Map(toolCalls.map((t) => [t.id, t.name] as const));
+    const callsOfId = new Map<string, number>();
+    for (const call of toolCalls) {
+      callsOfId.set(call.id, (callsOfId.get(call.id) ?? 0) + 1);
+    }
 
-    const spanResultsById = new Map<string, Extract<AgentMessage, { role: "toolResult" }>>();
+    const spanResultsById = new Map<string, Array<Extract<AgentMessage, { role: "toolResult" }>>>();
     const remainder: AgentMessage[] = [];
 
     let j = i + 1;
@@ -435,7 +429,8 @@ export function repairToolUseResultPairing(
         const toolResult = next as Extract<AgentMessage, { role: "toolResult" }>;
         const id = extractToolResultId(toolResult);
         if (id && toolCallIds.has(id)) {
-          if (seenToolResultIds.has(id)) {
+          const claimed = spanResultsById.get(id) ?? [];
+          if (claimed.length >= (callsOfId.get(id) ?? 0)) {
             droppedDuplicateCount += 1;
             changed = true;
             continue;
@@ -447,9 +442,8 @@ export function repairToolUseResultPairing(
           if (normalizedToolResult !== toolResult) {
             changed = true;
           }
-          if (!spanResultsById.has(id)) {
-            spanResultsById.set(id, normalizedToolResult);
-          }
+          claimed.push(normalizedToolResult);
+          spanResultsById.set(id, claimed);
           continue;
         }
       }
@@ -471,11 +465,11 @@ export function repairToolUseResultPairing(
       out.push(msg);
       if (options?.preserveErroredAssistantResults) {
         for (const toolCall of toolCalls) {
-          const result = spanResultsById.get(toolCall.id);
+          const result = spanResultsById.get(toolCall.id)?.shift();
           if (!result) {
             continue;
           }
-          pushToolResult(result);
+          out.push(result);
         }
       }
       for (const rem of remainder) {
@@ -493,9 +487,9 @@ export function repairToolUseResultPairing(
     }
 
     for (const call of toolCalls) {
-      const existing = spanResultsById.get(call.id);
+      const existing = spanResultsById.get(call.id)?.shift();
       if (existing) {
-        pushToolResult(existing);
+        out.push(existing);
       } else {
         const missing = makeMissingToolResult({
           toolCallId: call.id,
@@ -503,7 +497,7 @@ export function repairToolUseResultPairing(
         });
         added.push(missing);
         changed = true;
-        pushToolResult(missing);
+        out.push(missing);
       }
     }
 

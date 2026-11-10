@@ -1,5 +1,9 @@
 import { agentIdFromFactoryContext, type ContextEngineFactoryContext } from "../routing/factory-agent-id.js";
 import { SYSTEM_AGENT_ID } from "../agent-keys.js";
+import type { HistoryForModel } from "../price-handle.js";
+import { catchUpBookmarksPath, createFileCatchUpBookmarks } from "../services/catch-up-bookmarks.js";
+import { createSessionCatchUp, type SessionCatchUp } from "../services/catch-up-session.js";
+import { createResetBarrier, type ResetBarrier } from "../services/reset-barrier.js";
 
 export type OpenVikingContextEngineRegistrationApi = {
   registerContextEngine?: (
@@ -43,6 +47,12 @@ export type OpenVikingContextEngineCreateParams<
   traceRecorder: TTraceRecorder;
   /** The proxy's price handle (PLAN-gorizont 4а); none when the config names no address. */
   priceHandle?: TPriceHandle;
+  /** PLAN-krug 7в.5: the gateway's view of history as the model gets it; absent on an older gateway. */
+  historyForModel?: HistoryForModel;
+  /** PLAN-krug К18: the «догнать» memory of this registration, the same for every engine it builds. */
+  catchUp: SessionCatchUp;
+  /** PLAN-krug К20: the reset's hold on its session, the same for every engine it builds. */
+  resetBarrier: ResetBarrier;
 };
 
 export type OpenVikingContextEngineRegistrationDeps<
@@ -87,6 +97,14 @@ export function registerOpenVikingContextEngine<
     return;
   }
 
+  // PLAN-krug К18: the gateway builds an engine for each logical turn; the «догнать» memory is one per
+  // registration and handed to each, or every turn reads the gateway's branch from its start again.
+  // PLAN-krug 7г: where the catch-up stopped is kept on disk, for a session archived whole (a reset) once
+  // the process restarts.
+  const catchUp = createSessionCatchUp({ bookmarks: createFileCatchUpBookmarks(catchUpBookmarksPath()) });
+  const resetBarrier = createResetBarrier();
+  // PLAN-krug 7в.5: whether the gateway hands its view of history is said once for the process, not at every turn.
+  let toldOfView = false;
   deps.api.registerContextEngine(deps.plugin.id, (factoryCtx) => {
     // OpenClaw resolves the engine once per agent run and hands the factory
     // that agent's directories. Session hooks do not always carry agentId or an
@@ -117,6 +135,22 @@ export function registerOpenVikingContextEngine<
         }
       : deps.resolveAgentId;
 
+    const historyForModel =
+      typeof factoryCtx?.historyForModel === "function"
+        ? (factoryCtx.historyForModel as HistoryForModel)
+        : undefined;
+    if (!toldOfView) {
+      toldOfView = true;
+      if (historyForModel) {
+        deps.logger.info("openviking: tails are weighed through the gateway's view of history (PLAN-krug 7в.5)");
+      } else {
+        deps.logger.warn(
+          "openviking: the gateway hands no view of history (older than PLAN-krug 7в.5): " +
+            "tails are weighed as stored, without the timestamps the model gets before past questions",
+        );
+      }
+    }
+
     const contextEngine = deps.createContextEngine({
       id: deps.plugin.id,
       name: deps.plugin.name,
@@ -129,6 +163,9 @@ export function registerOpenVikingContextEngine<
       queryConfigStore: deps.queryConfigStore,
       traceRecorder: deps.traceRecorder,
       ...(deps.priceHandle !== undefined ? { priceHandle: deps.priceHandle } : {}),
+      ...(historyForModel ? { historyForModel } : {}),
+      catchUp,
+      resetBarrier,
     });
     deps.setContextEngineRef(contextEngine);
     return contextEngine;

@@ -2,8 +2,7 @@
 // (gemini-proxy `POST /price`, PLAN-gorizont 1а; the plugin's side is 4а).
 import { defaultHttpTransport } from "./adapters/http-transport.js";
 import { describeError } from "./error-text.js";
-import { convertToAgentMessages, mergeConsecutiveAssistants, } from "./services/context-message-adapter.js";
-import { sanitizeToolCallIdsForCloudCodeAssist } from "./tool-call-id.js";
+import { convertToAgentMessages, mergeConsecutiveAssistants, sanitizeAgentMessagesForProvider, withUniqueToolCallIds, } from "./services/context-message-adapter.js";
 const DEFAULT_PRICE_TIMEOUT_MS = 60_000;
 /**
  * Asks the proxy's price handle for the weight of a body, and takes the answer as it
@@ -156,14 +155,17 @@ export function toOpenAiMessages(messages) {
     return out;
 }
 /**
- * The body the handle is asked about for a tail of the server's messages: rendered
- * the way the window is assembled from them, in OpenAI's form, with a user's «x» at
- * the end -- the proxy's gate refuses a body that ends with the model's turn
- * (checked 07.10.2026), and the measurements of 1г were taken with the same «x».
+ * The body the handle is asked about for a tail of the server's messages: put in the
+ * window's form (as `buildAssembledContext` puts them), seen through the gateway's view
+ * when there is one, in OpenAI's form, with a user's «x» at the end -- the proxy's gate
+ * refuses a body that ends with the model's turn (checked 07.10.2026), and the
+ * measurements of 1г were taken with the same «x».
  */
-export function priceBodyOf(model, messages) {
-    const window = mergeConsecutiveAssistants(messages.flatMap((m) => convertToAgentMessages(m)));
-    return { model, messages: priceMessagesOf(window) };
+export async function priceBodyOf(model, messages, historyForModel) {
+    // The window's own order for the provider: calls paired with their results, questions in a row merged (the
+    // gateway stamps only the first of them).
+    const window = sanitizeAgentMessagesForProvider(mergeConsecutiveAssistants(messages.flatMap((m) => convertToAgentMessages(m))));
+    return { model, messages: priceMessagesOf(historyForModel ? await historyForModel(window) : window) };
 }
 /**
  * The window's messages as the handle must see them: the tool call ids made
@@ -176,6 +178,5 @@ export function priceBodyOf(model, messages) {
  * kept 53 messages of 667 under K 150 000.
  */
 export function priceMessagesOf(window) {
-    const unique = sanitizeToolCallIdsForCloudCodeAssist(window, "strict");
-    return [...toOpenAiMessages(unique), { role: "user", content: "x" }];
+    return [...toOpenAiMessages(withUniqueToolCallIds(window)), { role: "user", content: "x" }];
 }

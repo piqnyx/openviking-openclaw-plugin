@@ -69,7 +69,16 @@ type Shelf = {
   contextError?: { status: number; code: string; message: string };
   down?: boolean;
   /** `strayTurns`: ходы (по номеру последнего сообщения), чьё время на сервере не совпадает ни с чем. */
-  archives?: Record<string, { overview: string; lastMessageIndex: number; strayTurns?: number[] }>;
+  archives?: Record<
+    string,
+    {
+      overview: string;
+      lastMessageIndex: number;
+      strayTurns?: number[];
+      /** PLAN-krug 7в.7в: записи «догнать» -- у сообщения своё время (время строки шлюза) и номер строки. */
+      ownTimes?: Record<number, number>;
+    }
+  >;
 };
 
 function server(shelf: Shelf) {
@@ -122,6 +131,13 @@ function server(shelf: Shelf) {
             .filter((i) => i >= 0)
             .map((i) => {
               const message = ovMessage(i);
+              if (found.ownTimes) {
+                return {
+                  ...message,
+                  created_at: new Date(found.ownTimes[i] ?? START + i * 60_000).toISOString(),
+                  source_message_ids: [`row-${i}`],
+                };
+              }
               const lastOfTurn = i - (i % 2) + 1;
               return found.strayTurns?.includes(lastOfTurn)
                 ? { ...message, created_at: new Date(START + lastOfTurn * 60_000 - 5_838).toISOString() }
@@ -153,7 +169,40 @@ function charsHandle() {
   };
 }
 
-type Cut = { keepRecentTokens?: number; keepRecentFloor?: number; handle?: boolean | "silent" };
+type Cut = {
+  keepRecentTokens?: number;
+  keepRecentFloor?: number;
+  handle?: boolean | "silent";
+  holdForSummarySeconds?: number;
+  /** «Догнать» шло и не дописало (запись встала). */
+  catchUp?: "stopped";
+  /** PLAN-krug 7в.5: вид истории шлюза, который движок привязывает к ручке. */
+  historyForModel?: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
+  /** Ворота прокси: выдача с номером, не объявленным раньше, -- отказ, веса нет (gatekeeper.py 518–525). */
+  gate?: boolean;
+};
+
+/** Те же весы за воротами прокси: выдача без объявленного раньше вызова -- отказ, вердикта нет. */
+function gatedCharsHandle() {
+  const inner = charsHandle();
+  return {
+    url: inner.url,
+    price: async (body: Record<string, unknown>) => {
+      const declared = new Set<string>();
+      for (const m of (body as { messages: Array<Record<string, unknown>> }).messages) {
+        for (const call of (m.tool_calls as Array<{ id?: string }> | undefined) ?? []) {
+          if (call.id) {
+            declared.add(call.id);
+          }
+        }
+        if (m.role === "tool" && m.tool_call_id !== "" && !declared.has(String(m.tool_call_id))) {
+          return null;
+        }
+      }
+      return await inner.price(body);
+    },
+  };
+}
 
 /** Весы, которые молчат: вердикта нет ни на одно тело (шторм). */
 function silentHandle() {
@@ -172,10 +221,27 @@ function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVik
       autoRecall: false,
       keepRecentTokens: cut.keepRecentTokens ?? 30_000,
       keepRecentFloor: cut.keepRecentFloor ?? 20,
+      ...(cut.holdForSummarySeconds !== undefined ? { holdForSummarySeconds: cut.holdForSummarySeconds } : {}),
     },
     ...(cut.handle === false
       ? {}
-      : { priceHandle: cut.handle === "silent" ? silentHandle() : charsHandle() }),
+      : {
+          priceHandle: {
+            ...(cut.handle === "silent" ? silentHandle() : cut.gate ? gatedCharsHandle() : charsHandle()),
+            ...(cut.historyForModel ? { historyForModel: cut.historyForModel } : {}),
+          },
+        }),
+    ...(cut.catchUp === "stopped"
+      ? {
+          catchUp: async () => ({ kind: "stopped" as const, written: 0, error: "storage busy" }),
+          runtimeContext: {
+            readSessionTranscript: {
+              readVisiblePage: async () => ({ kind: "page", cursor: "-1", rows: [], hasMore: false }),
+              selectModelVisible: (rows: unknown[]) => rows,
+            },
+          },
+        }
+      : {}),
     runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite", requested: null } },
     getClient: async () => client,
     logger: { info: () => {}, warn: (line) => warned.push(line) },
@@ -232,6 +298,157 @@ describe("сборка, когда сервер дал пересказ", () => 
     expect(outcome.recovered).toBeUndefined();
     expect(asked.filter((p) => p.includes("/archives/"))).toEqual([]);
   });
+
+  // PLAN-krug 7в.6: the gateway stamps every user message by its `timestamp` (attempt-llm-boundary.ts);
+  // a window message from Viking carries the time it was written with.
+  it("сообщения окна несут время своей записи; нечитаемое время -- без поля", async () => {
+    const live = liveTranscript(62);
+    const unreadable = { ...ovMessage(60, "user"), created_at: "не время" };
+    const { client } = server({
+      context: {
+        latest_archive_overview: "ПЕРЕСКАЗ-СВЕЖИЙ",
+        messages: [ovMessage(57, "assistant"), ovMessage(58, "user"), ovMessage(59, "assistant"), unreadable],
+        stats: {
+          totalArchives: 3, includedArchives: 0, droppedArchives: 3,
+          failedArchives: 0, activeTokens: 10, archiveTokens: 5,
+        },
+      },
+    });
+    const { value } = await assemble(live, 12_000, client);
+
+    const carrying = (i: number) => value.messages.find((message) => JSON.stringify(message.content).includes(mark(i)));
+    expect(carrying(57)?.timestamp).toBe(Date.parse(ovMessage(57).created_at));
+    expect(carrying(58)?.timestamp).toBe(Date.parse(ovMessage(58).created_at));
+    expect(carrying(59)?.timestamp).toBe(Date.parse(ovMessage(59).created_at));
+    expect(carrying(60)).toBeDefined();
+    expect(carrying(60)).not.toHaveProperty("timestamp");
+  });
+});
+
+// PLAN-krug 7в.2: the path is chosen by what the server says, not by counting messages of two forms.
+describe("путь окна по фактам сервера (PLAN-krug 7в.2)", () => {
+  it("пересказ старшего архива стоит, а новейший ждёт пересказа после выключенного удержания -- запасной путь", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: {
+        latest_archive_overview: "ПЕРЕСКАЗ-СТАРЫЙ",
+        // The newest archive's messages come raw until its summary stands.
+        messages: [ovMessage(40), ovMessage(41, "assistant"), ovMessage(58), ovMessage(59, "assistant")],
+        stats: {
+          totalArchives: 3, includedArchives: 1, droppedArchives: 1,
+          failedArchives: 0, activeTokens: 10, archiveTokens: 5, unsummarizedArchives: 1,
+        },
+      },
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-СТАРЫЙ", lastMessageIndex: 39 } },
+    });
+    const { outcome } = await assemble(live, 12_000, client, { holdForSummarySeconds: 0 });
+
+    // PLAN-krug 7в.7а: the closed archive found is the one the answer stands on -- its summary and its boundary.
+    expect(outcome).toMatchObject({
+      recovered: true, reason: "no_fresh_summary", summaryFrom: "archive", archiveId: "archive_002",
+    });
+  });
+
+  it("без читателя шлюза, архивов нет, у Викинга сообщений меньше -- проверка счёта как была", async () => {
+    const live = liveTranscript(10);
+    const { client } = server({
+      context: {
+        latest_archive_overview: "",
+        messages: [ovMessage(9)],
+        stats: {
+          totalArchives: 0, includedArchives: 0, droppedArchives: 0,
+          failedArchives: 0, activeTokens: 1, archiveTokens: 0, unsummarizedArchives: 0,
+        },
+      },
+    });
+    const { value, outcome } = await assemble(live, 200_000, client);
+
+    expect(value.messages).toBe(live);
+    expect(outcome.reason).toBe("ov_msgs_fewer_than_input");
+  });
+});
+
+// PLAN-krug 7в.7а: the server's answer stands on the summary of the archive its walk stopped at -- a closed one,
+// or one failed or still at work with its summary written whole (PLAN-gorizont 3г, 3е) -- while only closed
+// archives are handed out one by one. The fallback path keeps the newest summary in hand.
+describe("запасной путь и сводка, на которой стоит ответ сервера (PLAN-krug 7в.7а)", () => {
+  // Сводка стоит у сорванного архива (3г) -- archive_002; перед ним закрытый archive_001, кончился на 39.
+  const standingOn3g = (waiting: number): Partial<SessionContextResult> => ({
+    latest_archive_overview: "ПЕРЕСКАЗ-3Г",
+    messages: [ovMessage(48), ovMessage(49, "assistant"), ovMessage(58), ovMessage(59, "assistant")],
+    stats: {
+      totalArchives: 2 + waiting, includedArchives: 1, droppedArchives: 0,
+      failedArchives: 1, activeTokens: 10, archiveTokens: 5, unsummarizedArchives: waiting,
+    },
+  });
+
+  it.each([
+    {
+      trigger: "новейший ждёт сводки, удержание выключено",
+      waiting: 1,
+      cut: {},
+      reason: "no_fresh_summary",
+      probes: ["archive_003", "archive_002", "archive_001"],
+    },
+    {
+      trigger: "«догнать» не дописало",
+      waiting: 0,
+      cut: { catchUp: "stopped" as const },
+      reason: "catch_up_stopped",
+      probes: ["archive_002", "archive_001"],
+    },
+  ])("$trigger: сводка из ответа, хвост с границы старшего закрытого", async ({ waiting, cut, reason, probes }) => {
+    const live = liveTranscript(60);
+    const { client, asked } = server({
+      context: standingOn3g(waiting),
+      archives: { archive_001: { overview: "ПЕРЕСКАЗ-СТАРШИЙ", lastMessageIndex: 39 } },
+    });
+    const { value, outcome } = await assemble(live, 12_000, client, { holdForSummarySeconds: 0, ...cut });
+
+    expect(JSON.stringify(value.messages[0])).toContain("[Session History Summary]\\nПЕРЕСКАЗ-3Г");
+    expect(JSON.stringify(value.messages)).not.toContain("ПЕРЕСКАЗ-СТАРШИЙ");
+    // С начала хода, на котором кончился archive_001: отрезок архива 3г идёт ещё раз, ничего не пропущено.
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
+    expect(value.systemPromptAddition).toContain("Session Context Guide");
+    expect(asked.filter((p) => p.includes("/archives/")).map((p) => p.split("/").at(-1))).toEqual(probes);
+    expect(outcome).toMatchObject({
+      recovered: true, reason, summaryFrom: "context", archiveId: "archive_001", boundaryFound: true,
+    });
+  });
+
+  it("сводка стоит, закрытого архива в досягаемости нет: сводка из ответа и хвост по весу", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({ context: standingOn3g(1), archives: {} });
+    const { value, outcome } = await assemble(live, 12_000, client, {
+      holdForSummarySeconds: 0, keepRecentTokens: 12_000, keepRecentFloor: 4,
+    });
+
+    expect(JSON.stringify(value.messages[0])).toContain("[Session History Summary]\\nПЕРЕСКАЗ-3Г");
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
+    expect(value.systemPromptAddition).toContain("Session Context Guide");
+    expect(outcome).toMatchObject({
+      recovered: true, reason: "no_fresh_summary", summaryFrom: "context", archiveId: null, boundaryFound: false,
+    });
+  });
+
+  it("архив закрылся уже после ответа и он новее стоящей сводки: его сводка и его граница", async () => {
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: standingOn3g(2),
+      // archive_003 и archive_004 ждали сводки, когда сервер отвечал; archive_003 закрылся раньше, чем плагин
+      // его спросил, archive_004 ждёт.
+      archives: {
+        archive_003: { overview: "ПЕРЕСКАЗ-003", lastMessageIndex: 49 },
+        archive_001: { overview: "ПЕРЕСКАЗ-СТАРШИЙ", lastMessageIndex: 39 },
+      },
+    });
+    const { value, outcome } = await assemble(live, 12_000, client, { holdForSummarySeconds: 0 });
+
+    expect(JSON.stringify(value.messages[0])).toContain("[Session History Summary]\\nПЕРЕСКАЗ-003");
+    expect(JSON.stringify(value.messages)).not.toContain("ПЕРЕСКАЗ-3Г");
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
+    expect(outcome).toMatchObject({ summaryFrom: "archive", archiveId: "archive_003", boundaryFound: true });
+  });
 });
 
 describe("сборка, когда свежего пересказа нет", () => {
@@ -242,7 +459,7 @@ describe("сборка, когда свежего пересказа нет", ()
 
     expect(value.messages).toBe(live);
     expect(outcome.passthrough).toBe(true);
-    expect(outcome.reason).toBe("ov_msgs_fewer_than_input");
+    expect(outcome.reason).toBe("no_fresh_summary");
     expect(asked.filter((p) => p.includes("/archives/"))).toEqual([]);
   });
 
@@ -270,7 +487,7 @@ describe("сборка, когда свежего пересказа нет", ()
     expect(asked.filter((p) => p.includes("/archives/")).map((p) => p.split("/").at(-1)))
       .toEqual(["archive_003", "archive_002"]);
     expect(outcome).toMatchObject({
-      passthrough: false, recovered: true, reason: "ov_msgs_fewer_than_input",
+      passthrough: false, recovered: true, reason: "no_fresh_summary",
       archiveId: "archive_002", boundaryFound: true, tailMessages: 22, droppedMessages: 0,
     });
     expect(outcome.boundary).toEqual({
@@ -370,6 +587,48 @@ describe("сборка, когда свежего пересказа нет", ()
     const { value } = await assemble(live, 12_000, client);
 
     expect(marksOf(value.messages)).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
+  });
+
+  describe("записи «догнать»: у каждого сообщения своё время (PLAN-krug 7в.7в)", () => {
+    // Шаг назад -- на одно сообщение: последнее сообщение архива идёт в хвосте ещё раз, ничего не теряется.
+    const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, k) => mark(from + k));
+
+    it("архив кончился на ответе: всё после него -- в хвосте, повтор не больше одного сообщения", async () => {
+      const { client } = server({
+        context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+        archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39, ownTimes: {} } },
+      });
+      const { value, outcome } = await assemble(liveTranscript(60), 12_000, client);
+
+      expect(marksOf(value.messages)).toEqual(expect.arrayContaining(range(40, 59)));
+      expect(outcome).toMatchObject({ recovered: true, boundaryFound: true });
+      expect(Number(outcome.tailMessages)).toBeLessThanOrEqual(21);
+    });
+
+    it("архив кончился посреди хода: ответ, не попавший в архив, в хвосте", async () => {
+      const { client } = server({
+        context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+        archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-38", lastMessageIndex: 38, ownTimes: {} } },
+      });
+      const { value, outcome } = await assemble(liveTranscript(60), 12_000, client);
+
+      expect(marksOf(value.messages)).toEqual(expect.arrayContaining(range(39, 59)));
+      expect(outcome).toMatchObject({ recovered: true, boundaryFound: true });
+      expect(Number(outcome.tailMessages)).toBeLessThanOrEqual(22);
+    });
+
+    it("дописка, написанная пока шёл ответ, -- позже в переписке, раньше по времени -- не теряется", async () => {
+      const live = liveTranscript(60);
+      live[40] = { ...live[40], timestamp: START + 38 * 60_000 + 5_000 };
+      const { client } = server({
+        context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+        archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39, ownTimes: {} } },
+      });
+      const { value, outcome } = await assemble(live, 12_000, client);
+
+      expect(marksOf(value.messages)).toEqual(expect.arrayContaining(range(40, 59)));
+      expect(Number(outcome.tailMessages)).toBeLessThanOrEqual(21);
+    });
   });
 
   it("в архиве виден один ход: границу не угадывает, берёт по весу, не меньше планки", async () => {
@@ -607,6 +866,274 @@ describe("сборка, когда ответ сервера негоден по
   });
 });
 
+describe("запасной путь весит то, что увидит модель (PLAN-krug 7в.5)", () => {
+  // Подделка вида шлюза: каждому вопросу штамп в 200 знаков (шлюз ставит штамп времени прошлым вопросам).
+  const stamp = "[штамп]".padEnd(200, "ш");
+  const historyForModel = async (messages: AgentMessage[]) =>
+    messages.map((message) =>
+      message.role === "user"
+        ? ({
+            ...message,
+            content: `${stamp}${
+              typeof message.content === "string"
+                ? message.content
+                : (message.content as Array<{ text?: string }>).map((block) => block.text ?? "").join("")
+            }`,
+          } as AgentMessage)
+        : message,
+    );
+
+  it("переписка под K, как хранится, но тяжелее K со штампами -- целиком не уходит", async () => {
+    // 30 сообщений по 966 знаков -- 28 981 под 30 000; со штампами 31 981. Под K -- 14 ходов (29 849).
+    const live = liveTranscript(30);
+    const { client } = server({ down: true });
+    const { value, outcome } = await assemble(live, 200_000, client, {
+      keepRecentTokens: 30_000,
+      historyForModel,
+    });
+
+    expect(value.messages).not.toBe(live);
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 28 }, (_, k) => mark(2 + k)));
+    expect(outcome).toMatchObject({ recovered: true, droppedMessages: 2 });
+  });
+
+  it("хвост от границы режет по весу со штампами", async () => {
+    // Хвост -- 52 сообщения с десятого; под 12 000 со штампами -- десять (пять ходов, 10 661), не двенадцать.
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-9", lastMessageIndex: 9 } },
+    });
+    const { value } = await assemble(live, 12_000, client, {
+      keepRecentTokens: 12_000,
+      keepRecentFloor: 4,
+      historyForModel,
+    });
+
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 10 }, (_, k) => mark(50 + k)));
+  });
+
+  it("хвост весится в форме окна: выдача без вызова, которую окно выбросит, не весится", async () => {
+    // Без выдачи под 12 000 -- двенадцать сообщений с 48-го. Выдача без вызова в 3 000 знаков после 53-го в окно
+    // не попадёт (починка пар) -- и в весе её нет.
+    const live = liveTranscript(60);
+    live.splice(54, 0, {
+      role: "toolResult",
+      toolCallId: "call_orphan",
+      toolName: "read",
+      content: [{ type: "text", text: "О".repeat(3_000) }],
+      isError: false,
+      timestamp: START + 53 * 60_000 + 1,
+    } as AgentMessage);
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-9", lastMessageIndex: 9 } },
+    });
+    const { value } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
+    expect(JSON.stringify(value.messages)).not.toContain("call_orphan");
+  });
+});
+
+describe("окно не теряет выдачу повторного номера вызова (PLAN-krug 7в.5-3, НВ5-1)", () => {
+  // Сервер хранит вызовы разных ходов под одним номером; починка пар окна выбрасывала выдачу второго как дубль.
+  // Каждый вызов -- и выдача сразу за ним, под его номером: тексты выдач по порядку вызовов.
+  const outputsOfCalls = (messages: AgentMessage[]) =>
+    messages.flatMap((m, index) =>
+      m.role === "assistant" && Array.isArray(m.content)
+        ? (m.content as Array<{ type?: string; id?: string }>)
+            .filter((b) => b.type === "toolCall")
+            .map((b, k) => {
+              const result = messages[index + 1 + k] as { role?: string; toolCallId?: string; content?: unknown };
+              return result?.role === "toolResult" && result.toolCallId === b.id
+                ? JSON.stringify(result.content)
+                : `(нет выдачи у ${String(b.id)})`;
+            })
+        : [],
+    );
+
+  it("главный путь: обе выдачи в окне, у каждого вызова своя", async () => {
+    const at = (i: number) => new Date(START + i * 60_000).toISOString();
+    const call = (id: string, text: string, i: number): OVMessage => ({
+      id,
+      role: "assistant",
+      parts: [
+        { type: "tool", tool_id: "call_115472", tool_name: "read", tool_input: { path: text }, tool_output: `ВЫДАЧА-${text}`, tool_status: "completed" },
+      ] as OVMessage["parts"],
+      created_at: at(i),
+    });
+    const { client } = server({
+      context: {
+        latest_archive_overview: "ПЕРЕСКАЗ-СВЕЖИЙ",
+        messages: [
+          { id: "u1", role: "user", parts: [{ type: "text", text: "раз" }], created_at: at(0) },
+          call("a1", "первый", 1),
+          { id: "u2", role: "user", parts: [{ type: "text", text: "два" }], created_at: at(2) },
+          call("a2", "второй", 3),
+        ] as OVMessage[],
+        stats: {
+          totalArchives: 3, includedArchives: 0, droppedArchives: 3,
+          failedArchives: 0, activeTokens: 10, archiveTokens: 5,
+        },
+      },
+    });
+    const { value, outcome } = await assemble(liveTranscript(60), 12_000, client);
+
+    expect(outcome).toMatchObject({ passthrough: false });
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-первый");
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-второй");
+    const outputs = outputsOfCalls(value.messages);
+    expect(outputs).toHaveLength(2);
+    expect(outputs[0]).toContain("ВЫДАЧА-первый");
+    expect(outputs[1]).toContain("ВЫДАЧА-второй");
+  });
+
+  it("запасной путь: урезанное окно тоже держит обе выдачи", async () => {
+    const live = liveTranscript(54);
+    const turn = (n: number, text: string): AgentMessage[] => [
+      { role: "user", content: `вопрос ${text}`, timestamp: START + n * 60_000 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_115472", name: "read", arguments: { path: text } }],
+        timestamp: START + (n + 1) * 60_000,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_115472",
+        toolName: "read",
+        content: [{ type: "text", text: `ВЫДАЧА-${text}` }],
+        isError: false,
+        timestamp: START + (n + 1) * 60_000 + 1,
+      },
+      { role: "assistant", content: [{ type: "text", text: `прочла ${text}` }], timestamp: START + (n + 2) * 60_000 },
+    ] as AgentMessage[];
+    live.push(...turn(54, "первый"), ...turn(57, "второй"));
+    const { client } = server({ down: true });
+    const { value, outcome } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    expect(outcome).toMatchObject({ recovered: true });
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-первый");
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-второй");
+    const outputs = outputsOfCalls(value.messages);
+    expect(outputs).toHaveLength(2);
+    expect(outputs[0]).toContain("ВЫДАЧА-первый");
+    expect(outputs[1]).toContain("ВЫДАЧА-второй");
+  });
+});
+
+describe("прерванный вызов с тем же номером не забирает чужую выдачу (PLAN-krug 7в.7, проверяющий кода)", () => {
+  it("запасной путь: оборванный вызов без выдачи, потом тот же номер с выдачей -- выдача у своего вызова", async () => {
+    // Шлюз пишет оборванный вызов без выдачи (обрыв потока); номера у провайдера повторяются.
+    const live = liveTranscript(54);
+    live.push(
+      ...([
+      { role: "user", content: "вопрос первый", timestamp: START + 54 * 60_000 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_115472", name: "read", arguments: { path: "первый" } }],
+        stopReason: "aborted",
+        timestamp: START + 55 * 60_000,
+      },
+      { role: "user", content: "вопрос второй", timestamp: START + 56 * 60_000 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_115472", name: "read", arguments: { path: "второй" } }],
+        timestamp: START + 57 * 60_000,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_115472",
+        toolName: "read",
+        content: [{ type: "text", text: "ВЫДАЧА-второй" }],
+        isError: false,
+        timestamp: START + 57 * 60_000 + 1,
+      },
+      { role: "assistant", content: [{ type: "text", text: "прочла второй" }], timestamp: START + 58 * 60_000 },
+      ] as AgentMessage[]),
+    );
+    const { client } = server({ down: true });
+    const { value } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-второй");
+    expect(JSON.stringify(value.messages)).not.toContain("missing tool result");
+  });
+});
+
+describe("выдачи внутри одного хода раздаются вызовам по вхождению (PLAN-krug 7в.5-3, проверяющий кода)", () => {
+  const ask = (n: number, text: string): AgentMessage =>
+    ({ role: "user", content: `вопрос ${text}`, timestamp: START + n * 60_000 }) as AgentMessage;
+  const outputOf = (n: number, text: string): AgentMessage =>
+    ({
+      role: "toolResult",
+      toolCallId: "call_115472",
+      toolName: "read",
+      content: [{ type: "text", text: `ВЫДАЧА-${text}` }],
+      isError: false,
+      timestamp: START + n * 60_000 + 1,
+    }) as AgentMessage;
+  const callOf = (text: string) => ({ type: "toolCall", id: "call_115472", name: "read", arguments: { path: text } });
+
+  it("дубль выдачи в ходе выбрасывается: в окне одна, ворота прокси тело хвоста принимают", async () => {
+    const live = liveTranscript(54);
+    live.push(
+      ask(54, "раз"),
+      { role: "assistant", content: [callOf("раз")], timestamp: START + 55 * 60_000 } as AgentMessage,
+      outputOf(55, "раз"),
+      outputOf(55, "раз"),
+      { role: "assistant", content: [{ type: "text", text: "прочла" }], timestamp: START + 56 * 60_000 } as AgentMessage,
+    );
+    const { client } = server({ down: true });
+    const { value, outcome } = await assemble(live, 12_000, client, {
+      keepRecentTokens: 12_000,
+      keepRecentFloor: 4,
+      gate: true,
+    });
+
+    expect(value.messages.filter((m) => m.role === "toolResult")).toHaveLength(1);
+    expect(outcome).toMatchObject({ recovered: true, priced: true });
+  });
+
+  it("два вызова с одним номером в одном сообщении -- у каждого своя выдача", async () => {
+    const live = liveTranscript(54);
+    live.push(
+      ask(54, "оба"),
+      { role: "assistant", content: [callOf("раз"), callOf("два")], timestamp: START + 55 * 60_000 } as AgentMessage,
+      outputOf(55, "раз"),
+      outputOf(55, "два"),
+      { role: "assistant", content: [{ type: "text", text: "прочла оба" }], timestamp: START + 56 * 60_000 } as AgentMessage,
+    );
+    const { client } = server({ down: true });
+    const { value } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    const text = JSON.stringify(value.messages);
+    expect(text).toContain("ВЫДАЧА-раз");
+    expect(text).toContain("ВЫДАЧА-два");
+    expect(text).not.toContain("missing tool result");
+  });
+
+  it("выдачи сдвинуты за дописку -- переставляются к вызовам, каждому своя", async () => {
+    const live = liveTranscript(54);
+    live.push(
+      ask(54, "оба"),
+      { role: "assistant", content: [callOf("раз"), callOf("два")], timestamp: START + 55 * 60_000 } as AgentMessage,
+      ask(55, "дописка"),
+      outputOf(55, "раз"),
+      outputOf(55, "два"),
+      { role: "assistant", content: [{ type: "text", text: "прочла оба" }], timestamp: START + 56 * 60_000 } as AgentMessage,
+    );
+    const { client } = server({ down: true });
+    const { value } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    const outputs = value.messages
+      .filter((m) => m.role === "toolResult")
+      .map((m) => JSON.stringify((m as { content?: unknown }).content));
+    expect(outputs).toHaveLength(2);
+    expect(outputs[0]).toContain("ВЫДАЧА-раз");
+    expect(outputs[1]).toContain("ВЫДАЧА-два");
+  });
+});
+
 describe("то же через движок, как его зовёт шлюз", () => {
   it("большая переписка без свежего пересказа собирается из прошлого пересказа и хвоста", async () => {
     const live = liveTranscript(60);
@@ -635,5 +1162,85 @@ describe("то же через движок, как его зовёт шлюз",
 
     expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ДО-39");
     expect(marksOf(value.messages as AgentMessage[])).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
+  });
+});
+
+// PLAN-krug 7в.3в: every main assembly tells the host the window's state -- "partial" while the window goes by the
+// fallback path not whole (summary and a cut tail), "whole" otherwise -- so the web and the channel show a line while
+// part of the conversation is out of the model's sight and take it down once a later assembly is whole again.
+describe("состояние окна для хоста (PLAN-krug 7в.3в)", () => {
+  const engineOver = (client: OpenVikingClient, keepRecentTokens = 30_000) =>
+    createMemoryOpenVikingContextEngine({
+      id: "openviking",
+      name: "OpenViking",
+      cfg: memoryOpenVikingConfigSchema.parse({
+        baseUrl: "http://127.0.0.1:1933", autoRecall: false, keepRecentTokens,
+      }),
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      getClient: async () => client,
+      resolveAgentId: () => "main",
+      priceHandle: charsHandle(),
+    });
+  const mainAssemble = (client: OpenVikingClient, live: AgentMessage[], keepRecentTokens?: number) =>
+    engineOver(client, keepRecentTokens).assemble({
+      sessionId: "9478e347-6bdc-44f5-a4e0-207fe7e4b6e3",
+      messages: live,
+      tokenBudget: 12_000,
+      availableTools: new Set<string>(),
+      runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite", requested: null } },
+    } as never) as Promise<{ messages: AgentMessage[]; contextWindow?: string }>;
+
+  // 22 сообщения от границы архива весят около 21 250 -- под K 12 000 не влезают, старые срезаны.
+  it("запасной путь срезал старое -- partial", async () => {
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39 } },
+    });
+    const value = await mainAssemble(client, liveTranscript(60), 12_000);
+    expect(value.contextWindow).toBe("partial");
+  });
+
+  // Проверяющий кода 7в.3в, Н4: сводка и весь хвост от границы влезли под K -- из окна ничего не выпало.
+  it("запасной путь вместил всё от границы архива -- whole", async () => {
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39 } },
+    });
+    const value = await mainAssemble(client, liveTranscript(60));
+    expect(JSON.stringify(value.messages[0])).toContain("ПЕРЕСКАЗ-ДО-39");
+    expect(value.contextWindow).toBe("whole");
+  });
+
+  it("главный путь -- whole", async () => {
+    const { client } = server({
+      context: {
+        latest_archive_overview: "ПЕРЕСКАЗ-СВЕЖИЙ",
+        messages: [ovMessage(58, "user"), ovMessage(59, "assistant")],
+        stats: {
+          totalArchives: 3, includedArchives: 0, droppedArchives: 3,
+          failedArchives: 0, activeTokens: 10, archiveTokens: 5, unsummarizedArchives: 0,
+        },
+      },
+    });
+    const value = await mainAssemble(client, liveTranscript(60));
+    expect(value.contextWindow).toBe("whole");
+  });
+
+  it("запасной путь отдал переписку целиком -- whole", async () => {
+    const { client } = server({ context: NO_SUMMARY(3, 1, [ovMessage(9)]) });
+    const live = liveTranscript(10);
+    const value = await mainAssemble(client, live);
+    expect(value.messages).toBe(live);
+    expect(value.contextWindow).toBe("whole");
+  });
+
+  it("сборка не главная (память к запросу) -- без состояния", async () => {
+    const { client } = server({ context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]) });
+    const value = (await engineOver(client).assemble({
+      sessionId: "9478e347-6bdc-44f5-a4e0-207fe7e4b6e3",
+      messages: liveTranscript(60),
+      tokenBudget: 12_000,
+    } as never)) as { contextWindow?: string };
+    expect(value).not.toHaveProperty("contextWindow");
   });
 });

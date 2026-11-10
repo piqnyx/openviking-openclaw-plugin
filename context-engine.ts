@@ -1,6 +1,6 @@
 import type { OpenVikingClient } from "./client.js";
 import type { MemoryOpenVikingConfig } from "./config.js";
-import type { PriceHandle } from "./price-handle.js";
+import type { HistoryForModel, PriceHandle, TailPriceHandle } from "./price-handle.js";
 import type { RuntimeQueryConfigStore } from "./query-config.js";
 import {
   AUTO_RECALL_SOURCE_MARKER,
@@ -12,7 +12,7 @@ import {
 } from "./text-utils.js";
 import type { RecallTraceEntry } from "./recall-trace.js";
 import { estimateAgentMessageTokens, estimateAgentMessagesTokens } from "./token-estimator.js";
-import { openClawSessionToOvStorageId } from "./routing/identity-routing.js";
+import { openClawSessionToOvStorageId, resolveOpenVikingMessagePeerId } from "./routing/identity-routing.js";
 import type { AgentMessage } from "./services/context-message-adapter.js";
 import {
   assembleOpenVikingSession,
@@ -21,6 +21,9 @@ import {
   commitOpenVikingSession,
   type AnnounceCompaction,
 } from "./services/context-lifecycle-service.js";
+import { createSessionCatchUp, type SessionCatchUp } from "./services/catch-up-session.js";
+import { createResetBarrier, type ResetBarrier } from "./services/reset-barrier.js";
+import type { SessionTranscriptReader } from "./services/branch-reader.js";
 
 type ContextEngineInfo = {
   id: string;
@@ -34,10 +37,13 @@ type ContextEngineInfo = {
    * хода; ровно так и работает assemble, он берёт messages до prePromptMessageCount.
    * turnAdvancementIdempotency — commitTurn можно повторять с тем же
    * advancementKey без задвоения; обеспечено защитой в captureTurnOnce.
+   * turnAdvancementRecovery — пропущенный ход движок догоняет по переписке шлюза (PLAN-krug 5в.1, 7б):
+   * запись очереди, которую шлюз уже не может прочитать, он удаляет громко, а не держит пробкой.
    */
   transcriptSemantics?: {
     currentTurnFence?: "before-current-turn-entry-v1";
     turnAdvancementIdempotency?: "atomic-idempotent-v1";
+    turnAdvancementRecovery?: "transcript-catch-up-v1";
   };
 };
 
@@ -97,6 +103,8 @@ type AssembleResult = {
   messages: AgentMessage[];
   estimatedTokens: number;
   systemPromptAddition?: string;
+  /** PLAN-krug 7в.3в: the window's state on a main assembly, for the host to show (gateway's AssembleResult). */
+  contextWindow?: "partial" | "whole";
 };
 
 type IngestResult = {
@@ -183,6 +191,8 @@ export type ContextEngineWithCommit = ContextEngine & {
     sessionId: string;
     sessionKey?: string;
     runtimeContext?: Record<string, unknown>;
+    /** PLAN-krug К13: the gateway's read of the reset session (before_reset); none from an older gateway. */
+    transcriptReader?: SessionTranscriptReader;
   }) => Promise<boolean>;
 };
 
@@ -333,10 +343,16 @@ export function createMemoryOpenVikingContextEngine(params: {
   traceRecorder?: { record(entry: RecallTraceEntry): void; recordAndFlush?: (entry: RecallTraceEntry) => Promise<unknown> };
   /** The proxy's price handle (PLAN-gorizont 4а); none when the config names no address. */
   priceHandle?: Pick<PriceHandle, "price" | "url">;
+  /** PLAN-krug 7в.5: the gateway's view of history as the model gets it (its engine factory's context). */
+  historyForModel?: HistoryForModel;
   /** How often the server is asked while waiting or watching a task, ms; the tests shorten it. */
   pollIntervalMs?: number;
   /** PLAN-gorizont 5а: how long the held turn waits between questions to the price handle, ms; the tests shorten it. */
   pourRetryPauseMs?: number;
+  /** PLAN-krug К18: the registration's «догнать» memory -- it outlives this engine, built for one turn. */
+  catchUp?: SessionCatchUp;
+  /** PLAN-krug К20: the registration's reset hold -- it outlives this engine, built for one turn. */
+  resetBarrier?: ResetBarrier;
 }): ContextEngineWithCommit {
   const {
     id,
@@ -349,11 +365,42 @@ export function createMemoryOpenVikingContextEngine(params: {
     rememberSessionAgentId,
     queryConfigStore,
     traceRecorder,
-    priceHandle,
     pollIntervalMs,
     pourRetryPauseMs,
   } = params;
 
+  // PLAN-krug 7в.5: the gateway's view of history travels with the handle, so every tail is weighed as the
+  // model will see it. A view that breaks leaves the tails weighed as stored (the weight before 7в.5), said once.
+  const viewOfGateway = params.historyForModel;
+  let viewBroke = false;
+  const priceHandle: TailPriceHandle | undefined =
+    params.priceHandle && viewOfGateway
+      ? {
+          url: params.priceHandle.url,
+          price: params.priceHandle.price.bind(params.priceHandle),
+          historyForModel: async (window) => {
+            try {
+              return await viewOfGateway(window);
+            } catch (trouble) {
+              if (!viewBroke) {
+                viewBroke = true;
+                logger.warn?.(
+                  `openviking: the gateway's view of history broke; tails are weighed as stored: ${String(trouble)}`,
+                );
+              }
+              return window;
+            }
+          },
+        }
+      : params.priceHandle;
+
+  // PLAN-krug 7б: the turns written by the gateway's row ids. К18: its memory is the registration's;
+  // an engine built on its own (tests) keeps its own.
+  const catchUp = params.catchUp ?? createSessionCatchUp();
+  const resetBarrier = params.resetBarrier ?? createResetBarrier();
+  // PLAN-krug К20: the engine's steps for a session wait for a reset still archiving its old conversation.
+  const afterReset = (sessionId: string, sessionKey: string | undefined) =>
+    resetBarrier.passed(openClawSessionToOvStorageId(sessionId, sessionKey));
   const diagEnabled = cfg.emitStandardDiagnostics;
   const bypassSessionPatterns = compileSessionPatterns(cfg.bypassSessionPatterns);
   const diag = (stage: string, sessionId: string, data: Record<string, unknown>) =>
@@ -362,22 +409,69 @@ export function createMemoryOpenVikingContextEngine(params: {
   const isBypassedSession = (params: { sessionId?: string; sessionKey?: string }): boolean =>
     shouldBypassSession(params, bypassSessionPatterns);
 
+  /**
+   * PLAN-krug 7б: on a reset the turn's end has normally written the last turn already; when its
+   * write failed and the reset came first, the rows Viking lacks go in now, before the archive --
+   * after it, the queue would write them into the old session where nothing extracts them. Read with
+   * the gateway's reader from the event, by its rule of what the model sees; the server says what Viking
+   * holds (PLAN-krug К13). A failure here does not hold the archive back.
+   */
+  async function catchUpBeforeReset(params: { sessionId: string; sessionKey?: string; reader: SessionTranscriptReader }) {
+    if (!cfg.autoCapture || isBypassedSession({ sessionId: params.sessionId, sessionKey: params.sessionKey })) {
+      return;
+    }
+    try {
+      const ovSessionId = openClawSessionToOvStorageId(params.sessionId, params.sessionKey);
+      const agentId = resolveAgentId(params.sessionId, params.sessionKey, ovSessionId);
+      const client = await getClient(agentId);
+      const outcome = await catchUp({
+        client,
+        ovSessionId,
+        reader: params.reader,
+        holdTrailingQuestion: false,
+        memory: "none",
+        peerIdOf: (role) =>
+          resolveOpenVikingMessagePeerId({ peerRole: cfg.peer_role ?? "assistant", role, assistantPeerId: agentId }),
+        logger,
+      });
+      if (outcome.kind !== "skipped" && outcome.written > 0) {
+        logger.warn?.(
+          `openviking: before_reset wrote ${outcome.written} message(s) of session=${ovSessionId} that the turn's end had not`,
+        );
+      }
+    } catch (err) {
+      logger.warn?.(`openviking: before_reset could not catch up session=${params.sessionId}: ${String(err)}`);
+    }
+  }
+
   async function doCommitOVSession(params: {
     sessionId: string;
     sessionKey?: string;
     runtimeContext?: Record<string, unknown>;
+    transcriptReader?: SessionTranscriptReader;
   }): Promise<boolean> {
     const { sessionId } = params;
     const { sessionKey } = resolveSessionIdentity(params);
-    return commitOpenVikingSession({
-      sessionId,
-      sessionKey,
-      getClient,
-      resolveAgentId,
-      logger,
-      rememberSessionAgentId,
-      isBypassedSession,
-    });
+    // PLAN-krug К20: held before the first await -- the gateway goes on with the new conversation at once.
+    const release = resetBarrier.hold(openClawSessionToOvStorageId(sessionId, sessionKey));
+    try {
+      // PLAN-krug К13: an older gateway hands no reader -- the archive only, as before 7б.
+      if (params.transcriptReader) {
+        await catchUpBeforeReset({ sessionId, sessionKey, reader: params.transcriptReader });
+      }
+      return await commitOpenVikingSession({
+        sessionId,
+        sessionKey,
+        getClient,
+        resolveAgentId,
+        logger,
+        rememberSessionAgentId,
+        isBypassedSession,
+        onArchived: release,
+      });
+    } finally {
+      release();
+    }
   }
 
   function extractSessionKey(runtimeContext: Record<string, unknown> | undefined): string | undefined {
@@ -420,6 +514,7 @@ export function createMemoryOpenVikingContextEngine(params: {
       transcriptSemantics: {
         currentTurnFence: "before-current-turn-entry-v1",
         turnAdvancementIdempotency: "atomic-idempotent-v1",
+        turnAdvancementRecovery: "transcript-catch-up-v1",
       },
     },
 
@@ -436,12 +531,13 @@ export function createMemoryOpenVikingContextEngine(params: {
     },
 
     async assemble(assembleParams): Promise<AssembleResult> {
+      await afterReset(assembleParams.sessionId, resolveSessionKey(assembleParams));
       const tokenBudget = validTokenBudget(assembleParams.tokenBudget) ?? 128_000;
       const isMainAssemble =
         Object.prototype.hasOwnProperty.call(assembleParams, "availableTools") ||
         Object.prototype.hasOwnProperty.call(assembleParams, "citationsMode") ||
         Object.prototype.hasOwnProperty.call(assembleParams, "prompt");
-      return assembleOpenVikingSession({
+      const assembled = await assembleOpenVikingSession({
         sessionId: assembleParams.sessionId,
         sessionKey: resolveSessionKey(assembleParams),
         messages: assembleParams.messages,
@@ -471,10 +567,15 @@ export function createMemoryOpenVikingContextEngine(params: {
         announceCompaction: (
           assembleParams as { announceCompaction?: AnnounceCompaction }
         ).announceCompaction,
+        catchUp,
       });
+      // PLAN-krug 7в.3в: every main assembly tells the window's state, so a whole one after a partial one takes the
+      // host's line down; the assembly for a request's recall is no window and tells nothing.
+      return isMainAssemble ? { ...assembled, contextWindow: assembled.contextWindow ?? "whole" } : assembled;
     },
 
     async afterTurn(afterTurnParams): Promise<void> {
+      await afterReset(afterTurnParams.sessionId, resolveSessionKey(afterTurnParams));
       // Хост зовёт afterTurn безусловно, как только метод существует
       // (src/agents/harness/context-engine-lifecycle.ts), не глядя на commitTurn.
       // Поэтому один и тот же ход может прийти обоими путями — отпечаток
@@ -509,6 +610,7 @@ export function createMemoryOpenVikingContextEngine(params: {
         pollIntervalMs,
         path: "afterTurn",
         announceCompaction: afterTurnParams.announceCompaction,
+        catchUp,
       });
     },
 
@@ -519,6 +621,7 @@ export function createMemoryOpenVikingContextEngine(params: {
      */
     async commitTurn(commitParams): Promise<{ status: "committed" | "duplicate" }> {
       const sessionId = commitParams.sessionId;
+      await afterReset(sessionId, commitParams.sessionKey);
       if (!claimTurn(sessionId, `key:${commitParams.advancementKey}`)) {
         diag("commitTurn_duplicate", sessionId, {
           advancementKey: commitParams.advancementKey,
@@ -556,11 +659,13 @@ export function createMemoryOpenVikingContextEngine(params: {
         pollIntervalMs,
         path: "commitTurn",
         announceCompaction: commitParams.announceCompaction,
+        catchUp,
       });
       return { status: "committed" };
     },
 
     async compact(compactParams): Promise<CompactResult> {
+      await afterReset(compactParams.sessionId, resolveSessionKey(compactParams));
       const tokenBudget = validTokenBudget(compactParams.tokenBudget) ?? 128_000;
       return compactOpenVikingSession({
         sessionId: compactParams.sessionId,

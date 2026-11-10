@@ -5,6 +5,7 @@ import { OpenVikingClient, type OVMessage } from "../client.js";
 import { memoryOpenVikingConfigSchema } from "../config.js";
 import { createMemoryOpenVikingContextEngine } from "../context-engine.js";
 import type { PriceVerdict } from "../price-handle.js";
+import type { AgentMessage } from "../services/context-message-adapter.js";
 
 /*
  * Сжатие по просьбе шлюза (PLAN-gorizont, 4в).
@@ -148,6 +149,8 @@ function engineOver(
     compactWaitSeconds?: number;
     /** Свои весы вместо обычных (например, молчащие). */
     handle?: ReturnType<typeof handle>;
+    /** PLAN-krug 7в.5: вид истории, который даёт шлюз. */
+    historyForModel?: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
   } = {},
 ) {
   const warned: string[] = [];
@@ -178,6 +181,7 @@ function engineOver(
     getClient: async () => stand.client,
     resolveAgentId: () => "main",
     ...(options.priced === false ? {} : { priceHandle: options.handle ?? handle() }),
+    ...(options.historyForModel ? { historyForModel: options.historyForModel } : {}),
     pollIntervalMs: 1,
   });
   return { engine, warned, diags };
@@ -321,6 +325,33 @@ describe("автоматическое сжатие", () => {
     expect(result.compacted).toBe(true);
     expect(warned.join("\n")).toMatch(/without a price/);
     expect(result.result?.tokensAfter).toBeUndefined();
+  });
+});
+
+describe("хвост сжатия весится, как его увидит модель (PLAN-krug 7в.5)", () => {
+  it("оставляет хвост под K со штампами, которые шлюз ставит вопросам", async () => {
+    // 20 ходов по 5 000 знаков; со штампом в 5 000 у каждого вопроса ход весит 15 000 -- под 150 000 девять
+    // ходов (135 001), 18 сообщений, а не 28. Планка 4: при обычной (20) она сильнее веса и оставила бы 20.
+    const stamp = "[штамп]".padEnd(5_000, "ш");
+    const historyForModel = async (messages: AgentMessage[]) =>
+      messages.map((message) =>
+        message.role === "user"
+          ? ({
+              ...message,
+              content: `${stamp}${
+                typeof message.content === "string"
+                  ? message.content
+                  : (message.content as Array<{ text?: string }>).map((block) => block.text ?? "").join("")
+              }`,
+            } as AgentMessage)
+          : message,
+      );
+    const stand = server(20, 5_000);
+    const { engine } = engineOver(stand, { historyForModel, keepRecentFloor: 4 });
+    const result = await compact(engine, "budget");
+
+    expect(stand.commits).toEqual([{ keep_recent_count: 18 }]);
+    expect(result.compacted).toBe(true);
   });
 });
 

@@ -1,6 +1,7 @@
 import type { OVMessage } from "../client.js";
 import { sanitizeOpenVikingPeerId } from "../routing/identity-routing.js";
 import { sanitizeToolUseResultPairing } from "../session-transcript-repair.js";
+import { sanitizeToolCallIdsForCloudCodeAssist } from "../tool-call-id.js";
 
 export type AgentMessage = {
   role?: string;
@@ -19,8 +20,11 @@ export function toRoleId(senderId: string | undefined): string | undefined {
  * For assistant messages with ToolParts, this produces:
  * 1. The assistant message with canonical toolCall blocks in its content array
  * 2. A separate toolResult message per ToolPart (carrying tool_output)
+ *
+ * Each carries the time the message was written with (PLAN-krug 7в.6): the gateway stamps every user
+ * message by its `timestamp` (attempt-llm-boundary.ts), the current one and the historical ones alike.
  */
-export function convertToAgentMessages(msg: { role: string; parts: unknown[] }): AgentMessage[] {
+export function convertToAgentMessages(msg: { role: string; parts: unknown[]; created_at?: unknown }): AgentMessage[] {
   const parts = msg.parts ?? [];
   const contentBlocks: Record<string, unknown>[] = [];
   const toolCallBlocks: Record<string, unknown>[] = [];
@@ -111,7 +115,8 @@ export function convertToAgentMessages(msg: { role: string; parts: unknown[] }):
     }
   }
 
-  return result;
+  const writtenAt = typeof msg.created_at === "string" ? Date.parse(msg.created_at) : Number.NaN;
+  return Number.isFinite(writtenAt) ? result.map((message) => ({ ...message, timestamp: writtenAt })) : result;
 }
 
 export function formatMessageFaithful(msg: OVMessage): string {
@@ -352,6 +357,13 @@ function canonicalizeAgentMessages(messages: AgentMessage[]): AgentMessage[] {
 
 export function sanitizeAgentMessagesForProvider(messages: AgentMessage[]): AgentMessage[] {
   normalizeAssistantContent(messages);
+  // The ids are not rewritten before the pairing: a rewrite in order of occurrence binds a later call's result
+  // to an older call left without one (a stream cut). As the gateway does: pairs by the raw ids first, the ids
+  // made unique after, at the send (and in the price body, `priceMessagesOf`). One difference stays: a turn cut
+  // off (`stopReason` error or aborted) is kept here and dropped by the gateway before the send, so in the price
+  // body a later call's result may carry the id of that cut call -- the proxy's gate takes it, and the body
+  // weighs the cut turn the model does not get (a few tokens); the model's window is paired by the gateway
+  // (PLAN-krug 7в.7г review, named).
   const canonical = canonicalizeAgentMessages(messages);
   // Defense in depth (issue #1724):
   //   1) sanitizeToolUseResultPairing may strip orphaned tool_use/tool_result,
@@ -365,4 +377,12 @@ export function sanitizeAgentMessagesForProvider(messages: AgentMessage[]): Agen
       sanitizeToolUseResultPairing(canonical as never[]) as AgentMessage[],
     ),
   );
+}
+
+/** Tool call ids made unique and strict, occurrence by occurrence, as the gateway rewrites them before a send. */
+export function withUniqueToolCallIds(messages: AgentMessage[]): AgentMessage[] {
+  return sanitizeToolCallIdsForCloudCodeAssist(
+    messages as unknown as Parameters<typeof sanitizeToolCallIdsForCloudCodeAssist>[0],
+    "strict",
+  ) as unknown as AgentMessage[];
 }

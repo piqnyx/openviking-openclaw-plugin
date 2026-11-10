@@ -28,6 +28,13 @@ type State = {
   sessionPolls: number;
   standsAfterPolls: number;
   messages: OVMessage[];
+  /** PLAN-krug 7в.7г: слив или чтение ответа ломается (500). */
+  failCommit?: boolean;
+  failContext?: boolean;
+  /** Слив лёг на сервере, а ответ на него -- ошибка. */
+  commitLandsButFails?: boolean;
+  /** После слива чтение ответа ломается. */
+  failContextAfterCommit?: boolean;
 };
 
 type Stand = { client: OpenVikingClient; commits: Array<Record<string, unknown>>; state: State; asked: string[] };
@@ -63,6 +70,25 @@ function server(given: Partial<State> = {}): Stand {
       });
     if (parsed.pathname.endsWith("/messages")) {
       return answer({ session_id: SESSION });
+    }
+    const broken = () =>
+      new Response(JSON.stringify({ status: "error", error: { code: "INTERNAL", message: "storage busy" } }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    if (parsed.pathname.endsWith("/commit") && state.failCommit) {
+      return broken();
+    }
+    if (parsed.pathname.endsWith("/context") && state.failContext) {
+      return broken();
+    }
+    if (parsed.pathname.endsWith("/commit") && state.commitLandsButFails) {
+      state.unsummarized += 1;
+      state.sessionPolls = 0;
+      return broken();
+    }
+    if (parsed.pathname.endsWith("/commit") && state.failContextAfterCommit) {
+      state.failContext = true;
     }
     if (parsed.pathname.endsWith("/commit")) {
       commits.push(init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {});
@@ -239,6 +265,109 @@ describe("весы молчат в конце хода", () => {
     expect(diags.filter((d) => d.stage === "hold_for_summary")).toHaveLength(1);
     expect(stand.state.unsummarized).toBe(0);
     expect(result.messages.length).toBeGreaterThan(0);
+  });
+
+  // PLAN-krug 7в.7г (НД-3): the held pour breaks -- the host hears the end (no line left hanging), and an
+  // answer in hand keeps the turn its window; the pour stays due.
+  it("слив в начале хода сломался -- конец объявлен, ход идёт по ответу в руках, слив снова ждёт", async () => {
+    const stand = server();
+    let silent = true;
+    const { price } = scales(() => silent);
+    const { engine, lastDiag, diags } = engineOver(stand, price);
+    const sessionId = `${SESSION}-commit-broke`;
+    await endOfTurn(engine, sessionId, X);
+    silent = false;
+    stand.state.failCommit = true;
+    const announce = vi.fn();
+
+    const result = await startOfTurn(engine, sessionId, announce);
+
+    expect(announce.mock.calls).toEqual([["start"], ["end", { completed: false }]]);
+    expect(diags.filter((d) => d.stage === "assemble_error")).toEqual([]);
+    expect(lastDiag("pour_hold")).toMatchObject({ outcome: "broke" });
+    expect(result.messages.length).toBeGreaterThan(0);
+
+    stand.state.failCommit = false;
+    await startOfTurn(engine, sessionId, vi.fn());
+    expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
+  });
+
+  // Review of 7в.7г: going on by the answer read before a pour that was made would send the whole window the
+  // pour took away (about X), while the host hears the compaction. The window goes by the fallback path with
+  // that answer's summary (the archive the pour made waits for one), not without any summary; the end told.
+  it("слив сделан, а ответ после него не читается -- запасной путь со сводкой, конец со сжатием", async () => {
+    const stand = server();
+    let silent = true;
+    const { price } = scales(() => silent);
+    const { engine, diags } = engineOver(stand, price);
+    const sessionId = `${SESSION}-poured-unread`;
+    await endOfTurn(engine, sessionId, X);
+    silent = false;
+    stand.state.failContextAfterCommit = true;
+    const announce = vi.fn();
+
+    // The live transcript heavier than K, so the fallback path cuts it and stands on a summary.
+    const live = Array.from({ length: 40 }, (_, i) => ({
+      role: i % 2 === 0 ? "user" : "assistant",
+      content: i % 2 === 0 ? `вопрос ${i}`.padEnd(5_000, "в") : [{ type: "text", text: `ответ ${i}`.padEnd(5_000, "о") }],
+      timestamp: Date.UTC(2026, 9, 11, 1, i),
+    }));
+    await engine.assemble({
+      sessionId,
+      messages: live as never,
+      tokenBudget: 249_000,
+      prompt: "вопрос следующий",
+      runtimeSettings: MODEL,
+      announceCompaction: announce,
+    } as never);
+
+    expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
+    expect(diags.filter((d) => d.stage === "assemble_error")).toEqual([]);
+    expect(diags.filter((d) => d.stage === "assemble_result").at(-1)?.data).toMatchObject({
+      recovered: true,
+      reason: "pour_reread_failed",
+      summaryFrom: "context",
+    });
+    expect(announce.mock.calls).toEqual([
+      ["start"],
+      ["end", { completed: true, compacted: true, tokensAfter: 185_000 }],
+    ]);
+  });
+
+  it("слив лёг, а сервер ответил ошибкой -- архив ждёт сводку, слив больше не должен", async () => {
+    const stand = server();
+    let silent = true;
+    const { price } = scales(() => silent);
+    const { engine, diags } = engineOver(stand, price);
+    const sessionId = `${SESSION}-landed-broke`;
+    await endOfTurn(engine, sessionId, X);
+    silent = false;
+    stand.state.commitLandsButFails = true;
+
+    await startOfTurn(engine, sessionId, vi.fn());
+    stand.state.commitLandsButFails = false;
+    const holdsBefore = diags.filter((d) => d.stage === "pour_hold").length;
+    await startOfTurn(engine, sessionId, vi.fn());
+
+    expect(diags.filter((d) => d.stage === "pour_hold").length).toBe(holdsBefore);
+    expect(stand.commits).toEqual([]);
+  });
+
+  it("ответ сервера не читается с начала слива -- сбой сборки, как был, но конец объявлен", async () => {
+    const stand = server();
+    let silent = true;
+    const { price } = scales(() => silent);
+    const { engine, diags } = engineOver(stand, price);
+    const sessionId = `${SESSION}-read-broke`;
+    await endOfTurn(engine, sessionId, X);
+    silent = false;
+    stand.state.failContext = true;
+    const announce = vi.fn();
+
+    await startOfTurn(engine, sessionId, announce);
+
+    expect(announce.mock.calls).toEqual([["start"], ["end", { completed: false }]]);
+    expect(diags.filter((d) => d.stage === "assemble_error")).toHaveLength(1);
   });
 
   it("весы ответили не сразу: ожидание переспрашивает их с паузой", async () => {

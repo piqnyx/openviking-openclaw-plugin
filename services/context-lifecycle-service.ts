@@ -15,9 +15,12 @@ import {
   sanitizeOpenVikingPeerId,
   type OpenVikingPeerRole,
 } from "../routing/identity-routing.js";
-import { priceBodyOf, priceMessagesOf, type PriceHandle } from "../price-handle.js";
+import { priceBodyOf, priceMessagesOf, type TailPriceHandle } from "../price-handle.js";
 import { floorTail, longestTailWithin, turnStarts } from "../tail-by-weight.js";
 import { extractNewTurnMessages } from "../text-utils.js";
+import { coalesceConsecutiveToolMessages, normalizeTimestamp, toOvParts } from "./capture-form.js";
+import { transcriptReaderOf } from "./branch-reader.js";
+import type { CatchUpOutcome, SessionCatchUp } from "./catch-up-session.js";
 import { estimateAgentMessageTokens, estimateTextTokens } from "../token-estimator.js";
 import {
   convertToAgentMessages,
@@ -26,8 +29,6 @@ import {
   toRoleId,
   type AgentMessage,
 } from "./context-message-adapter.js";
-
-type ExtractedTurnMessage = ReturnType<typeof extractNewTurnMessages>["messages"][number];
 
 export type ContextEngineLifecycleLogger = {
   info: (msg: string) => void;
@@ -48,6 +49,8 @@ export type CommitOpenVikingSessionParams = {
     ovSessionId?: string;
   }) => void;
   isBypassedSession: (params: { sessionId?: string; sessionKey?: string }) => boolean;
+  /** PLAN-krug К20: told once the server has archived the session (phase 1). */
+  onArchived?: () => void;
 };
 
 export type CompactOpenVikingSessionResult = {
@@ -67,6 +70,11 @@ export type AssembleOpenVikingSessionResult = {
   messages: AgentMessage[];
   estimatedTokens: number;
   systemPromptAddition?: string;
+  /**
+   * PLAN-krug 7в.3в: the window went by the fallback path and old messages were cut, so part of the
+   * conversation is out of the model's sight; the engine tells the host "whole" for any other main assembly.
+   */
+  contextWindow?: "partial" | "whole";
 };
 
 type AssembleBuiltContext = {
@@ -113,6 +121,8 @@ export type AssembleOpenVikingSessionParams = {
   isMainAssemble: boolean;
   /** The host's announcer of the engine's compaction (PLAN-gorizont 4д); absent on a host without file 35. */
   announceCompaction?: AnnounceCompaction;
+  /** PLAN-krug Р1, шаг 7б: the engine's «догнать», run before the main window is built. */
+  catchUp?: SessionCatchUp;
   /** How often the server is asked while the turn is held for the summary, ms; the tests shorten it. */
   pollIntervalMs?: number;
   /** PLAN-gorizont 5а: the pause between questions to the price handle while the turn is held, ms. */
@@ -120,7 +130,7 @@ export type AssembleOpenVikingSessionParams = {
   cfg: any;
   getClient: (agentId: string | undefined) => Promise<OpenVikingClient>;
   /** The proxy's price handle (PLAN-gorizont 4а); the recovery path cuts the live tail by it (4б). */
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
   logger: ContextEngineLifecycleLogger;
   resolveAgentId: (sessionId: string, sessionKey?: string, ovSessionId?: string) => string;
   rememberSessionAgentId?: (ctx: {
@@ -178,7 +188,7 @@ export type CompactOpenVikingSessionParams = {
   customInstructions?: string;
   /** The host's runtime settings; the model's name is read off them for the price handle. */
   runtimeSettings?: unknown;
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
   cfg: PourOffConfig & {
     /** How long to wait for the summary to stand on the server, seconds. */
     compactWaitSeconds: number;
@@ -194,7 +204,7 @@ export type CompactOpenVikingSessionParams = {
 
 type AfterTurnClient = Pick<
   OpenVikingClient,
-  "addSessionMessage" | "getSession" | "getSessionContext" | "commitSession" | "getTask"
+  "addSessionMessage" | "addSessionMessages" | "getSession" | "getSessionContext" | "commitSession" | "getTask"
 >;
 
 export type AfterTurnOpenVikingSessionParams = {
@@ -222,6 +232,11 @@ export type AfterTurnOpenVikingSessionParams = {
   path?: "afterTurn" | "commitTurn";
   /** Gateway file 37: where a pour-off is told to the host; absent when the host does not count it. */
   announceCompaction?: AnnounceCompaction;
+  /**
+   * PLAN-krug Р1, шаг 7б: the engine's «догнать»; with it and the gateway's reader of the session's
+   * transcript (`runtimeContext.readSessionTranscript`) the turn is written by row ids.
+   */
+  catchUp?: SessionCatchUp;
   getClient: (agentId: string | undefined) => Promise<AfterTurnClient>;
   logger: ContextEngineLifecycleLogger;
   resolveAgentId: (sessionId: string, sessionKey?: string, ovSessionId?: string) => string;
@@ -234,7 +249,7 @@ export type AfterTurnOpenVikingSessionParams = {
   isBypassedSession: (params: { sessionId?: string; sessionKey?: string }) => boolean;
   diag: (stage: string, sessionId: string, data: Record<string, unknown>) => void;
   /** The proxy's price handle (PLAN-gorizont 4а): the pour-off by weight (4б) asks it. */
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
 };
 
 export function totalExtractedMemories(memories?: Record<string, number>): number {
@@ -441,6 +456,7 @@ export async function commitOpenVikingSession({
   logger,
   rememberSessionAgentId,
   isBypassedSession,
+  onArchived,
 }: CommitOpenVikingSessionParams): Promise<boolean> {
   const ovId = openClawSessionToOvStorageId(sessionId, sessionKey);
   if (isBypassedSession({ sessionId, sessionKey })) {
@@ -459,6 +475,7 @@ export async function commitOpenVikingSession({
     const commitResult = await client.commitSession(ovId, {
       wait: true,
       keepRecentCount: 0,
+      ...(onArchived ? { onArchived } : {}),
     });
     const memCount = totalExtractedMemories(commitResult.memories_extracted);
     if (commitResult.status === "failed") {
@@ -515,8 +532,29 @@ function isSessionNotFoundError(err: unknown): boolean {
  */
 const RECOVERY_ARCHIVE_PROBES = 8;
 
-/** `turnStamps`: the moments of the turns seen in the archive, each once, oldest first. */
-type ClosedArchive = { archiveId: string; overview: string; turnStamps: number[] };
+/**
+ * `index`: the archive's number; `turnStamps`: the moments of the turns seen in the archive, each once,
+ * oldest first.
+ */
+type ClosedArchive = { archiveId: string; index: number; overview: string; turnStamps: number[] };
+
+/**
+ * PLAN-krug 7в.7а: the summary the server's answer stands on and its archive's number. The server walks
+ * from the newest archive to the first whose summary stands -- closed, or failed or still at work with
+ * its summary written whole (PLAN-gorizont 3г, 3е) -- and hands the archives after it raw, counted in
+ * `unsummarizedArchives`; one by one it hands out only closed ones.
+ */
+type StandingSummary = { overview: string; archive: number };
+
+function standingSummaryOf(ctx: SessionContextResult): StandingSummary | undefined {
+  const overview = typeof ctx.latest_archive_overview === "string" ? ctx.latest_archive_overview.trim() : "";
+  const total = ctx.stats?.totalArchives;
+  if (!overview || typeof total !== "number") {
+    return undefined;
+  }
+  const waiting = ctx.stats?.unsummarizedArchives;
+  return { overview, archive: total - (typeof waiting === "number" ? waiting : 0) };
+}
 
 type RecoveryClient = Pick<OpenVikingClient, "getSessionArchive">;
 
@@ -563,6 +601,7 @@ async function findLastClosedArchive(
         .filter((moment): moment is number => moment !== undefined);
       return {
         archiveId,
+        index,
         overview,
         turnStamps: [...new Set(moments)].sort((left, right) => left - right),
       };
@@ -585,13 +624,19 @@ async function findLastClosedArchive(
  * of a turn BEFORE the one the archive ends in -- the latest such turn the live
  * transcript knows -- or -1 when that cannot be told.
  *
- * The plugin stamps every message of a turn with one moment, that of the turn's
- * last message (`pickLatestCreatedAt`), and the server hands it back as it got
- * it. The archive is cut by a count of messages (`keep_recent_count`), not by
+ * Older records stamp every message of a turn with one moment, that of the
+ * turn's last message (`pickLatestCreatedAt`), and the server hands it back as it
+ * got it. The archive is cut by a count of messages (`keep_recent_count`), not by
  * turns, so it may end in the middle of a turn -- and the stamp of its last
  * message then names a live message that comes AFTER the archive's end. Cutting
  * there would leave out what the archive never took. So the turn the archive
  * ends in is given whole, and the cut is made where the turn before it ended.
+ * Records written by the catch-up (PLAN-krug Р1) carry each message's own moment
+ * (a run of tool results, the newest of its rows): there the step back is one
+ * moment, and the moments go by time, not by place -- what is given again is the
+ * archive's last message, or none, or a few when its last message is not its
+ * newest by time; never less, the place is taken from the archive's own message
+ * (PLAN-krug 7в.7).
  *
  * The moment is matched exactly and the cut is made by place, not by time: a
  * message sent while the model was still answering stands later in the
@@ -760,7 +805,7 @@ async function chooseKeptTail(params: {
   pending: OVMessage[];
   window: number | undefined;
   runtimeSettings: unknown;
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
   cfg: PourOffConfig;
   logger: ContextEngineLifecycleLogger;
   ovSessionId: string;
@@ -776,7 +821,9 @@ async function chooseKeptTail(params: {
           if (known !== undefined) {
             return known;
           }
-          const verdict = await priceHandle.price(priceBodyOf(model, pending.slice(start)));
+          const verdict = await priceHandle.price(
+            await priceBodyOf(model, pending.slice(start), priceHandle.historyForModel),
+          );
           if (!verdict) {
             throw new NoWeightFromTheHandle(start);
           }
@@ -798,6 +845,17 @@ async function chooseKeptTail(params: {
     const all = await weigh(0);
     rest = Math.max(0, window - all);
     cap = Math.min(cfg.keepRecentTokens, Math.max(0, cfg.pourOffAtTokens - rest));
+    if (all <= cap && pending.length >= cfg.keepRecentFloor) {
+      // PLAN-krug 7в.Р2а (НР-3): all of it under the cap stays -- the search would ask the handle about
+      // shorter tails only to find the same; at every turn's end of a failed summary that is the usual case.
+      return {
+        chosen: { start: 0, weight: all, priced: true, asked: 1 },
+        cap,
+        rest,
+        model,
+        keepRecentCount: pending.length,
+      };
+    }
   }
 
   const chosen = await tailByWeight({
@@ -896,6 +954,15 @@ async function tailByWeight(params: {
   return start === null ? null : { start, weight: null, priced: false, asked: 0 };
 }
 
+/** The live messages in the cut window's form for weighing, or as they are when that breaks (as the window does). */
+function inProviderOrder(messages: AgentMessage[]): AgentMessage[] {
+  try {
+    return sanitizeAgentMessagesForProvider(messages);
+  } catch {
+    return messages;
+  }
+}
+
 /**
  * Assembly without a fresh summary (28.09.2026).
  *
@@ -907,6 +974,12 @@ async function tailByWeight(params: {
  * assembled instead from the summary of the last closed archive and everything
  * said after that archive ended, in order and without a gap; what still does not
  * fit is cut from the old end and counted.
+ *
+ * The summary the server's answer stands on (`standing`, PLAN-krug 7в.7а) may be
+ * newer than any closed archive: its archive failed or is still at work with the
+ * summary written whole. The window takes the newest summary in hand; the tail
+ * still begins where the last closed archive ended -- not after the summary's
+ * end, so more is given again, nothing is left out.
  *
  * The messages after the archive are taken from the live transcript, not from
  * the server: the server will not hand out the messages of a failed archive, and
@@ -929,10 +1002,11 @@ async function assembleWithoutFreshSummary(params: {
   tokenBudget: number;
   keepRecentTokens: number;
   keepRecentFloor: number;
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
   runtimeSettings?: unknown;
   client?: RecoveryClient;
   totalArchives?: number;
+  standing?: StandingSummary;
   extra?: Record<string, unknown>;
 }): Promise<AssembleOpenVikingSessionResult> {
   const { diag, logger, roughEstimate, ovSessionId, reason, liveMessages, originalTokens, tokenBudget, extra } =
@@ -944,13 +1018,13 @@ async function assembleWithoutFreshSummary(params: {
     return assemblePassthrough({ diag, ovSessionId, reason, liveMessages, originalTokens, extra });
   }
   const model = modelOf(params.runtimeSettings);
+  const handle = params.priceHandle;
+  // PLAN-krug 7в.5: weighed in the form the window goes in, as the model will see it (the gateway's view).
   const weighLive =
-    params.priceHandle && model
+    handle && model
       ? async (messages: AgentMessage[]) => {
-          const verdict = await params.priceHandle!.price({
-            model,
-            messages: priceMessagesOf(messages),
-          });
+          const seen = handle.historyForModel ? await handle.historyForModel(messages) : messages;
+          const verdict = await handle.price({ model, messages: priceMessagesOf(seen) });
           return verdict ? verdict.charge : null;
         }
       : null;
@@ -976,9 +1050,14 @@ async function assembleWithoutFreshSummary(params: {
     }
   }
 
-  const instruction = archive ? buildInstructionPrompt() : { text: "", tokens: 0 };
+  // An archive found closed at or after the standing summary's is that archive, or one closed since the
+  // answer: its own summary and its own boundary, with no gap between them.
+  const standing =
+    params.standing && !(archive && archive.index >= params.standing.archive) ? params.standing : undefined;
+  const overview = standing ? standing.overview : archive?.overview;
+  const instruction = overview ? buildInstructionPrompt() : { text: "", tokens: 0 };
   const budgets = allocateContextBudget(tokenBudget, instruction.tokens);
-  const summary = buildArchiveMemory(archive?.overview, [], budgets.archiveMemory, roughEstimate);
+  const summary = buildArchiveMemory(overview, [], budgets.archiveMemory, roughEstimate);
 
   const boundary = archive ? boundaryBeforeArchiveEnd(liveMessages, archive.turnStamps) : -1;
   const boundaryFound = boundary >= 0;
@@ -988,9 +1067,10 @@ async function assembleWithoutFreshSummary(params: {
   // The tail by weight (PLAN-gorizont 4б): the live part of the window is never
   // heavier than K by the handle, whole turns, never fewer than the floor. The
   // estimate of characters cut here before; it is not in the counter's units.
+  // The cut window is put in order for the provider (below); a tail is weighed in that form.
   const weigh = weighLive
     ? async (start: number): Promise<number> => {
-        const weight = await weighLive(tail.slice(start));
+        const weight = await weighLive(inProviderOrder(tail.slice(start)));
         if (weight === null) {
           throw new NoWeightFromTheHandle(start);
         }
@@ -1021,7 +1101,7 @@ async function assembleWithoutFreshSummary(params: {
     chosen = await tailByWeight({ ...tailCut, weigh: null });
   }
   let kept = chosen ? tail.slice(chosen.start) : tail.slice();
-  if (!archive) {
+  if (!overview) {
     // Nothing stands before the tail, so it has to open with the user's turn.
     const firstUser = kept.findIndex((message) => message?.role === "user");
     kept = firstUser >= 0 ? kept.slice(firstUser) : [];
@@ -1044,10 +1124,16 @@ async function assembleWithoutFreshSummary(params: {
   logger.warn?.(
     `openviking: no fresh summary for session=${ovSessionId} (${reason}): the transcript is ` +
       `${originalTokens} tokens against a budget of ${tokenBudget}, so it was assembled from ` +
-      `${archive ? `the summary of ${archive.archiveId}` : "no summary (no closed archive in reach)"} ` +
+      `${
+        standing
+          ? "the summary the server's answer stands on"
+          : archive
+            ? `the summary of ${archive.archiveId}`
+            : "no summary (no closed archive in reach)"
+      } ` +
       `and ${kept.length} live messages` +
-      (boundaryFound
-        ? " from the turn the archive ends in"
+      (archive && boundaryFound
+        ? ` from the turn ${archive.archiveId} ends in`
         : " by budget, where the archive ends could not be told") +
       (droppedMessages > 0
         ? `; dropped ${droppedMessages} oldest ${chosen?.priced ? `above ${keepRecentTokens} by the counter` : "beyond the floor, unweighed"}`
@@ -1058,6 +1144,7 @@ async function assembleWithoutFreshSummary(params: {
     passthrough: false,
     recovered: true,
     reason,
+    summaryFrom: standing ? "context" : archive ? "archive" : null,
     archiveId: archive?.archiveId ?? null,
     boundaryFound,
     ...(search ? { boundary: search } : {}),
@@ -1083,6 +1170,9 @@ async function assembleWithoutFreshSummary(params: {
     messages,
     estimatedTokens,
     ...(instruction.text ? { systemPromptAddition: instruction.text } : {}),
+    // PLAN-krug 7в.3в: partial only when old messages were cut -- a summary and the whole tail after the
+    // archive leave nothing out of the model's sight (the engine says "whole" then).
+    ...(droppedMessages > 0 ? { contextWindow: "partial" as const } : {}),
   };
 }
 
@@ -1100,6 +1190,26 @@ const summaryHoldGivenUp = new Set<string>();
  */
 const pourDue = new Map<string, number>();
 
+/**
+ * PLAN-krug 7в.Р2а: the sessions whose newest archive failed before its summary was written, as the
+ * main assembly last saw them. Their window is cut to K by the fallback path and never reaches X, so
+ * the end of their turn pours below X: the server rolls a failed archive into the next one's summary.
+ * Process memory: after a restart the next assembly marks the session again.
+ */
+const summaryFailedSessions = new Set<string>();
+
+/** Archives, no summary in the answer and none waiting for one: the newest archive's summary failed. */
+function newestSummaryFailed(ctx: SessionContextResult | null | undefined): boolean {
+  const total = ctx?.stats?.totalArchives;
+  return (
+    !!ctx &&
+    typeof total === "number" &&
+    total > 0 &&
+    ctx.stats?.unsummarizedArchives === 0 &&
+    standingSummaryOf(ctx) === undefined
+  );
+}
+
 const DEFAULT_HOLD_FOR_SUMMARY_SECONDS = 600;
 /** The pause between questions to the price handle while the turn is held (Вит, 11.10). */
 const POUR_RETRY_PAUSE_MS = 10_000;
@@ -1116,8 +1226,9 @@ function holdSecondsOf(cfg: any): number {
  * 4д). The server hands the archive's messages out raw until then, and a turn on them
  * runs at the ceiling. While the turn is held the host is told, so the clients see the
  * host's own picture of compaction (file 35 of the gateway). The limit run out: the
- * turn goes on as it was, and the session is not held again until that summary
- * stands. Returns the context to assemble from: read again once the summary stands.
+ * turn's window is assembled by the fallback path while archives wait for their summary
+ * (PLAN-krug 7в.2), and the session is not held again until that summary stands.
+ * Returns the context to assemble from: read again after any wait, the summary stood or not.
  */
 async function holdForSummary(params: {
   ctx: SessionContextResult | null | undefined;
@@ -1165,18 +1276,59 @@ async function holdForSummary(params: {
     holdSeconds,
   });
   if (!stands) {
-    summaryHoldGivenUp.add(ovSessionId);
+    // PLAN-krug 7в.7б: the answer read before the wait is as old as the hold; the window goes by the
+    // server's answer as it stands now -- a summary that stood meanwhile is in it. A server that does
+    // not answer now leaves the answer from before the wait, with the summary that stood then.
+    let now = ctx;
+    try {
+      now = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+    } catch (err) {
+      logger.warn?.(
+        `openviking: assemble session=${ovSessionId}: the context could not be read again after the hold ` +
+          `(${String(err)}); going on by the answer read before it`,
+      );
+    }
+    // Not held again only while archives wait by that answer: nothing waiting (the summary failed after
+    // the limit, and the turn's end pours, PLAN-krug 7в.Р2а), the next pour's summary is waited for again.
+    const stillWaiting = now?.stats?.unsummarizedArchives;
+    if (typeof stillWaiting === "number" && stillWaiting > 0) {
+      summaryHoldGivenUp.add(ovSessionId);
+    }
     logger.warn?.(
       `openviking: assemble session=${ovSessionId}: the summary did not stand within ${holdSeconds} s ` +
-        `(${wait.polls} polls); going on with the raw messages, and not holding again until it stands`,
+        `(${wait.polls} polls); going on by the answer read now (the fallback path while archives wait), ` +
+        "and not holding again until it stands",
     );
-    return ctx;
+    return now;
   }
   logger.info(
     `openviking: assemble session=${ovSessionId}: the summary stands after ${waitedMs} ms (${wait.polls} polls); ` +
       "reading the context again",
   );
-  return await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+  try {
+    return await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+  } catch (err) {
+    // PLAN-krug 7в.7г: a passing error must not cost the turn its summary. The answer from before the wait
+    // still names the archives (waiting), so the window goes by the fallback path with the summary it stands on.
+    logger.warn?.(
+      `openviking: assemble session=${ovSessionId}: the summary stood, but the context could not be read again ` +
+        `(${String(err)}); going on by the answer read before the wait`,
+    );
+    return ctx;
+  }
+}
+
+/**
+ * PLAN-krug 7в.7г: a pour-off made at the start of the turn, and the server's answer after it not read. The
+ * answer from before the pour still names the summary it stands on; the archive the pour made waits for one.
+ */
+class PourMadeAnswerUnread extends Error {
+  readonly answer: SessionContextResult;
+  constructor(answer: SessionContextResult, cause: unknown) {
+    super(`the context could not be read again after the pour-off: ${String(cause)}`);
+    this.name = "PourMadeAnswerUnread";
+    this.answer = answer;
+  }
 }
 
 /**
@@ -1201,7 +1353,7 @@ async function settleWindow(params: {
   pollIntervalMs: number;
   pourRetryPauseMs: number;
   runtimeSettings: unknown;
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
 }): Promise<SessionContextResult | null | undefined> {
   const { client, ovSessionId, cfg, logger, diag, announceCompaction } = params;
   const due = pourDue.get(ovSessionId);
@@ -1247,100 +1399,119 @@ async function settleWindow(params: {
   const started = Date.now();
   const deadline = started + holdSeconds * 1000;
   let attempts = 0;
-  let outcome: "poured" | "gave_up" | "nothing_to_pour" | "pending_elsewhere" = "gave_up";
-  for (;;) {
-    const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
-    const waiting = ctx?.stats?.unsummarizedArchives;
-    if (typeof waiting === "number" && waiting > 0) {
-      // Poured meanwhile by another path of the host: nothing is due; the summary is
-      // waited for below.
-      pourDue.delete(ovSessionId);
-      outcome = "pending_elsewhere";
-      break;
-    }
-    const pending = ctx?.messages ?? [];
-    attempts += 1;
-    let kept: KeptTail;
-    try {
-      kept = await chooseKeptTail({
-        pending,
-        window: due,
-        runtimeSettings: params.runtimeSettings,
-        priceHandle: params.priceHandle,
-        cfg,
-        logger,
-        ovSessionId,
-        doing: "pouring (held turn)",
-      });
-    } catch (trouble) {
-      if (!(trouble instanceof NoWeightFromTheHandle)) {
-        throw trouble;
-      }
-      if (Date.now() >= deadline) {
-        outcome = "gave_up";
+  let outcome: "poured" | "gave_up" | "nothing_to_pour" | "pending_elsewhere" | "broke" = "gave_up";
+  // PLAN-krug 7в.7г: the server's trouble in the middle of the held pour must not leave the host's line
+  // hanging, nor cost the turn its window while an answer is in hand; the pour stays due.
+  let answered: SessionContextResult | null | undefined;
+  let broke: unknown;
+  try {
+    for (;;) {
+      const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+      answered = ctx;
+      const waiting = ctx?.stats?.unsummarizedArchives;
+      if (typeof waiting === "number" && waiting > 0) {
+        // Poured meanwhile by another path of the host: nothing is due; the summary is
+        // waited for below.
+        pourDue.delete(ovSessionId);
+        outcome = "pending_elsewhere";
         break;
       }
-      diag("pour_hold_retry", ovSessionId, {
-        attempts,
-        failedTail: trouble.tail,
-        pauseMs: params.pourRetryPauseMs,
+      const pending = ctx?.messages ?? [];
+      attempts += 1;
+      let kept: KeptTail;
+      try {
+        kept = await chooseKeptTail({
+          pending,
+          window: due,
+          runtimeSettings: params.runtimeSettings,
+          priceHandle: params.priceHandle,
+          cfg,
+          logger,
+          ovSessionId,
+          doing: "pouring (held turn)",
+        });
+      } catch (trouble) {
+        if (!(trouble instanceof NoWeightFromTheHandle)) {
+          throw trouble;
+        }
+        if (Date.now() >= deadline) {
+          outcome = "gave_up";
+          break;
+        }
+        diag("pour_hold_retry", ovSessionId, {
+          attempts,
+          failedTail: trouble.tail,
+          pauseMs: params.pourRetryPauseMs,
+        });
+        await sleep(params.pourRetryPauseMs);
+        continue;
+      }
+      if (!kept.chosen || kept.chosen.start === 0) {
+        pourDue.delete(ovSessionId);
+        outcome = "nothing_to_pour";
+        logger.warn?.(
+          `openviking: session=${ovSessionId}: the pour-off put off at the end of the last turn finds ` +
+            `nothing to pour now (${pending.length} messages on the server)`,
+        );
+        break;
+      }
+      const commitResult = await client.commitSession(ovSessionId, {
+        wait: false,
+        keepRecentCount: kept.keepRecentCount,
       });
-      await sleep(params.pourRetryPauseMs);
-      continue;
-    }
-    if (!kept.chosen || kept.chosen.start === 0) {
       pourDue.delete(ovSessionId);
-      outcome = "nothing_to_pour";
-      logger.warn?.(
-        `openviking: session=${ovSessionId}: the pour-off put off at the end of the last turn finds ` +
-          `nothing to pour now (${pending.length} messages on the server)`,
+      const windowAfter =
+        kept.rest !== null && kept.chosen.weight !== null ? kept.rest + kept.chosen.weight : null;
+      logger.info(
+        `openviking: poured session=${ovSessionId} at the start of the turn: window ${due} by the counter, ` +
+          `kept ${kept.keepRecentCount} newest messages` +
+          (kept.chosen.weight !== null ? ` weighing ${kept.chosen.weight}` : " by the floor, unweighed") +
+          ` under ${kept.cap}, archiving ${kept.chosen.start}; ` +
+          `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
+          `task_id=${commitResult.task_id ?? "none"}`,
       );
+      diag("pour_off", ovSessionId, {
+        path: "assemble",
+        window: due,
+        pourOffAtTokens: cfg.pourOffAtTokens,
+        keepRecentTokens: cfg.keepRecentTokens,
+        keepRecentFloor: cfg.keepRecentFloor,
+        rest: kept.rest,
+        cap: kept.cap,
+        model: kept.model ?? null,
+        priced: kept.chosen.priced,
+        priceAsked: kept.chosen.asked,
+        pendingMessages: pending.length,
+        keptMessages: kept.keepRecentCount,
+        keptWeight: kept.chosen.weight,
+        archivedMessages: kept.chosen.start,
+        windowAfter,
+        status: commitResult.status,
+        archived: commitResult.archived ?? false,
+        taskId: commitResult.task_id ?? null,
+        attempts,
+      });
+      if (commitResult.archived === true) {
+        pourFacts = { compacted: true, ...(windowAfter !== null ? { tokensAfter: windowAfter } : {}) };
+      }
+      if (commitResult.task_id) {
+        void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId, params.pollIntervalMs);
+      }
+      outcome = "poured";
       break;
     }
-    const commitResult = await client.commitSession(ovSessionId, {
-      wait: false,
-      keepRecentCount: kept.keepRecentCount,
-    });
-    pourDue.delete(ovSessionId);
-    const windowAfter =
-      kept.rest !== null && kept.chosen.weight !== null ? kept.rest + kept.chosen.weight : null;
-    logger.info(
-      `openviking: poured session=${ovSessionId} at the start of the turn: window ${due} by the counter, ` +
-        `kept ${kept.keepRecentCount} newest messages` +
-        (kept.chosen.weight !== null ? ` weighing ${kept.chosen.weight}` : " by the floor, unweighed") +
-        ` under ${kept.cap}, archiving ${kept.chosen.start}; ` +
-        `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
-        `task_id=${commitResult.task_id ?? "none"}`,
+  } catch (err) {
+    if (answered === undefined) {
+      // Not one answer read: as a failed first read of the assembly -- the assembly fails, the line ends.
+      announce("end", { completed: false });
+      throw err;
+    }
+    outcome = "broke";
+    broke = err;
+    logger.warn?.(
+      `openviking: session=${ovSessionId}: the pour-off put off at the end of the last turn broke ` +
+        `(${String(err)}); the turn goes on, and the pour-off is due again at the next turn`,
     );
-    diag("pour_off", ovSessionId, {
-      path: "assemble",
-      window: due,
-      pourOffAtTokens: cfg.pourOffAtTokens,
-      keepRecentTokens: cfg.keepRecentTokens,
-      keepRecentFloor: cfg.keepRecentFloor,
-      rest: kept.rest,
-      cap: kept.cap,
-      model: kept.model ?? null,
-      priced: kept.chosen.priced,
-      priceAsked: kept.chosen.asked,
-      pendingMessages: pending.length,
-      keptMessages: kept.keepRecentCount,
-      keptWeight: kept.chosen.weight,
-      archivedMessages: kept.chosen.start,
-      windowAfter,
-      status: commitResult.status,
-      archived: commitResult.archived ?? false,
-      taskId: commitResult.task_id ?? null,
-      attempts,
-    });
-    if (commitResult.archived === true) {
-      pourFacts = { compacted: true, ...(windowAfter !== null ? { tokensAfter: windowAfter } : {}) };
-    }
-    if (commitResult.task_id) {
-      void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId, params.pollIntervalMs);
-    }
-    outcome = "poured";
-    break;
   }
   diag("pour_hold", ovSessionId, {
     outcome,
@@ -1348,6 +1519,7 @@ async function settleWindow(params: {
     waitedMs: Date.now() - started,
     window: due,
     holdSeconds,
+    ...(broke !== undefined ? { error: String(broke) } : {}),
   });
   if (outcome === "gave_up") {
     logger.warn?.(
@@ -1356,7 +1528,27 @@ async function settleWindow(params: {
         "the request exactly and refuses what does not fit -- and the pour-off is due again at the next turn",
     );
   }
-  const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+  let ctx = answered;
+  try {
+    ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+  } catch (err) {
+    if (outcome === "poured") {
+      // The answer from before a pour that was made holds the whole window the pour took away: the window
+      // goes by the fallback path with its summary (the assembly's catch); the host hears the pour made.
+      announce("end", { completed: true });
+      throw answered ? new PourMadeAnswerUnread(answered, err) : err;
+    }
+    logger.warn?.(
+      `openviking: assemble session=${ovSessionId}: the context could not be read again after the held ` +
+        `pour-off (${String(err)}); going on by the answer read during it`,
+    );
+  }
+  const waitingNow = ctx?.stats?.unsummarizedArchives;
+  if (outcome === "broke" && typeof waitingNow === "number" && waitingNow > 0) {
+    // The pour landed though the server answered with an error (or another path poured): an archive waits
+    // for its summary, and the weight the pour was due by is gone -- not due again.
+    pourDue.delete(ovSessionId);
+  }
   const settled = await holdForSummary({
     ctx,
     client,
@@ -1368,7 +1560,7 @@ async function settleWindow(params: {
     pollIntervalMs: params.pollIntervalMs,
   });
   if (announced) {
-    announce("end", { completed: outcome !== "gave_up" });
+    announce("end", { completed: outcome !== "gave_up" && outcome !== "broke" });
   }
   return settled;
 }
@@ -1399,6 +1591,7 @@ export async function assembleOpenVikingSession({
   announceCompaction,
   pollIntervalMs = PHASE2_POLL_INTERVAL_MS,
   pourRetryPauseMs = POUR_RETRY_PAUSE_MS,
+  catchUp,
 }: AssembleOpenVikingSessionParams): Promise<AssembleOpenVikingSessionResult> {
   const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
   const sender = extractRuntimeSenderId(runtimeContext);
@@ -1532,21 +1725,137 @@ export async function assembleOpenVikingSession({
   }
 
   try {
-    const client = await getClient(
-      resolveAgentId(sessionId ?? sessionKey ?? ovSessionId, sessionKey, ovSessionId),
-    );
-    const ctx = await settleWindow({
-      client,
-      ovSessionId,
-      cfg,
-      logger,
-      diag,
-      announceCompaction,
-      pollIntervalMs,
-      pourRetryPauseMs,
-      runtimeSettings,
-      priceHandle,
-    });
+    const agentId = resolveAgentId(sessionId ?? sessionKey ?? ovSessionId, sessionKey, ovSessionId);
+    const client = await getClient(agentId);
+    let ctx: SessionContextResult | null | undefined;
+    try {
+      ctx = await settleWindow({
+        client,
+        ovSessionId,
+        cfg,
+        logger,
+        diag,
+        announceCompaction,
+        pollIntervalMs,
+        pourRetryPauseMs,
+        runtimeSettings,
+        priceHandle,
+      });
+    } catch (err) {
+      if (!(err instanceof PourMadeAnswerUnread)) {
+        throw err;
+      }
+      logger.warn?.(
+        `openviking: assemble session=${ovSessionId}: ${err.message}; this turn's window is built from the ` +
+          "live transcript, the archive the pour-off made waiting for its summary",
+      );
+      return await assembleWithoutFreshSummary({
+        ...recoveryBits,
+        diag,
+        logger,
+        roughEstimate,
+        ovSessionId,
+        reason: "pour_reread_failed",
+        liveMessages: messages,
+        originalTokens,
+        tokenBudget,
+        client,
+        totalArchives: err.answer.stats?.totalArchives,
+        standing: standingSummaryOf(err.answer),
+        extra: { error: err.message },
+      });
+    }
+    if (ctx) {
+      if (newestSummaryFailed(ctx)) {
+        summaryFailedSessions.add(ovSessionId);
+      } else {
+        summaryFailedSessions.delete(ovSessionId);
+      }
+    }
+    // PLAN-krug Р1, шаг 7б: rows the gateway holds and Viking does not (a turn whose write at its end
+    // failed, or that closed without the queue) are caught up before the window is built, checked
+    // against the live messages just read; the window is read again only when any went in.
+    // Nothing is written with autoCapture off (PLAN-krug П10), as the turn's end does not write.
+    const reader = catchUp && cfg?.autoCapture !== false ? transcriptReaderOf(runtimeContext) : undefined;
+    // Viking holds every row of the branch before the current question once the catch-up wrote here.
+    let caughtUp = false;
+    if (catchUp && reader && ctx) {
+      const senderRoleId = toRoleId(sender.senderId);
+      let outcome: CatchUpOutcome | { kind: "failed"; error: string };
+      try {
+        outcome = await catchUp({
+          client,
+          ovSessionId,
+          reader,
+          holdTrailingQuestion: false,
+          memory: "fenced",
+          remainder: { messages: ctx.messages, totalArchives: ctx.stats?.totalArchives },
+          peerIdOf: (role) =>
+            resolveOpenVikingMessagePeerId({
+              peerRole: cfg.peer_role ?? "assistant",
+              role,
+              personPeerId: senderRoleId,
+              assistantPeerId: agentId,
+            }),
+          logger,
+        });
+      } catch (err) {
+        outcome = { kind: "failed", error: String(err) };
+      }
+      diag("assemble_catch_up", ovSessionId, outcome);
+      // PLAN-krug Р1, Р2(а), П6': Viking may lack rows the gateway holds -- this turn's window is
+      // built by the fallback path (the last archive's summary and the live tail), said loudly.
+      if (outcome.kind !== "wrote") {
+        logger.warn?.(
+          `openviking: assemble session=${ovSessionId}: catch-up did not complete (${outcome.kind}); ` +
+            "this turn's window is built from the live transcript",
+        );
+        return await assembleWithoutFreshSummary({
+          ...recoveryBits,
+          diag,
+          logger,
+          roughEstimate,
+          ovSessionId,
+          reason: `catch_up_${outcome.kind}`,
+          liveMessages: messages,
+          originalTokens,
+          tokenBudget,
+          client,
+          totalArchives: ctx.stats?.totalArchives,
+          standing: standingSummaryOf(ctx),
+          extra: { catchUp: outcome },
+        });
+      }
+      caughtUp = true;
+      if (outcome.written > 0) {
+        const before = ctx;
+        try {
+          ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+        } catch (err) {
+          // PLAN-krug 7в.7г: the rows are written and the answer in hand is from before them; the live transcript
+          // holds them all -- the window goes as when the catch-up did not complete, with that answer's summary.
+          logger.warn?.(
+            `openviking: assemble session=${ovSessionId}: the catch-up wrote ${outcome.written} rows, but the ` +
+              `context could not be read again (${String(err)}); this turn's window is built from the live transcript`,
+          );
+          return await assembleWithoutFreshSummary({
+            ...recoveryBits,
+            diag,
+            logger,
+            roughEstimate,
+            ovSessionId,
+            reason: "catch_up_reread_failed",
+            liveMessages: messages,
+            originalTokens,
+            tokenBudget,
+            client,
+            totalArchives: before.stats?.totalArchives,
+            standing: standingSummaryOf(before),
+            extra: { catchUp: outcome, error: String(err) },
+          });
+        }
+      }
+    }
 
     const preAbstracts = ctx?.pre_archive_abstracts ?? [];
     const hasArchives = !!ctx?.latest_archive_overview || preAbstracts.length > 0;
@@ -1568,7 +1877,35 @@ export async function assembleOpenVikingSession({
         extra: { archiveCount: 0, activeCount: 0 },
       });
     }
-    if (!hasArchives && ctx.messages.length < messages.length) {
+    // PLAN-krug 7в.2 (Р2): the path by what the server says, not by counting messages of two forms (a
+    // tool round is one message in Viking, several in the gateway). Archives without the newest one's
+    // summary (the 28.09 storm), or archives still waiting for theirs after the hold, go by the fallback
+    // path; otherwise the window is Viking's own.
+    const totalArchives = ctx.stats?.totalArchives;
+    const waitingSummaries = ctx.stats?.unsummarizedArchives;
+    if (
+      (typeof totalArchives === "number" && totalArchives > 0 && !ctx.latest_archive_overview) ||
+      (typeof waitingSummaries === "number" && waitingSummaries > 0)
+    ) {
+      return await assembleWithoutFreshSummary({
+        ...recoveryBits,
+        diag,
+        logger,
+        roughEstimate,
+        ovSessionId,
+        reason: "no_fresh_summary",
+        liveMessages: messages,
+        originalTokens,
+        tokenBudget,
+        client,
+        totalArchives,
+        standing: standingSummaryOf(ctx),
+        extra: { archiveCount: totalArchives ?? 0, activeCount, unsummarizedArchives: waitingSummaries ?? null },
+      });
+    }
+    // Where no catch-up ran here (an older gateway hands no reader; autoCapture off) Viking may lag
+    // behind the gateway, and the count is all there is to go by, as before.
+    if (!caughtUp && !hasArchives && ctx.messages.length < messages.length) {
       return await assembleWithoutFreshSummary({
         ...recoveryBits,
         diag,
@@ -1694,14 +2031,6 @@ export async function assembleOpenVikingSession({
   }
 }
 
-function normalizeTimestamp(value: unknown): string | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const timestampMs = Math.abs(value) < 100_000_000_000 ? value * 1000 : value;
-    return new Date(timestampMs).toISOString();
-  }
-  return undefined;
-}
-
 function pickLatestCreatedAt(messages: AgentMessage[]): string | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i] as Record<string, unknown>;
@@ -1741,41 +2070,6 @@ function extractRuntimeAgentId(runtimeContext: Record<string, unknown> | undefin
   return typeof agentId === "string" && agentId.trim() ? agentId.trim() : undefined;
 }
 
-function isToolOnlyMessage(msg: ExtractedTurnMessage): boolean {
-  return msg.role === "assistant" && msg.parts.length > 0 && msg.parts.every((part) => part.type === "tool");
-}
-
-function coalesceConsecutiveToolMessages(messages: ExtractedTurnMessage[]): ExtractedTurnMessage[] {
-  const result: ExtractedTurnMessage[] = [];
-  let pendingTools: ExtractedTurnMessage | undefined;
-
-  const flush = () => {
-    if (pendingTools) {
-      result.push(pendingTools);
-      pendingTools = undefined;
-    }
-  };
-
-  for (const msg of messages) {
-    if (isToolOnlyMessage(msg)) {
-      if (!pendingTools) {
-        pendingTools = { role: "assistant", parts: [] };
-      }
-      pendingTools.parts.push(...msg.parts);
-      continue;
-    }
-    flush();
-    // An empty message is the start of a round of tool results (a tool call without
-    // text, text-utils): a boundary only, nothing to keep.
-    if (msg.parts.length === 0) {
-      continue;
-    }
-    result.push(msg);
-  }
-  flush();
-  return result;
-}
-
 function messageDigest(messages: AgentMessage[], maxCharsPerMsg = 2000): Array<{role: string; content: string; tokens: number; truncated: boolean}> {
   return messages.map((msg) => {
     const m = msg as Record<string, unknown>;
@@ -1802,38 +2096,6 @@ function messageDigest(messages: AgentMessage[], maxCharsPerMsg = 2000): Array<{
       content: truncated ? text.slice(0, maxCharsPerMsg) + "..." : text,
       tokens: estimateAgentMessageTokens(msg),
       truncated,
-    };
-  });
-}
-
-type RecordedOvPart =
-  | { type: "text"; text: string }
-  | {
-      type: "tool";
-      tool_id?: string;
-      tool_name?: string;
-      tool_input?: Record<string, unknown>;
-      tool_output?: string;
-      tool_status?: string;
-    };
-
-/** The parts of one extracted message as the server stores them. */
-function toOvParts(msg: ExtractedTurnMessage): RecordedOvPart[] {
-  return msg.parts.map((part) => {
-    if (part.type === "text") {
-      const cleaned = part.text
-        .replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-      return { type: "text" as const, text: cleaned };
-    }
-    return {
-      type: "tool" as const,
-      tool_id: part.toolCallId,
-      tool_name: part.toolName,
-      tool_input: part.toolInput,
-      tool_output: part.toolOutput,
-      tool_status: part.toolStatus,
     };
   });
 }
@@ -1889,6 +2151,9 @@ function recordedPrefixLength(
   return 0;
 }
 
+// One warning a process: an older gateway hands no reader on any turn.
+let warnedOfNoTranscriptReader = false;
+
 export async function afterTurnOpenVikingSession({
   sessionId,
   sessionKey,
@@ -1908,6 +2173,7 @@ export async function afterTurnOpenVikingSession({
   pollIntervalMs,
   path = "afterTurn",
   announceCompaction,
+  catchUp,
 }: AfterTurnOpenVikingSessionParams): Promise<void> {
   if (!cfg.autoCapture) {
     return;
@@ -1917,6 +2183,9 @@ export async function afterTurnOpenVikingSession({
     return;
   }
 
+  // PLAN-krug 7в.3а-2: once the pour-off has started for the host, every way out of this call -- a skip,
+  // a throw -- tells it the end; only a written archive is a finished compaction.
+  let endPour: ((info: { completed: boolean; tokensAfter?: number }) => void) | undefined;
   try {
     const sender = extractRuntimeSenderId(runtimeContext);
     const ovSessionId = openClawSessionToOvStorageId(sessionId, sessionKey);
@@ -1942,109 +2211,181 @@ export async function afterTurnOpenVikingSession({
       return;
     }
 
-    const messages = rawMessages ?? [];
-    if (messages.length === 0) {
-      diag("afterTurn_skip", ovSessionId, {
-        reason: "no_messages",
-        totalMessages: 0,
-        senderIdFound: sender.found,
-        senderId: sender.senderId ?? null,
-      });
-      return;
-    }
-
-    const start =
-      typeof prePromptMessageCount === "number" && prePromptMessageCount >= 0
-        ? prePromptMessageCount
-        : 0;
-
-    const { messages: extractedMessagesRaw, newCount } = extractNewTurnMessages(messages, start);
-    const extractedMessages = coalesceConsecutiveToolMessages(extractedMessagesRaw);
-
-    if (extractedMessages.length === 0) {
-      diag("afterTurn_skip", ovSessionId, {
-        reason: "no_new_turn_messages",
-        totalMessages: messages.length,
-        prePromptMessageCount: start,
-        senderIdFound: sender.found,
-        senderId: sender.senderId ?? null,
-      });
-      return;
-    }
-
-    const turnMessages = messages.slice(start) as AgentMessage[];
-    const newMessages = turnMessages.filter((m: AgentMessage) => {
-      const role = (m as Record<string, unknown>).role as string;
-      return role === "user" || role === "assistant";
-    }) as AgentMessage[];
-    const newMsgFull = messageDigest(newMessages);
-    const newTurnTokens = newMsgFull.reduce((sum, digest) => sum + digest.tokens, 0);
-
-    const promptCache = runtimeContext?.promptCache as
-      | { lastCallUsage?: Record<string, unknown>; retention?: string }
-      | undefined;
-    diag("afterTurn_entry", ovSessionId, {
-      totalMessages: messages.length,
-      newMessageCount: newCount,
-      prePromptMessageCount: start,
-      newTurnTokens,
-      senderIdFound: sender.found,
-      senderId: sender.senderId ?? null,
-      // What the host hands on for the pour-off by X (PLAN-gorizont 4б): the
-      // window's weight, the budget, the last call's usage, and the model.
-      window: runtimeContext?.currentTokenCount ?? null,
-      hostTokenBudget: runtimeContext?.tokenBudget ?? null,
-      lastCallUsage: promptCache?.lastCallUsage ?? null,
-      runtimeContextKeys: Object.keys(runtimeContext ?? {}),
-      model: modelOf(runtimeSettings) ?? null,
-      messages: newMsgFull,
-    });
-
-    const client = await getClient(agentId);
-    const createdAt = pickLatestCreatedAt(turnMessages);
-    const senderRoleId = toRoleId(sender.senderId);
-    const toRecord = extractedMessages
-      .map((msg) => ({ role: msg.role, parts: toOvParts(msg) }))
-      .filter((msg) => msg.parts.length > 0);
-
-    // The queue hands the closed turn whole, and its beginning -- the question,
-    // then the tool results -- is what the loop hook recorded already, message by
-    // message, as the server's newest messages. That beginning is skipped: the
-    // truth is the server's tail, not this process's memory, so a restart or a
-    // replayed commit does not double it either. A server that gives no tail is
-    // warned about and the turn is recorded whole: a repeat costs less than a loss.
-    let skipped = 0;
-    if (path === "commitTurn" && toRecord.length > 0) {
-      try {
-        const tail = (await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET)).messages ?? [];
-        skipped = recordedPrefixLength(toRecord, tail);
-      } catch (err) {
-        logger.warn?.(
-          `openviking: could not read the server's tail for session=${ovSessionId} before recording the turn ` +
-            `(${String(err)}); recording it whole`,
-        );
-      }
-      diag("afterTurn_dedupe", ovSessionId, {
-        path,
-        skipped,
-        recorded: toRecord.length - skipped,
-      });
-    }
-
-    for (const msg of toRecord.slice(skipped)) {
-      await client.addSessionMessage(
+    // PLAN-krug Р1, шаг 7б: with the gateway's reader of this session's transcript the rows Viking
+    // does not hold yet are written by their ids; without it (an older gateway) the turn is recorded
+    // the old way, guessed by the server's tail.
+    const reader = catchUp ? transcriptReaderOf(runtimeContext) : undefined;
+    let client: AfterTurnClient;
+    if (catchUp && reader) {
+      client = await getClient(agentId);
+      const senderRoleId = toRoleId(sender.senderId);
+      // The same journal as the old way (inventory З7).
+      const entryMessages = rawMessages ?? [];
+      const entryStart =
+        typeof prePromptMessageCount === "number" && prePromptMessageCount >= 0 ? prePromptMessageCount : 0;
+      diag(
+        "afterTurn_entry",
         ovSessionId,
-        msg.role,
-        msg.parts,
-        undefined,
-        createdAt,
-        resolveOpenVikingMessagePeerId({
-          peerRole: cfg.peer_role ?? "assistant",
-          role: msg.role,
-          personPeerId: senderRoleId,
-          assistantPeerId: agentId,
+        afterTurnEntryData({
+          messages: entryMessages,
+          start: entryStart,
+          newCount: extractNewTurnMessages(entryMessages, entryStart).newCount,
+          sender,
+          runtimeContext,
+          runtimeSettings,
         }),
       );
+      // PLAN-krug П6': a failed catch-up is said and does not cancel the pour-off check below.
+      try {
+        const outcome = await catchUp({
+          client,
+          ovSessionId,
+          reader,
+          // A lone question at the branch's end waits on every path that reads past the turn (PLAN-krug
+          // 7в.4, Н2): mid-turn it is the running turn's; read from the queue at a turn's start or in the
+          // background it may be the next turn's own, which comes as the prompt. The next assemble's fenced
+          // read writes a question whose turn ended unanswered.
+          holdTrailingQuestion: true,
+          memory: "open",
+          peerIdOf: (role) =>
+            resolveOpenVikingMessagePeerId({
+              peerRole: cfg.peer_role ?? "assistant",
+              role,
+              personPeerId: senderRoleId,
+              assistantPeerId: agentId,
+            }),
+          logger,
+        });
+        diag("afterTurn_catch_up", ovSessionId, { path, ...outcome });
+      } catch (err) {
+        logger.warn?.(
+          `openviking: catch-up of session=${ovSessionId} failed (${String(err)}); the pour-off is checked as usual`,
+        );
+        diag("afterTurn_catch_up", ovSessionId, { path, kind: "failed", error: String(err) });
+      }
+    } else {
+      if (catchUp && !warnedOfNoTranscriptReader) {
+        warnedOfNoTranscriptReader = true;
+        logger.warn?.(
+          "openviking: the gateway hands no readSessionTranscript here; turns are recorded the old way, guessed " +
+            "by the server's tail, and rows the model never sees may go to memory -- except a turn's end in a " +
+            "session Viking holds by gateway row ids, which is left to the catch-up (said for each)",
+        );
+      }
+      const messages = rawMessages ?? [];
+      if (messages.length === 0) {
+        diag("afterTurn_skip", ovSessionId, {
+          reason: "no_messages",
+          totalMessages: 0,
+          senderIdFound: sender.found,
+          senderId: sender.senderId ?? null,
+        });
+        return;
+      }
+
+      const start =
+        typeof prePromptMessageCount === "number" && prePromptMessageCount >= 0
+          ? prePromptMessageCount
+          : 0;
+
+      const { messages: extractedMessagesRaw, newCount } = extractNewTurnMessages(messages, start);
+      const extractedMessages = coalesceConsecutiveToolMessages(
+        extractedMessagesRaw.map((message) => ({ ...message, rows: [] })),
+      );
+
+      if (extractedMessages.length === 0) {
+        diag("afterTurn_skip", ovSessionId, {
+          reason: "no_new_turn_messages",
+          totalMessages: messages.length,
+          prePromptMessageCount: start,
+          senderIdFound: sender.found,
+          senderId: sender.senderId ?? null,
+        });
+        return;
+      }
+
+      const turnMessages = messages.slice(start) as AgentMessage[];
+      diag(
+        "afterTurn_entry",
+        ovSessionId,
+        afterTurnEntryData({ messages, start, newCount, sender, runtimeContext, runtimeSettings }),
+      );
+
+      client = await getClient(agentId);
+      const createdAt = pickLatestCreatedAt(turnMessages);
+      const senderRoleId = toRoleId(sender.senderId);
+      const toRecord = extractedMessages
+        .map((msg) => ({ role: msg.role, parts: toOvParts(msg) }))
+        .filter((msg) => msg.parts.length > 0);
+
+      // The queue hands the closed turn whole, and its beginning -- the question,
+      // then the tool results -- is what the loop hook recorded already, message by
+      // message, as the server's newest messages. That beginning is skipped: the
+      // truth is the server's tail, not this process's memory, so a restart or a
+      // replayed commit does not double it either. A server that gives no tail is
+      // warned about and the turn is recorded whole: a repeat costs less than a loss.
+      // The queue's turn is checked against the server's tail (below); the turn's end is not read here --
+      // below X it reads nothing (PLAN-krug 7в.Р2а).
+      let tail: OVMessage[] | undefined;
+      if (path === "commitTurn" && toRecord.length > 0) {
+        try {
+          tail = (await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET)).messages ?? [];
+        } catch (err) {
+          logger.warn?.(
+            `openviking: could not read the server's tail for session=${ovSessionId} before recording the turn ` +
+              `(${String(err)}); recording it whole`,
+          );
+        }
+      }
+      // A session Viking holds by gateway row ids is the catch-up's (plugin review, 10.11): a turn without the
+      // gateway's reader -- a rare path of a new gateway -- is not written the old way, or the next catch-up
+      // with a reader writes its rows again; that catch-up writes them once, by their ids. Known from this
+      // process's catch-up (a turn's assemble, with its reader, comes before the turn's end) or from the
+      // queue's read of the tail. An older gateway never gives row ids: a session it began goes the old way as
+      // before; one a newer gateway wrote by row ids (a rollback of the gateway alone) stands, loudly, until the
+      // reader comes back -- its catch-up then writes the reply, the question goes in a second time (reviewers'
+      // run, 10.11). Rollback order: the plugin, then the gateway (PLAN-krug шаг 11).
+      const ownedByCatchUp =
+        catchUp?.holdsRowsOf?.(ovSessionId) === true ||
+        tail?.some((message) => (message.source_message_ids?.length ?? 0) > 0) === true;
+      if (ownedByCatchUp) {
+        // Loud each time (final reviewers, 10.11): on a gateway older than the reader -- one rolled back alone,
+        // the plugin kept -- every turn of such a session stands here until a gateway with the reader comes back.
+        logger.warn?.(
+          `openviking: session=${ovSessionId}: a turn's end came without the gateway's transcript reader; Viking ` +
+            "holds this session by gateway row ids, so the turn is not recorded the old way -- the next catch-up " +
+            "with the reader writes it, and a question the loop hook already wrote the old way goes in again " +
+            "then. A gateway older than PLAN-krug hands no reader at all: one rolled back alone needs the plugin " +
+            "rolled back too",
+        );
+        diag("afterTurn_skip", ovSessionId, { reason: "catch_up_owns_session", path });
+      } else {
+        let skipped = 0;
+        if (path === "commitTurn" && toRecord.length > 0) {
+          skipped = tail ? recordedPrefixLength(toRecord, tail) : 0;
+          diag("afterTurn_dedupe", ovSessionId, {
+            path,
+            skipped,
+            recorded: toRecord.length - skipped,
+          });
+        }
+
+        for (const msg of toRecord.slice(skipped)) {
+          await client.addSessionMessage(
+            ovSessionId,
+            msg.role,
+            msg.parts,
+            undefined,
+            createdAt,
+            resolveOpenVikingMessagePeerId({
+              peerRole: cfg.peer_role ?? "assistant",
+              role: msg.role,
+              personPeerId: senderRoleId,
+              assistantPeerId: agentId,
+            }),
+          );
+        }
+      }
     }
 
     // The pour-off by X (PLAN-gorizont 4б). The window's weight is the charge of
@@ -2062,17 +2403,58 @@ export async function afterTurnOpenVikingSession({
         ...extra,
       });
     if (window === undefined) {
+      if (path === "commitTurn") {
+        // PLAN-krug 7е (5в.6): mid-turn the gateway calls afterTurn without a weight on purpose; a turn from the
+        // queue without one is mostly a turn read back after a restart. No weight is made up: said once a turn.
+        logger.warn?.(
+          `openviking: session=${ovSessionId}: a turn was committed without the window's weight (read back after ` +
+            "a restart?); the pour-off is checked at the next turn that brings one",
+        );
+      }
       skip("no_window_weight");
       return;
     }
-    if (window < cfg.pourOffAtTokens) {
+    const belowX = window < cfg.pourOffAtTokens;
+    if (belowX) {
       // The window got under X by other means: no pour-off is due any more.
       pourDue.delete(ovSessionId);
+      if (!summaryFailedSessions.has(ovSessionId)) {
+        skip("below_x");
+        return;
+      }
+    }
+
+    // PLAN-krug 7в.3а-2: the host shows the work from here -- the read of the server, the weighing and the
+    // archive -- so the turn's end does not look hung (web = Telegram). The gateway counts every end not
+    // marked unfinished as the session's compaction (its files 37 and 38), so no end goes without
+    // `completed`. A failing ear costs the picture, not the pour-off.
+    const tellHost = (phase: "start" | "end", info?: { completed: boolean; tokensAfter?: number }) => {
+      try {
+        if (info) {
+          announceCompaction?.(phase, info);
+        } else {
+          announceCompaction?.(phase);
+        }
+      } catch (err) {
+        logger.warn?.(`openviking: session=${ovSessionId}: the host's compaction ear failed: ${String(err)}`);
+      }
+    };
+    let pourEnded = false;
+    endPour = (info) => {
+      if (!pourEnded) {
+        pourEnded = true;
+        tellHost("end", info);
+      }
+    };
+    tellHost("start");
+
+    const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+    // PLAN-krug 7в.Р2а: below X only while the newest archive's summary is still failed, by the answer now.
+    if (belowX && !newestSummaryFailed(ctx)) {
+      summaryFailedSessions.delete(ovSessionId);
       skip("below_x");
       return;
     }
-
-    const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
     const unsummarized = ctx?.stats?.unsummarizedArchives;
     if (typeof unsummarized !== "number") {
       logger.warn?.(
@@ -2104,6 +2486,15 @@ export async function afterTurnOpenVikingSession({
       if (!(trouble instanceof NoWeightFromTheHandle)) {
         throw trouble;
       }
+      if (belowX) {
+        // PLAN-krug 7в.Р2а: the window is under K already; the next turn is not held, its end tries again.
+        logger.warn?.(
+          `openviking: session=${ovSessionId}: the newest archive's summary failed and the price handle gave ` +
+            `no weight for the tail (from ${trouble.tail}): not pouring now; the end of the next turn tries again`,
+        );
+        skip("no_weight", { failedTail: trouble.tail, pendingMessages: pending.length, failedSummary: true });
+        return;
+      }
       // PLAN-gorizont 5а (11.10, решение Вита): the handle gave no weight (a storm). No
       // weight is made up and the floor is not taken: the pour-off waits. The session is
       // marked, and the next turn is held at its start until the handle answers.
@@ -2118,6 +2509,12 @@ export async function afterTurnOpenVikingSession({
     }
     const { chosen, cap, rest, model, keepRecentCount } = kept;
     if (!chosen || chosen.start === 0) {
+      if (belowX) {
+        // PLAN-krug 7в.Р2а: nothing older than the tail yet -- the usual state of the turns after a failed
+        // summary until the tail outgrows K; said in diagnostics only, not at every turn.
+        skip("nothing_to_pour", { pendingMessages: pending.length, rest, cap, failedSummary: true });
+        return;
+      }
       // Nothing to pour: fewer messages than the floor, or all of them fit under
       // the cap -- the window is at X because of its constant part, not them.
       logger.warn?.(
@@ -2143,10 +2540,15 @@ export async function afterTurnOpenVikingSession({
     // The window's weight once the pour-off has settled: the constant part and the kept
     // tail. The summary that will stand beside them weighs a little more, which only keeps
     // the host's gates closed a little longer. Unweighed (no price), there is no estimate.
-    const windowAfter = rest !== null && chosen.weight !== null ? rest + chosen.weight : null;
+    // PLAN-krug 7в.Р2а (НР-4): below X the window held a tail cut to K, not the server's messages, so the
+    // window less them is not its constant part; the host keeps its own measure, which stays about right.
+    const windowAfter = !belowX && rest !== null && chosen.weight !== null ? rest + chosen.weight : null;
     logger.info(
-      `openviking: poured session=${ovSessionId}: window ${window} by the counter, ` +
-        `kept ${keepRecentCount} newest messages` +
+      `openviking: poured session=${ovSessionId}: window ${window} by the counter` +
+        (belowX
+          ? ", below X: the newest archive's summary failed and the server rolls it into this archive's summary"
+          : "") +
+        `, kept ${keepRecentCount} newest messages` +
         (chosen.weight !== null ? ` weighing ${chosen.weight}` : " by the floor, unweighed") +
         ` under ${cap}, archiving ${chosen.start}; ` +
         `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
@@ -2154,6 +2556,7 @@ export async function afterTurnOpenVikingSession({
     );
 
     diag("pour_off", ovSessionId, {
+      trigger: belowX ? "failed_summary" : "x",
       window,
       pourOffAtTokens: cfg.pourOffAtTokens,
       keepRecentTokens: cfg.keepRecentTokens,
@@ -2178,14 +2581,14 @@ export async function afterTurnOpenVikingSession({
     // the host -- it moves the host's compaction count (the memory flush runs once per
     // cycle, before the pour-off) and takes windowAfter for the window's weight until the
     // next call measures it. The server saying nothing was archived is no compaction.
-    if (announceCompaction && commitResult.archived === true) {
-      if (windowAfter === null) {
+    if (commitResult.archived === true) {
+      if (announceCompaction && windowAfter === null && !belowX) {
         logger.warn?.(
           `openviking: poured session=${ovSessionId} without a weight of the window after (no price): ` +
             "the host learns the new weight only at the next turn's first call",
         );
       }
-      announceCompaction("end", {
+      endPour({
         completed: true,
         ...(windowAfter !== null ? { tokensAfter: windowAfter } : {}),
       });
@@ -2201,7 +2604,45 @@ export async function afterTurnOpenVikingSession({
       senderIdFound: sender.found,
       senderId: sender.senderId ?? null,
     });
+  } finally {
+    endPour?.({ completed: false });
   }
+}
+
+/** The afterTurn_entry journal (inventory З7): what the turn hands over, and what the host gives for the pour-off. */
+function afterTurnEntryData(params: {
+  messages: AgentMessage[];
+  start: number;
+  newCount: number;
+  sender: { found: boolean; senderId?: string };
+  runtimeContext?: Record<string, unknown>;
+  runtimeSettings?: unknown;
+}): Record<string, unknown> {
+  const newMessages = (params.messages.slice(params.start) as AgentMessage[]).filter((m: AgentMessage) => {
+    const role = (m as Record<string, unknown>).role as string;
+    return role === "user" || role === "assistant";
+  }) as AgentMessage[];
+  const newMsgFull = messageDigest(newMessages);
+  const newTurnTokens = newMsgFull.reduce((sum, digest) => sum + digest.tokens, 0);
+  const promptCache = params.runtimeContext?.promptCache as
+    | { lastCallUsage?: Record<string, unknown>; retention?: string }
+    | undefined;
+  return {
+    totalMessages: params.messages.length,
+    newMessageCount: params.newCount,
+    prePromptMessageCount: params.start,
+    newTurnTokens,
+    senderIdFound: params.sender.found,
+    senderId: params.sender.senderId ?? null,
+    // What the host hands on for the pour-off by X (PLAN-gorizont 4б): the
+    // window's weight, the budget, the last call's usage, and the model.
+    window: params.runtimeContext?.currentTokenCount ?? null,
+    hostTokenBudget: params.runtimeContext?.tokenBudget ?? null,
+    lastCallUsage: promptCache?.lastCallUsage ?? null,
+    runtimeContextKeys: Object.keys(params.runtimeContext ?? {}),
+    model: modelOf(params.runtimeSettings) ?? null,
+    messages: newMsgFull,
+  };
 }
 
 function validTokenCount(value: unknown): number | undefined {

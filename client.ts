@@ -118,11 +118,28 @@ export type OVMessagePart = {
   tool_output_group_budget_chars?: number;
 };
 
+/**
+ * The server answered with an error: its HTTP status and its own code, for a caller that tells a
+ * refused request (the same request will never pass) from a passing trouble.
+ */
+export class OpenVikingRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "OpenVikingRequestError";
+  }
+}
+
 export type OVMessage = {
   id: string;
   role: string;
   parts: OVMessagePart[];
   created_at: string;
+  /** The gateway transcript rows the message was written from (PLAN-krug Р1); absent on older rows. */
+  source_message_ids?: string[];
 };
 
 export type PreArchiveAbstract = {
@@ -505,7 +522,11 @@ export class OpenVikingClient {
       if (!response.ok || payload.status === "error") {
         const code = payload.error?.code ? ` [${payload.error.code}]` : "";
         const message = payload.error?.message ?? `HTTP ${response.status}`;
-        throw new Error(`OpenViking request failed${code}: ${message}`);
+        throw new OpenVikingRequestError(
+          `OpenViking request failed${code}: ${message}`,
+          response.status,
+          payload.error?.code,
+        );
       }
 
       return (payload.result ?? payload) as T;
@@ -896,18 +917,24 @@ export class OpenVikingClient {
     actorPeerId?: string,
     createdAt?: string,
     peerId?: string,
+    /** PLAN-krug Р1: the gateway transcript rows the message was made of (their first ids). */
+    sourceMessageIds?: readonly string[],
   ): Promise<void> {
     const body: {
       role: string;
       peer_id?: string;
       parts: typeof parts;
       created_at?: string;
+      source_message_ids?: string[];
     } = { role, parts };
     if (createdAt) {
       body.created_at = createdAt;
     }
     if (peerId) {
       body.peer_id = peerId;
+    }
+    if (sourceMessageIds && sourceMessageIds.length > 0) {
+      body.source_message_ids = [...sourceMessageIds];
     }
     await this.emitRoutingDebug(
       "session message POST (with parts)",
@@ -930,6 +957,37 @@ export class OpenVikingClient {
       undefined,
       actorPeerId,
     );
+  }
+
+  /**
+   * PLAN-krug К17: several messages in one request -- the server appends them under one session
+   * lock, all or none (routers/sessions.py 541-590); up to 100 a request (110-114).
+   */
+  async addSessionMessages(
+    sessionId: string,
+    messages: ReadonlyArray<{
+      role: string;
+      parts: Parameters<OpenVikingClient["addSessionMessage"]>[2];
+      createdAt?: string;
+      peerId?: string;
+      sourceMessageIds?: readonly string[];
+    }>,
+    actorPeerId?: string,
+  ): Promise<void> {
+    const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/messages/batch`;
+    const body = {
+      messages: messages.map((message) => ({
+        role: message.role,
+        parts: message.parts,
+        ...(message.createdAt ? { created_at: message.createdAt } : {}),
+        ...(message.peerId ? { peer_id: message.peerId } : {}),
+        ...(message.sourceMessageIds && message.sourceMessageIds.length > 0
+          ? { source_message_ids: [...message.sourceMessageIds] }
+          : {}),
+      })),
+    };
+    await this.emitRoutingDebug("session messages batch POST", { path, sessionId, count: messages.length }, actorPeerId);
+    await this.request<{ session_id: string }>(path, { method: "POST", body: JSON.stringify(body) }, undefined, actorPeerId);
   }
 
   /** GET session — server auto-creates if absent; returns session meta including message stats and token usage. */
@@ -976,6 +1034,8 @@ export class OpenVikingClient {
       */
       keepRecentCount?: number;
       agentId?: string;
+      /** PLAN-krug К20: told once the server has archived (phase 1), before any wait for phase 2. */
+      onArchived?: () => void;
     },
   ): Promise<CommitSessionResult> {
     const keepRecentCount =
@@ -1003,6 +1063,7 @@ export class OpenVikingClient {
       options?.agentId,
     );
 
+    options?.onArchived?.();
     if (!options?.wait || !result.task_id) {
       return result;
     }

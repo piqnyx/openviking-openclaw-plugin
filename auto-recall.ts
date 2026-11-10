@@ -63,23 +63,24 @@ export type PreparedRecallQuery = {
   finalChars: number;
 };
 
-// The news digest's trigger (digest PLAN, stage 6) is a script's user turn: a marker line and a phrase
-// line. Since the gateway's model-only prompt context (digest PLAN-rasskaz, 08.11) the digest's task and
-// paper follow it in the message the turn's recall reads, so the search ends with the phrase line -- only
-// when the task follows it, known by the task's first words (the digest's tests hold them; the proxy keys
-// on another phrase of that line). A marker line with no task after it -- an old trigger merged in front of
-// Vit's next message, one he pasted, one quoted in a memory block -- leaves the message as before. If the
-// first words change, nothing is cut and the paper is back in the search: the over-long query shows as
-// "recall query truncated" in the log. Only the search: what the turn records comes from the transcript,
-// which never holds the paper.
-const DIGEST_TRIGGER_LINE_RE =
-  /^[^\S\r\n]*::digest-trigger::(?=\s|$)[^\S\r\n]*(?:(?:\r\n|\r|\n)[^\S\r\n]*)?[^\r\n]*/gm;
-const DIGEST_TELL_TASK_START = "Служебное задание на этот ход";
+// The service triggers -- the news digest's (digest PLAN, stage 6) and the weather watch's (piqnyx/weather
+// PLAN, step 5) -- are a script's user turn: a marker line and a phrase line. Since the gateway's model-only
+// prompt context (digest PLAN-rasskaz, 08.11) the script's task -- the digest's with its paper, the watcher's
+// with its facts -- follows it in the message the turn's recall reads, so the search ends with the phrase
+// line -- only when a script's task follows it, known by the task's first words, the same for both scripts
+// (their tests hold them; the proxy keys on other phrases of those lines). A
+// marker line with no task after it -- an old trigger merged in front of Vit's next message, one he pasted,
+// one quoted in a memory block -- leaves the message as before. If the first words change, nothing is cut and
+// the task is back in the search: the over-long query shows as "recall query truncated" in the log. Only the
+// search: what the turn records comes from the transcript, which never holds the task.
+const SERVICE_TRIGGER_LINE_RE =
+  /^[^\S\r\n]*::(?:digest|weather)-trigger::(?=\s|$)[^\S\r\n]*(?:(?:\r\n|\r|\n)[^\S\r\n]*)?[^\r\n]*/gm;
+const SERVICE_TASK_START = "Служебное задание на этот ход";
 
-function dropAfterDigestPhrase(text: string): string {
-  for (const match of text.matchAll(DIGEST_TRIGGER_LINE_RE)) {
+function dropAfterServicePhrase(text: string): string {
+  for (const match of text.matchAll(SERVICE_TRIGGER_LINE_RE)) {
     const end = match.index + match[0].length;
-    if (text.slice(end).trimStart().startsWith(DIGEST_TELL_TASK_START)) {
+    if (text.slice(end).trimStart().startsWith(SERVICE_TASK_START)) {
       return text.slice(0, end);
     }
   }
@@ -87,7 +88,7 @@ function dropAfterDigestPhrase(text: string): string {
 }
 
 export function prepareRecallQuery(rawText: string): PreparedRecallQuery {
-  const sanitized = sanitizeUserTextForCapture(dropAfterDigestPhrase(rawText)).trim();
+  const sanitized = sanitizeUserTextForCapture(dropAfterServicePhrase(rawText)).trim();
   const originalChars = sanitized.length;
 
   if (!sanitized) {

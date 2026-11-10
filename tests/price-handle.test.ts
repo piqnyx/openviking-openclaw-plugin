@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HttpTransport } from "../adapters/http-transport.js";
 import type { OVMessage } from "../client.js";
 import { PriceHandle, priceBodyOf } from "../price-handle.js";
+import type { AgentMessage } from "../services/context-message-adapter.js";
 
 /*
  * Ручка цены прокси (PLAN-gorizont, 4а).
@@ -188,7 +189,7 @@ function ov(id: string, role: string, parts: OVMessage["parts"]): OVMessage {
 }
 
 describe("тело для ручки", () => {
-  it("сообщения сервера в форме OpenAI: текст, вызов инструмента, ответ инструмента, и «x» в конце", () => {
+  it("сообщения сервера в форме OpenAI: текст, вызов инструмента, ответ инструмента, и «x» в конце", async () => {
     const messages = [
       ov("u1", "user", [{ type: "text", text: "прочитай файл" }]),
       ov("a1", "assistant", [
@@ -204,7 +205,7 @@ describe("тело для ручки", () => {
       ov("a2", "assistant", [{ type: "text", text: "в файле написано содержимое" }]),
     ];
 
-    const body = priceBodyOf("gemini-3.5-flash-lite", messages);
+    const body = await priceBodyOf("gemini-3.5-flash-lite", messages);
 
     expect(body).toEqual({
       model: "gemini-3.5-flash-lite",
@@ -225,7 +226,7 @@ describe("тело для ручки", () => {
     });
   });
 
-  it("ответ инструмента без номера вызова идёт текстом ассистента, как в окне модели", () => {
+  it("ответ инструмента без номера вызова идёт текстом ассистента, как в окне модели", async () => {
     const messages = [
       ov("u1", "user", [{ type: "text", text: "вопрос" }]),
       ov("a1", "assistant", [
@@ -233,7 +234,7 @@ describe("тело для ручки", () => {
         { type: "text", text: "ответ" },
       ]),
     ];
-    const body = priceBodyOf("m", messages);
+    const body = await priceBodyOf("m", messages);
     expect(body.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
     const assistant = body.messages[1] as { content: string | null; tool_calls?: unknown[] };
     expect(assistant.tool_calls).toBeUndefined();
@@ -241,7 +242,7 @@ describe("тело для ручки", () => {
     expect(assistant.content).toContain("ответ");
   });
 
-  it("повторный номер вызова в хвосте получает свой, как в запросе шлюза, и ответ инструмента идёт за ним", () => {
+  it("повторный номер вызова в хвосте получает свой, как в запросе шлюза, и ответ инструмента идёт за ним", async () => {
     // Разлив 09.10: ворота прокси отвечали ручке 400 «duplicate tool call id», потому что
     // сервер хранит вызовы с одинаковыми номерами из разных ходов, а шлюз перед отправкой
     // делает их разными; тело для оценки должно быть собрано так же, иначе поиск хвоста
@@ -257,7 +258,7 @@ describe("тело для ручки", () => {
       call("a2", "второй"),
     ];
 
-    const body = priceBodyOf("m", messages);
+    const body = await priceBodyOf("m", messages);
 
     const callIds = body.messages.flatMap((m) =>
       "tool_calls" in m && m.tool_calls ? m.tool_calls.map((c) => c.id) : [],
@@ -269,7 +270,56 @@ describe("тело для ручки", () => {
     expect(callIds.every((id) => /^[A-Za-z0-9_]+$/.test(id))).toBe(true);
   });
 
-  it("пустой список -- одно «x»", () => {
-    expect(priceBodyOf("m", []).messages).toEqual([{ role: "user", content: "x" }]);
+  it("тело -- в форме окна: вопросы подряд склеены, вид шлюза видит одну склейку (PLAN-krug 7в.5)", async () => {
+    // Окно склеивает вопросы подряд (дописка в ход) в одно сообщение; шлюз ставит штамп только первому его
+    // блоку. Тело весит то же: одна склейка -- один штамп.
+    const seenByView: string[] = [];
+    const historyForModel = async (window: AgentMessage[]) => {
+      for (const message of window) {
+        seenByView.push(String(message.role));
+      }
+      return window;
+    };
+    const messages = [
+      ov("u1", "user", [{ type: "text", text: "вопрос" }]),
+      ov("u2", "user", [{ type: "text", text: "дописка" }]),
+      ov("a1", "assistant", [{ type: "text", text: "ответ" }]),
+    ];
+
+    const body = await priceBodyOf("m", messages, historyForModel);
+
+    expect(seenByView).toEqual(["user", "assistant"]);
+    expect(body.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+  });
+
+  it("сообщение Викинга с двумя вызовами одного номера -- у каждого своя выдача (PLAN-krug 7в.5-3)", async () => {
+    const part = (path: string) => ({
+      type: "tool",
+      tool_id: "call_115472",
+      tool_name: "read",
+      tool_input: { path },
+      tool_output: `ВЫДАЧА-${path}`,
+      tool_status: "completed",
+    });
+    const messages = [
+      ov("u1", "user", [{ type: "text", text: "прочитай оба" }]),
+      ov("a1", "assistant", [part("раз"), part("два")]),
+    ];
+
+    const body = await priceBodyOf("m", messages);
+
+    const calls = body.messages.flatMap((m) =>
+      "tool_calls" in m && m.tool_calls ? m.tool_calls.map((c) => c.id) : [],
+    );
+    const results = body.messages.flatMap((m) => (m.role === "tool" ? [[m.tool_call_id, m.content]] : []));
+    expect(calls).toHaveLength(2);
+    expect(results).toEqual([
+      [calls[0], "ВЫДАЧА-раз"],
+      [calls[1], "ВЫДАЧА-два"],
+    ]);
+  });
+
+  it("пустой список -- одно «x»", async () => {
+    expect((await priceBodyOf("m", [])).messages).toEqual([{ role: "user", content: "x" }]);
   });
 });

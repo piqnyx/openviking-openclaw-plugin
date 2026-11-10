@@ -47,12 +47,13 @@ describe("agentIdFromFactoryContext", () => {
   });
 });
 
-type Registered = (ctx?: { agentDir?: string; workspaceDir?: string }) => unknown;
+type Registered = (ctx?: { agentDir?: string; workspaceDir?: string; historyForModel?: unknown }) => unknown;
 
 function setupRegistration(sessionResolves: string) {
   let registered: Registered | undefined;
   const rememberSessionAgentId = vi.fn();
   const createContextEngine = vi.fn((params: { resolveAgentId: unknown }) => params);
+  const logger = { info: vi.fn(), warn: vi.fn() };
 
   registerOpenVikingContextEngine({
     api: {
@@ -63,7 +64,7 @@ function setupRegistration(sessionResolves: string) {
     plugin: { id: "openviking", name: "OpenViking" },
     version: "test",
     cfg: {},
-    logger: { info: vi.fn(), warn: vi.fn() },
+    logger,
     getClient: async () => ({}),
     resolveAgentId: () => sessionResolves,
     rememberSessionAgentId,
@@ -74,7 +75,7 @@ function setupRegistration(sessionResolves: string) {
   });
 
   expect(registered).toBeTypeOf("function");
-  return { registered: registered as Registered, rememberSessionAgentId, createContextEngine };
+  return { registered: registered as Registered, rememberSessionAgentId, createContextEngine, logger };
 }
 
 describe("context engine scoped to its agent", () => {
@@ -111,5 +112,29 @@ describe("context engine scoped to its agent", () => {
     const engine = registered({}) as { resolveAgentId: (a?: string) => string };
 
     expect(engine.resolveAgentId("session-uuid")).toBe(SYSTEM_AGENT_ID);
+  });
+});
+
+// PLAN-krug 7в.5: the gateway hands the factory its view of history as the model gets it; the engine weighs
+// the tails it keeps through it.
+describe("the gateway's view of history", () => {
+  it("goes to the engine the factory builds", () => {
+    const { registered, createContextEngine } = setupRegistration("igor");
+    const historyForModel = async (messages: unknown[]) => messages;
+
+    registered({ historyForModel });
+
+    expect(createContextEngine.mock.calls[0]?.[0]).toMatchObject({ historyForModel });
+  });
+
+  it("missing (an older gateway): said once for the process, not at every turn", () => {
+    const { registered, createContextEngine, logger } = setupRegistration("igor");
+
+    registered({});
+    registered({});
+
+    expect(createContextEngine.mock.calls[0]?.[0]).not.toHaveProperty("historyForModel");
+    const said = logger.warn.mock.calls.filter(([line]) => String(line).includes("view of history"));
+    expect(said).toHaveLength(1);
   });
 });

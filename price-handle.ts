@@ -6,9 +6,10 @@ import { describeError } from "./error-text.js";
 import {
   convertToAgentMessages,
   mergeConsecutiveAssistants,
+  sanitizeAgentMessagesForProvider,
+  withUniqueToolCallIds,
   type AgentMessage,
 } from "./services/context-message-adapter.js";
-import { sanitizeToolCallIdsForCloudCodeAssist } from "./tool-call-id.js";
 
 /** What the handle answers: the counter's verdict for the body as it is. */
 export type PriceVerdict = {
@@ -220,18 +221,34 @@ export function toOpenAiMessages(messages: AgentMessage[]): OpenAiMessage[] {
   return out;
 }
 
+/** The gateway's view of past messages as the model gets them (its engine factory's context, PLAN-krug 7в.5). */
+export type HistoryForModel = (messages: AgentMessage[]) => Promise<AgentMessage[]>;
+
 /**
- * The body the handle is asked about for a tail of the server's messages: rendered
- * the way the window is assembled from them, in OpenAI's form, with a user's «x» at
- * the end -- the proxy's gate refuses a body that ends with the model's turn
- * (checked 07.10.2026), and the measurements of 1г were taken with the same «x».
+ * The handle as the engine weighs tails with it: the gateway's view of history travels with it, so a tail
+ * is weighed as the model will see it -- with the timestamps the gateway puts before every past question
+ * (PLAN-krug 7в.5). Without the view (an older gateway) a tail is weighed as stored.
  */
-export function priceBodyOf(
+export type TailPriceHandle = Pick<PriceHandle, "price" | "url"> & { historyForModel?: HistoryForModel };
+
+/**
+ * The body the handle is asked about for a tail of the server's messages: put in the
+ * window's form (as `buildAssembledContext` puts them), seen through the gateway's view
+ * when there is one, in OpenAI's form, with a user's «x» at the end -- the proxy's gate
+ * refuses a body that ends with the model's turn (checked 07.10.2026), and the
+ * measurements of 1г were taken with the same «x».
+ */
+export async function priceBodyOf(
   model: string,
   messages: OVMessage[],
-): { model: string; messages: OpenAiMessage[] } {
-  const window = mergeConsecutiveAssistants(messages.flatMap((m) => convertToAgentMessages(m)));
-  return { model, messages: priceMessagesOf(window) };
+  historyForModel?: HistoryForModel,
+): Promise<{ model: string; messages: OpenAiMessage[] }> {
+  // The window's own order for the provider: calls paired with their results, questions in a row merged (the
+  // gateway stamps only the first of them).
+  const window = sanitizeAgentMessagesForProvider(
+    mergeConsecutiveAssistants(messages.flatMap((m) => convertToAgentMessages(m))),
+  );
+  return { model, messages: priceMessagesOf(historyForModel ? await historyForModel(window) : window) };
 }
 
 /**
@@ -245,9 +262,5 @@ export function priceBodyOf(
  * kept 53 messages of 667 under K 150 000.
  */
 export function priceMessagesOf(window: AgentMessage[]): OpenAiMessage[] {
-  const unique = sanitizeToolCallIdsForCloudCodeAssist(
-    window as unknown as Parameters<typeof sanitizeToolCallIdsForCloudCodeAssist>[0],
-    "strict",
-  ) as unknown as AgentMessage[];
-  return [...toOpenAiMessages(unique), { role: "user", content: "x" }];
+  return [...toOpenAiMessages(withUniqueToolCallIds(window)), { role: "user", content: "x" }];
 }
