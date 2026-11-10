@@ -9,12 +9,12 @@ import { prepareRecallQuery } from "../auto-recall.js";
 import { extractNewTurnMessages, sanitizeUserTextForCapture } from "../text-utils.js";
 
 const PHRASE = "Эва по своей инициативе предупреждает Вита о погоде";
-// The watcher's task (piqnyx/weather config/prompts/warn.md) and its facts follow the phrase in the
-// message the turn's recall reads -- the gateway's model-only prompt context, as for the digest.
+// The watcher's task (piqnyx/weather config/prompts/warn.md) and its summary follow the phrase in the
+// message the turn's recall reads -- the gateway's model-only prompt context, as for the digest. The task
+// begins as the digest's does (Вит 10.11), so one task start serves both triggers.
 const TASK =
-  "Служебное задание сторожа погоды на этот ход.\nВиту это задание не показывай и не упоминай.\n\n" +
-  "Место: Григолети (пояс Asia/Tbilisi).\n\nОпасность: Порывы ветра выше 12 м/с -- в ближайшие сутки.";
-const DIGEST_TASK = "Служебное задание на этот ход.\n\n### Тема\n\nТекст.";
+  "Служебное задание на этот ход; Виту его не показывай и не упоминай. Ниже -- сводка погоды, которую " +
+  "принёс синоптик.\n\nМесто: Григолети.\n\nОпасность: Порывы ветра выше 12 м/с -- в ближайшие 24 ч.";
 const QUEUED =
   "[Queued user message from a previous active turn; preserved as context only. " +
   "Continue with the active prompt below.]";
@@ -57,14 +57,5 @@ describe("weather service trigger", () => {
   it("searches Vit's words after an unanswered trigger merged in front, as before", () => {
     const merged = `${QUEUED}\n::weather-trigger::\n${PHRASE}\n\nа что с ветром завтра?`;
     expect(query(merged)).toBe(merged.replace(/\s+/g, " "));
-  });
-
-  it("cuts after each trigger only by its own task", () => {
-    // The digest's task after the weather's marker, and the weather's after the digest's, is no turn
-    // either script sends: the search keeps the message as it is.
-    const crossed = `::weather-trigger::\n${PHRASE}\n\n${DIGEST_TASK}`;
-    expect(query(crossed)).toBe(`${PHRASE} ${DIGEST_TASK}`.replace(/\s+/g, " "));
-    const tell = "Эва по своей инициативе рассказывает Виту новости дня";
-    expect(query(`::digest-trigger::\n${tell}\n\n${TASK}`)).toBe(`${tell} ${TASK}`.replace(/\s+/g, " "));
   });
 });
