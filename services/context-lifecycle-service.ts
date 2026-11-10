@@ -2373,6 +2373,14 @@ export async function afterTurnOpenVikingSession({
         ...extra,
       });
     if (window === undefined) {
+      if (path === "commitTurn") {
+        // PLAN-krug 7е (5в.6): mid-turn the gateway calls afterTurn without a weight on purpose; a turn from the
+        // queue without one is mostly a turn read back after a restart. No weight is made up: said once a turn.
+        logger.warn?.(
+          `openviking: session=${ovSessionId}: a turn was committed without the window's weight (read back after ` +
+            "a restart?); the pour-off is checked at the next turn that brings one",
+        );
+      }
       skip("no_window_weight");
       return;
     }
