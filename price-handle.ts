@@ -7,9 +7,9 @@ import {
   convertToAgentMessages,
   mergeConsecutiveAssistants,
   sanitizeAgentMessagesForProvider,
+  withUniqueToolCallIds,
   type AgentMessage,
 } from "./services/context-message-adapter.js";
-import { sanitizeToolCallIdsForCloudCodeAssist } from "./tool-call-id.js";
 
 /** What the handle answers: the counter's verdict for the body as it is. */
 export type PriceVerdict = {
@@ -243,28 +243,12 @@ export async function priceBodyOf(
   messages: OVMessage[],
   historyForModel?: HistoryForModel,
 ): Promise<{ model: string; messages: OpenAiMessage[] }> {
-  const window = inWindowFormForWeighing(
+  // The window's own order for the provider: calls paired with their results, questions in a row merged (the
+  // gateway stamps only the first of them).
+  const window = sanitizeAgentMessagesForProvider(
     mergeConsecutiveAssistants(messages.flatMap((m) => convertToAgentMessages(m))),
   );
   return { model, messages: priceMessagesOf(historyForModel ? await historyForModel(window) : window) };
-}
-
-/**
- * Messages put in order for the provider the way the window is (`sanitizeAgentMessagesForProvider`: the
- * pairing of calls and results, questions in a row merged -- the gateway stamps only the first of them),
- * with the tool call ids made unique first, as the gateway makes them before a send. The server keeps calls
- * from different turns under one id, and the pairing would drop the later call's result as a duplicate,
- * leaving a call without its result in the body; the body keeps every call answered.
- */
-export function inWindowFormForWeighing(messages: AgentMessage[]): AgentMessage[] {
-  return sanitizeAgentMessagesForProvider(withUniqueToolCallIds(messages));
-}
-
-function withUniqueToolCallIds(window: AgentMessage[]): AgentMessage[] {
-  return sanitizeToolCallIdsForCloudCodeAssist(
-    window as unknown as Parameters<typeof sanitizeToolCallIdsForCloudCodeAssist>[0],
-    "strict",
-  ) as unknown as AgentMessage[];
 }
 
 /**

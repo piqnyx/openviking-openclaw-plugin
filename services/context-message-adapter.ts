@@ -1,6 +1,7 @@
 import type { OVMessage } from "../client.js";
 import { sanitizeOpenVikingPeerId } from "../routing/identity-routing.js";
 import { sanitizeToolUseResultPairing } from "../session-transcript-repair.js";
+import { sanitizeToolCallIdsForCloudCodeAssist } from "../tool-call-id.js";
 
 export type AgentMessage = {
   role?: string;
@@ -356,7 +357,10 @@ function canonicalizeAgentMessages(messages: AgentMessage[]): AgentMessage[] {
 
 export function sanitizeAgentMessagesForProvider(messages: AgentMessage[]): AgentMessage[] {
   normalizeAssistantContent(messages);
-  const canonical = canonicalizeAgentMessages(messages);
+  // PLAN-krug 7в.5-3: the server keeps calls from different turns under one id, and the pairing below drops a
+  // result whose id it has seen anywhere before -- the later call went to the model without its output. The ids
+  // are made unique and strict first, the way the gateway makes them before a send (tool-call-id.ts).
+  const canonical = withUniqueToolCallIds(canonicalizeAgentMessages(messages));
   // Defense in depth (issue #1724):
   //   1) sanitizeToolUseResultPairing may strip orphaned tool_use/tool_result,
   //      potentially creating new user-user or assistant-assistant adjacencies.
@@ -369,4 +373,12 @@ export function sanitizeAgentMessagesForProvider(messages: AgentMessage[]): Agen
       sanitizeToolUseResultPairing(canonical as never[]) as AgentMessage[],
     ),
   );
+}
+
+/** Tool call ids made unique and strict, occurrence by occurrence, as the gateway rewrites them before a send. */
+export function withUniqueToolCallIds(messages: AgentMessage[]): AgentMessage[] {
+  return sanitizeToolCallIdsForCloudCodeAssist(
+    messages as unknown as Parameters<typeof sanitizeToolCallIdsForCloudCodeAssist>[0],
+    "strict",
+  ) as unknown as AgentMessage[];
 }

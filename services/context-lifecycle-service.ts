@@ -15,7 +15,7 @@ import {
   sanitizeOpenVikingPeerId,
   type OpenVikingPeerRole,
 } from "../routing/identity-routing.js";
-import { inWindowFormForWeighing, priceBodyOf, priceMessagesOf, type TailPriceHandle } from "../price-handle.js";
+import { priceBodyOf, priceMessagesOf, type TailPriceHandle } from "../price-handle.js";
 import { floorTail, longestTailWithin, turnStarts } from "../tail-by-weight.js";
 import { extractNewTurnMessages } from "../text-utils.js";
 import { coalesceConsecutiveToolMessages, normalizeTimestamp, toOvParts } from "./capture-form.js";
@@ -951,7 +951,7 @@ async function tailByWeight(params: {
 /** The live messages in the cut window's form for weighing, or as they are when that breaks (as the window does). */
 function inProviderOrder(messages: AgentMessage[]): AgentMessage[] {
   try {
-    return inWindowFormForWeighing(messages);
+    return sanitizeAgentMessagesForProvider(messages);
   } catch {
     return messages;
   }
