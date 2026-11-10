@@ -854,6 +854,86 @@ describe("запасной путь весит то, что увидит мод�
   });
 });
 
+describe("окно не теряет выдачу повторного номера вызова (PLAN-krug 7в.5-3, НВ5-1)", () => {
+  // Сервер хранит вызовы разных ходов под одним номером; починка пар окна выбрасывала выдачу второго как дубль.
+  const toolsOf = (messages: AgentMessage[]) => ({
+    calls: messages.flatMap((m) =>
+      m.role === "assistant" && Array.isArray(m.content)
+        ? (m.content as Array<{ type?: string; id?: string }>).filter((b) => b.type === "toolCall").map((b) => b.id)
+        : [],
+    ),
+    results: messages.flatMap((m) => (m.role === "toolResult" ? [(m as { toolCallId?: string }).toolCallId] : [])),
+  });
+
+  it("главный путь: обе выдачи в окне, у каждого вызова своя", async () => {
+    const at = (i: number) => new Date(START + i * 60_000).toISOString();
+    const call = (id: string, text: string, i: number): OVMessage => ({
+      id,
+      role: "assistant",
+      parts: [
+        { type: "tool", tool_id: "call_115472", tool_name: "read", tool_input: { path: text }, tool_output: `ВЫДАЧА-${text}`, tool_status: "completed" },
+      ] as OVMessage["parts"],
+      created_at: at(i),
+    });
+    const { client } = server({
+      context: {
+        latest_archive_overview: "ПЕРЕСКАЗ-СВЕЖИЙ",
+        messages: [
+          { id: "u1", role: "user", parts: [{ type: "text", text: "раз" }], created_at: at(0) },
+          call("a1", "первый", 1),
+          { id: "u2", role: "user", parts: [{ type: "text", text: "два" }], created_at: at(2) },
+          call("a2", "второй", 3),
+        ] as OVMessage[],
+        stats: {
+          totalArchives: 3, includedArchives: 0, droppedArchives: 3,
+          failedArchives: 0, activeTokens: 10, archiveTokens: 5,
+        },
+      },
+    });
+    const { value, outcome } = await assemble(liveTranscript(60), 12_000, client);
+
+    expect(outcome).toMatchObject({ passthrough: false });
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-первый");
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-второй");
+    const { calls, results } = toolsOf(value.messages);
+    expect(calls).toHaveLength(2);
+    expect(new Set(calls).size).toBe(2);
+    expect(results).toEqual(calls);
+  });
+
+  it("запасной путь: урезанное окно тоже держит обе выдачи", async () => {
+    const live = liveTranscript(54);
+    const turn = (n: number, text: string): AgentMessage[] => [
+      { role: "user", content: `вопрос ${text}`, timestamp: START + n * 60_000 },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_115472", name: "read", arguments: { path: text } }],
+        timestamp: START + (n + 1) * 60_000,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_115472",
+        toolName: "read",
+        content: [{ type: "text", text: `ВЫДАЧА-${text}` }],
+        isError: false,
+        timestamp: START + (n + 1) * 60_000 + 1,
+      },
+      { role: "assistant", content: [{ type: "text", text: `прочла ${text}` }], timestamp: START + (n + 2) * 60_000 },
+    ] as AgentMessage[];
+    live.push(...turn(54, "первый"), ...turn(57, "второй"));
+    const { client } = server({ down: true });
+    const { value, outcome } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    expect(outcome).toMatchObject({ recovered: true });
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-первый");
+    expect(JSON.stringify(value.messages)).toContain("ВЫДАЧА-второй");
+    const { calls, results } = toolsOf(value.messages);
+    expect(calls).toHaveLength(2);
+    expect(new Set(calls).size).toBe(2);
+    expect(results).toEqual(calls);
+  });
+});
+
 describe("то же через движок, как его зовёт шлюз", () => {
   it("большая переписка без свежего пересказа собирается из прошлого пересказа и хвоста", async () => {
     const live = liveTranscript(60);
