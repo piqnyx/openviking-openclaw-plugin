@@ -1303,7 +1303,17 @@ async function holdForSummary(params: {
     `openviking: assemble session=${ovSessionId}: the summary stands after ${waitedMs} ms (${wait.polls} polls); ` +
       "reading the context again",
   );
-  return await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+  try {
+    return await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+  } catch (err) {
+    // PLAN-krug 7в.7г: a passing error must not cost the turn its summary. The answer from before the wait
+    // still names the archives (waiting), so the window goes by the fallback path with the summary it stands on.
+    logger.warn?.(
+      `openviking: assemble session=${ovSessionId}: the summary stood, but the context could not be read again ` +
+        `(${String(err)}); going on by the answer read before the wait`,
+    );
+    return ctx;
+  }
 }
 
 /**
@@ -1737,7 +1747,32 @@ export async function assembleOpenVikingSession({
       }
       caughtUp = true;
       if (outcome.written > 0) {
-        ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+        const before = ctx;
+        try {
+          ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+        } catch (err) {
+          // PLAN-krug 7в.7г: the rows are written and the answer in hand is from before them; the live transcript
+          // holds them all -- the window goes as when the catch-up did not complete, with that answer's summary.
+          logger.warn?.(
+            `openviking: assemble session=${ovSessionId}: the catch-up wrote ${outcome.written} rows, but the ` +
+              `context could not be read again (${String(err)}); this turn's window is built from the live transcript`,
+          );
+          return await assembleWithoutFreshSummary({
+            ...recoveryBits,
+            diag,
+            logger,
+            roughEstimate,
+            ovSessionId,
+            reason: "catch_up_reread_failed",
+            liveMessages: messages,
+            originalTokens,
+            tokenBudget,
+            client,
+            totalArchives: before.stats?.totalArchives,
+            standing: standingSummaryOf(before),
+            extra: { catchUp: outcome, error: String(err) },
+          });
+        }
       }
     }
 
