@@ -1384,100 +1384,119 @@ async function settleWindow(params: {
   const started = Date.now();
   const deadline = started + holdSeconds * 1000;
   let attempts = 0;
-  let outcome: "poured" | "gave_up" | "nothing_to_pour" | "pending_elsewhere" = "gave_up";
-  for (;;) {
-    const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
-    const waiting = ctx?.stats?.unsummarizedArchives;
-    if (typeof waiting === "number" && waiting > 0) {
-      // Poured meanwhile by another path of the host: nothing is due; the summary is
-      // waited for below.
-      pourDue.delete(ovSessionId);
-      outcome = "pending_elsewhere";
-      break;
-    }
-    const pending = ctx?.messages ?? [];
-    attempts += 1;
-    let kept: KeptTail;
-    try {
-      kept = await chooseKeptTail({
-        pending,
-        window: due,
-        runtimeSettings: params.runtimeSettings,
-        priceHandle: params.priceHandle,
-        cfg,
-        logger,
-        ovSessionId,
-        doing: "pouring (held turn)",
-      });
-    } catch (trouble) {
-      if (!(trouble instanceof NoWeightFromTheHandle)) {
-        throw trouble;
-      }
-      if (Date.now() >= deadline) {
-        outcome = "gave_up";
+  let outcome: "poured" | "gave_up" | "nothing_to_pour" | "pending_elsewhere" | "broke" = "gave_up";
+  // PLAN-krug 7в.7г: the server's trouble in the middle of the held pour must not leave the host's line
+  // hanging, nor cost the turn its window while an answer is in hand; the pour stays due.
+  let answered: SessionContextResult | null | undefined;
+  let broke: unknown;
+  try {
+    for (;;) {
+      const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+      answered = ctx;
+      const waiting = ctx?.stats?.unsummarizedArchives;
+      if (typeof waiting === "number" && waiting > 0) {
+        // Poured meanwhile by another path of the host: nothing is due; the summary is
+        // waited for below.
+        pourDue.delete(ovSessionId);
+        outcome = "pending_elsewhere";
         break;
       }
-      diag("pour_hold_retry", ovSessionId, {
-        attempts,
-        failedTail: trouble.tail,
-        pauseMs: params.pourRetryPauseMs,
+      const pending = ctx?.messages ?? [];
+      attempts += 1;
+      let kept: KeptTail;
+      try {
+        kept = await chooseKeptTail({
+          pending,
+          window: due,
+          runtimeSettings: params.runtimeSettings,
+          priceHandle: params.priceHandle,
+          cfg,
+          logger,
+          ovSessionId,
+          doing: "pouring (held turn)",
+        });
+      } catch (trouble) {
+        if (!(trouble instanceof NoWeightFromTheHandle)) {
+          throw trouble;
+        }
+        if (Date.now() >= deadline) {
+          outcome = "gave_up";
+          break;
+        }
+        diag("pour_hold_retry", ovSessionId, {
+          attempts,
+          failedTail: trouble.tail,
+          pauseMs: params.pourRetryPauseMs,
+        });
+        await sleep(params.pourRetryPauseMs);
+        continue;
+      }
+      if (!kept.chosen || kept.chosen.start === 0) {
+        pourDue.delete(ovSessionId);
+        outcome = "nothing_to_pour";
+        logger.warn?.(
+          `openviking: session=${ovSessionId}: the pour-off put off at the end of the last turn finds ` +
+            `nothing to pour now (${pending.length} messages on the server)`,
+        );
+        break;
+      }
+      const commitResult = await client.commitSession(ovSessionId, {
+        wait: false,
+        keepRecentCount: kept.keepRecentCount,
       });
-      await sleep(params.pourRetryPauseMs);
-      continue;
-    }
-    if (!kept.chosen || kept.chosen.start === 0) {
       pourDue.delete(ovSessionId);
-      outcome = "nothing_to_pour";
-      logger.warn?.(
-        `openviking: session=${ovSessionId}: the pour-off put off at the end of the last turn finds ` +
-          `nothing to pour now (${pending.length} messages on the server)`,
+      const windowAfter =
+        kept.rest !== null && kept.chosen.weight !== null ? kept.rest + kept.chosen.weight : null;
+      logger.info(
+        `openviking: poured session=${ovSessionId} at the start of the turn: window ${due} by the counter, ` +
+          `kept ${kept.keepRecentCount} newest messages` +
+          (kept.chosen.weight !== null ? ` weighing ${kept.chosen.weight}` : " by the floor, unweighed") +
+          ` under ${kept.cap}, archiving ${kept.chosen.start}; ` +
+          `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
+          `task_id=${commitResult.task_id ?? "none"}`,
       );
+      diag("pour_off", ovSessionId, {
+        path: "assemble",
+        window: due,
+        pourOffAtTokens: cfg.pourOffAtTokens,
+        keepRecentTokens: cfg.keepRecentTokens,
+        keepRecentFloor: cfg.keepRecentFloor,
+        rest: kept.rest,
+        cap: kept.cap,
+        model: kept.model ?? null,
+        priced: kept.chosen.priced,
+        priceAsked: kept.chosen.asked,
+        pendingMessages: pending.length,
+        keptMessages: kept.keepRecentCount,
+        keptWeight: kept.chosen.weight,
+        archivedMessages: kept.chosen.start,
+        windowAfter,
+        status: commitResult.status,
+        archived: commitResult.archived ?? false,
+        taskId: commitResult.task_id ?? null,
+        attempts,
+      });
+      if (commitResult.archived === true) {
+        pourFacts = { compacted: true, ...(windowAfter !== null ? { tokensAfter: windowAfter } : {}) };
+      }
+      if (commitResult.task_id) {
+        void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId, params.pollIntervalMs);
+      }
+      outcome = "poured";
       break;
     }
-    const commitResult = await client.commitSession(ovSessionId, {
-      wait: false,
-      keepRecentCount: kept.keepRecentCount,
-    });
-    pourDue.delete(ovSessionId);
-    const windowAfter =
-      kept.rest !== null && kept.chosen.weight !== null ? kept.rest + kept.chosen.weight : null;
-    logger.info(
-      `openviking: poured session=${ovSessionId} at the start of the turn: window ${due} by the counter, ` +
-        `kept ${kept.keepRecentCount} newest messages` +
-        (kept.chosen.weight !== null ? ` weighing ${kept.chosen.weight}` : " by the floor, unweighed") +
-        ` under ${kept.cap}, archiving ${kept.chosen.start}; ` +
-        `status=${commitResult.status}, archived=${commitResult.archived ?? false}, ` +
-        `task_id=${commitResult.task_id ?? "none"}`,
+  } catch (err) {
+    if (answered === undefined) {
+      // Not one answer read: as a failed first read of the assembly -- the assembly fails, the line ends.
+      announce("end", { completed: false });
+      throw err;
+    }
+    outcome = "broke";
+    broke = err;
+    logger.warn?.(
+      `openviking: session=${ovSessionId}: the pour-off put off at the end of the last turn broke ` +
+        `(${String(err)}); the turn goes on, and the pour-off is due again at the next turn`,
     );
-    diag("pour_off", ovSessionId, {
-      path: "assemble",
-      window: due,
-      pourOffAtTokens: cfg.pourOffAtTokens,
-      keepRecentTokens: cfg.keepRecentTokens,
-      keepRecentFloor: cfg.keepRecentFloor,
-      rest: kept.rest,
-      cap: kept.cap,
-      model: kept.model ?? null,
-      priced: kept.chosen.priced,
-      priceAsked: kept.chosen.asked,
-      pendingMessages: pending.length,
-      keptMessages: kept.keepRecentCount,
-      keptWeight: kept.chosen.weight,
-      archivedMessages: kept.chosen.start,
-      windowAfter,
-      status: commitResult.status,
-      archived: commitResult.archived ?? false,
-      taskId: commitResult.task_id ?? null,
-      attempts,
-    });
-    if (commitResult.archived === true) {
-      pourFacts = { compacted: true, ...(windowAfter !== null ? { tokensAfter: windowAfter } : {}) };
-    }
-    if (commitResult.task_id) {
-      void pollPhase2ExtractionOutcome(client, commitResult.task_id, logger, ovSessionId, params.pollIntervalMs);
-    }
-    outcome = "poured";
-    break;
   }
   diag("pour_hold", ovSessionId, {
     outcome,
@@ -1485,6 +1504,7 @@ async function settleWindow(params: {
     waitedMs: Date.now() - started,
     window: due,
     holdSeconds,
+    ...(broke !== undefined ? { error: String(broke) } : {}),
   });
   if (outcome === "gave_up") {
     logger.warn?.(
@@ -1493,7 +1513,15 @@ async function settleWindow(params: {
         "the request exactly and refuses what does not fit -- and the pour-off is due again at the next turn",
     );
   }
-  const ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+  let ctx = answered;
+  try {
+    ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
+  } catch (err) {
+    logger.warn?.(
+      `openviking: assemble session=${ovSessionId}: the context could not be read again after the held ` +
+        `pour-off (${String(err)}); going on by the answer read during it`,
+    );
+  }
   const settled = await holdForSummary({
     ctx,
     client,
@@ -1505,7 +1533,7 @@ async function settleWindow(params: {
     pollIntervalMs: params.pollIntervalMs,
   });
   if (announced) {
-    announce("end", { completed: outcome !== "gave_up" });
+    announce("end", { completed: outcome !== "gave_up" && outcome !== "broke" });
   }
   return settled;
 }
