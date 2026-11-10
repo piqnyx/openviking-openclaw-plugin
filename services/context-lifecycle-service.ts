@@ -1517,10 +1517,22 @@ async function settleWindow(params: {
   try {
     ctx = await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET);
   } catch (err) {
+    if (outcome === "poured") {
+      // The answer from before a pour that was made holds the whole window the pour took away: the assembly
+      // fails, as it did; the host hears the pour made (it counts the compaction).
+      announce("end", { completed: true });
+      throw err;
+    }
     logger.warn?.(
       `openviking: assemble session=${ovSessionId}: the context could not be read again after the held ` +
         `pour-off (${String(err)}); going on by the answer read during it`,
     );
+  }
+  const waitingNow = ctx?.stats?.unsummarizedArchives;
+  if (outcome === "broke" && typeof waitingNow === "number" && waitingNow > 0) {
+    // The pour landed though the server answered with an error (or another path poured): an archive waits
+    // for its summary, and the weight the pour was due by is gone -- not due again.
+    pourDue.delete(ovSessionId);
   }
   const settled = await holdForSummary({
     ctx,
