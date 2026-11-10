@@ -359,7 +359,10 @@ export function sanitizeAgentMessagesForProvider(messages: AgentMessage[]): Agen
   normalizeAssistantContent(messages);
   // The ids are not rewritten before the pairing: a rewrite in order of occurrence binds a later call's result
   // to an older call left without one (a stream cut). As the gateway does: pairs by the raw ids first, the ids
-  // made unique after, at the send (and in the price body, `priceMessagesOf`).
+  // made unique after, at the send (and in the price body, `priceMessagesOf`). One difference stays: a turn cut
+  // off (`stopReason` error or aborted) is kept here and dropped by the gateway before the send, so in the price
+  // body a later call's result may carry the id of that cut call -- the proxy's gate takes it, the weight is the
+  // same; the model's window is paired by the gateway (PLAN-krug 7в.7г review, named).
   const canonical = canonicalizeAgentMessages(messages);
   // Defense in depth (issue #1724):
   //   1) sanitizeToolUseResultPairing may strip orphaned tool_use/tool_result,
