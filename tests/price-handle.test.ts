@@ -292,6 +292,33 @@ describe("тело для ручки", () => {
     expect(body.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
   });
 
+  it("сообщение Викинга с двумя вызовами одного номера -- у каждого своя выдача (PLAN-krug 7в.5-3)", async () => {
+    const part = (path: string) => ({
+      type: "tool",
+      tool_id: "call_115472",
+      tool_name: "read",
+      tool_input: { path },
+      tool_output: `ВЫДАЧА-${path}`,
+      tool_status: "completed",
+    });
+    const messages = [
+      ov("u1", "user", [{ type: "text", text: "прочитай оба" }]),
+      ov("a1", "assistant", [part("раз"), part("два")]),
+    ];
+
+    const body = await priceBodyOf("m", messages);
+
+    const calls = body.messages.flatMap((m) =>
+      "tool_calls" in m && m.tool_calls ? m.tool_calls.map((c) => c.id) : [],
+    );
+    const results = body.messages.flatMap((m) => (m.role === "tool" ? [[m.tool_call_id, m.content]] : []));
+    expect(calls).toHaveLength(2);
+    expect(results).toEqual([
+      [calls[0], "ВЫДАЧА-раз"],
+      [calls[1], "ВЫДАЧА-два"],
+    ]);
+  });
+
   it("пустой список -- одно «x»", async () => {
     expect((await priceBodyOf("m", [])).messages).toEqual([{ role: "user", content: "x" }]);
   });
