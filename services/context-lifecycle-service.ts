@@ -633,8 +633,10 @@ async function findLastClosedArchive(
  * ends in is given whole, and the cut is made where the turn before it ended.
  * Records written by the catch-up (PLAN-krug Р1) carry each message's own moment
  * (a run of tool results, the newest of its rows): there the step back is one
- * message, and the archive's last message is given again -- more, never less
- * (PLAN-krug 7в.7: an exact cut would save that one message).
+ * moment, and the moments go by time, not by place -- what is given again is the
+ * archive's last message, or none, or a few when its last message is not its
+ * newest by time; never less, the place is taken from the archive's own message
+ * (PLAN-krug 7в.7).
  *
  * The moment is matched exactly and the cut is made by place, not by time: a
  * message sent while the model was still answering stands later in the
