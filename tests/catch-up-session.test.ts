@@ -649,4 +649,19 @@ describe("закладка на диске после сброса и перез
     expect(textsOf(stored)).toEqual(["привет", "здравствуй"]);
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("disk gone"));
   });
+
+  it("файл не читается при пустом остатке с архивами -- громкий пропуск, как без файла, не сбой", async () => {
+    const { client, stored } = server({ totalArchives: 1 });
+    const broken = {
+      get: async () => {
+        throw new Error("disk gone");
+      },
+      set: async () => {},
+    };
+
+    const outcome = await call(createSessionCatchUp({ bookmarks: broken }), client, [...before, ...after]);
+
+    expect(outcome).toEqual({ kind: "skipped", reason: "empty_remainder_with_archives" });
+    expect(stored).toEqual([]);
+  });
 });

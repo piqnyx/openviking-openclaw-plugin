@@ -1,5 +1,6 @@
 import { OpenVikingRequestError, type OpenVikingClient, type OVMessage } from "../client.js";
 import { fromBookmarkTurn, readBranchSinceBookmark, type BranchMemory, type SessionTranscriptReader } from "./branch-reader.js";
+import type { CatchUpBookmarks } from "./catch-up-bookmarks.js";
 import { planTranscriptCatchUp, type CatchUpMessage } from "./transcript-catch-up.js";
 
 /** What «догнать» needs of the server: the write, and the session's live messages with their row ids. */
@@ -29,6 +30,8 @@ type SessionState = {
   dirty?: boolean;
   /** The rows whose write failed last, how many times in a row, and since when (PLAN-krug К15, К15б). */
   failing?: { ids: string; times: number; since: number };
+  /** PLAN-krug 7г: the bookmark last put on disk, so an unchanged one is not written again. */
+  saved?: string;
 };
 
 type CatchUpParams = {
@@ -77,8 +80,9 @@ const MAX_BATCH = 100;
  * The state lives with this function, made once per plugin registration (PLAN-krug К18): the gateway
  * builds an engine for each logical turn, the registration hands each the same memory.
  */
-export function createSessionCatchUp(options: { now?: () => number } = {}) {
+export function createSessionCatchUp(options: { now?: () => number; bookmarks?: CatchUpBookmarks } = {}) {
   const now = options.now ?? Date.now;
+  const bookmarks = options.bookmarks;
   const states = new Map<string, SessionState>();
   const locks = new Map<string, Promise<unknown>>();
 
@@ -115,7 +119,7 @@ export function createSessionCatchUp(options: { now?: () => number } = {}) {
     return await exclusive(params.ovSessionId, async () => {
       const state = stateOf(params.ovSessionId);
       try {
-        const outcome = await catchUpUnderLock(params, state, now);
+        const outcome = await catchUpUnderLock(params, state, now, bookmarks);
         // PLAN-krug К19: only a call that wrote took the server's ids into memory; a skip leaves the
         // memory as it was, dirty included, or a write the server accepted late goes in again. К13: a
         // reset (no memory) leaves it dirty -- its session is archived next.
@@ -130,9 +134,14 @@ export function createSessionCatchUp(options: { now?: () => number } = {}) {
   };
 }
 
-async function catchUpUnderLock(params: CatchUpParams, state: SessionState, now: () => number): Promise<CatchUpOutcome> {
+async function catchUpUnderLock(
+  params: CatchUpParams,
+  state: SessionState,
+  now: () => number,
+  bookmarks: CatchUpBookmarks | undefined,
+): Promise<CatchUpOutcome> {
   // A reset (no memory) takes the server's ids always (PLAN-krug К13).
-  let held = await heldIds(params, state, { fromServer: state.dirty === true || params.memory === "none" });
+  let held = await heldIds(params, state, { fromServer: state.dirty === true || params.memory === "none" }, bookmarks);
   if (held.kind === "skipped") {
     return skippedLoudly(params, held.reason);
   }
@@ -154,7 +163,7 @@ async function catchUpUnderLock(params: CatchUpParams, state: SessionState, now:
   // nothing is written: never the whole conversation again (PLAN-krug П1', П5).
   if (held.ids.size > 0 && !holdsAnyOf(read.visible, held.ids)) {
     if (!held.fromServer) {
-      held = await heldIds(params, state, { fromServer: true });
+      held = await heldIds(params, state, { fromServer: true }, bookmarks);
       if (held.kind === "skipped") {
         return skippedLoudly(params, held.reason);
       }
@@ -169,8 +178,45 @@ async function catchUpUnderLock(params: CatchUpParams, state: SessionState, now:
     state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
   }
   state.held = new Set([...held.ids].slice(-MAX_HELD_IDS));
+  await saveBookmark(params, state, read.visible, held.ids, bookmarks);
   // The question waiting for its turn's continuation, named in the journal (PLAN-krug П9).
   return written.kind === "wrote" && plan.heldQuestionId ? { ...written, heldQuestion: plan.heldQuestionId } : written;
+}
+
+/**
+ * PLAN-krug 7г: the newest row of the branch Viking holds -- what this call wrote or found written (checked
+ * with the server whenever the memory is not trusted, a reset's call among them, right before its archive) --
+ * goes to disk, after every call that read the branch, whether it wrote or not. A disk that fails costs the
+ * bookmark, never the catch-up.
+ */
+async function saveBookmark(
+  params: Pick<CatchUpParams, "ovSessionId" | "logger">,
+  state: SessionState,
+  rows: readonly { firstEntryId: string }[],
+  ids: ReadonlySet<string>,
+  bookmarks: CatchUpBookmarks | undefined,
+): Promise<void> {
+  if (!bookmarks) {
+    return;
+  }
+  let newest: string | undefined;
+  for (let index = rows.length - 1; index >= 0 && newest === undefined; index -= 1) {
+    const id = rows[index]?.firstEntryId;
+    if (id !== undefined && ids.has(id)) {
+      newest = id;
+    }
+  }
+  if (!newest || newest === state.saved) {
+    return;
+  }
+  try {
+    await bookmarks.set(params.ovSessionId, newest);
+    state.saved = newest;
+  } catch (error) {
+    params.logger.warn?.(
+      `openviking: the catch-up bookmark of session=${params.ovSessionId} could not be saved: ${String(error)}`,
+    );
+  }
 }
 
 function holdsAnyOf(rows: readonly { firstEntryId: string }[], ids: ReadonlySet<string>): boolean {
@@ -189,6 +235,7 @@ async function heldIds(
   params: Pick<CatchUpParams, "client" | "ovSessionId" | "remainder" | "logger">,
   state: SessionState,
   options: { fromServer: boolean },
+  bookmarks: CatchUpBookmarks | undefined,
 ): Promise<{ kind: "held"; ids: Set<string>; fromServer: boolean } | { kind: "skipped"; reason: string }> {
   // What this process wrote is current while its memory is clean; the server is asked when the
   // process knows nothing, when the memory is dirty or out of date, or when the caller read it anyway.
@@ -228,9 +275,32 @@ async function heldIds(
     return { kind: "skipped", reason: "remainder_without_messages_or_archive_count" };
   }
   if (remainder.totalArchives > 0) {
+    // PLAN-krug 7г: everything archived (a reset, a manual compaction) and nothing in memory -- where the
+    // catch-up stopped is on disk; the caller checks the row is on the branch, as any bookmark.
+    const saved = await savedBookmark(params, bookmarks);
+    if (saved) {
+      return { kind: "held", ids: new Set([saved]), fromServer: true };
+    }
     return { kind: "skipped", reason: "empty_remainder_with_archives" };
   }
   return { kind: "held", ids, fromServer: true };
+}
+
+async function savedBookmark(
+  params: Pick<CatchUpParams, "ovSessionId" | "logger">,
+  bookmarks: CatchUpBookmarks | undefined,
+): Promise<string | undefined> {
+  if (!bookmarks) {
+    return undefined;
+  }
+  try {
+    return await bookmarks.get(params.ovSessionId);
+  } catch (error) {
+    params.logger.warn?.(
+      `openviking: the catch-up bookmark of session=${params.ovSessionId} could not be read: ${String(error)}`,
+    );
+    return undefined;
+  }
 }
 
 async function readServerRemainder(
