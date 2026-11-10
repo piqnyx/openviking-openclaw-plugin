@@ -69,7 +69,16 @@ type Shelf = {
   contextError?: { status: number; code: string; message: string };
   down?: boolean;
   /** `strayTurns`: ходы (по номеру последнего сообщения), чьё время на сервере не совпадает ни с чем. */
-  archives?: Record<string, { overview: string; lastMessageIndex: number; strayTurns?: number[] }>;
+  archives?: Record<
+    string,
+    {
+      overview: string;
+      lastMessageIndex: number;
+      strayTurns?: number[];
+      /** PLAN-krug 7в.7в: записи «догнать» -- у сообщения своё время (время строки шлюза) и номер строки. */
+      ownTimes?: Record<number, number>;
+    }
+  >;
 };
 
 function server(shelf: Shelf) {
@@ -122,6 +131,13 @@ function server(shelf: Shelf) {
             .filter((i) => i >= 0)
             .map((i) => {
               const message = ovMessage(i);
+              if (found.ownTimes) {
+                return {
+                  ...message,
+                  created_at: new Date(found.ownTimes[i] ?? START + i * 60_000).toISOString(),
+                  source_message_ids: [`row-${i}`],
+                };
+              }
               const lastOfTurn = i - (i % 2) + 1;
               return found.strayTurns?.includes(lastOfTurn)
                 ? { ...message, created_at: new Date(START + lastOfTurn * 60_000 - 5_838).toISOString() }
@@ -547,6 +563,48 @@ describe("сборка, когда свежего пересказа нет", ()
     const { value } = await assemble(live, 12_000, client);
 
     expect(marksOf(value.messages)).toEqual(Array.from({ length: 22 }, (_, k) => mark(38 + k)));
+  });
+
+  describe("записи «догнать»: у каждого сообщения своё время (PLAN-krug 7в.7в)", () => {
+    // Шаг назад -- на одно сообщение: последнее сообщение архива идёт в хвосте ещё раз, ничего не теряется.
+    const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, k) => mark(from + k));
+
+    it("архив кончился на ответе: всё после него -- в хвосте, повтор не больше одного сообщения", async () => {
+      const { client } = server({
+        context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+        archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39, ownTimes: {} } },
+      });
+      const { value, outcome } = await assemble(liveTranscript(60), 12_000, client);
+
+      expect(marksOf(value.messages)).toEqual(expect.arrayContaining(range(40, 59)));
+      expect(outcome).toMatchObject({ recovered: true, boundaryFound: true });
+      expect(Number(outcome.tailMessages)).toBeLessThanOrEqual(21);
+    });
+
+    it("архив кончился посреди хода: ответ, не попавший в архив, в хвосте", async () => {
+      const { client } = server({
+        context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+        archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-38", lastMessageIndex: 38, ownTimes: {} } },
+      });
+      const { value, outcome } = await assemble(liveTranscript(60), 12_000, client);
+
+      expect(marksOf(value.messages)).toEqual(expect.arrayContaining(range(39, 59)));
+      expect(outcome).toMatchObject({ recovered: true, boundaryFound: true });
+      expect(Number(outcome.tailMessages)).toBeLessThanOrEqual(22);
+    });
+
+    it("дописка, написанная пока шёл ответ, -- позже в переписке, раньше по времени -- не теряется", async () => {
+      const live = liveTranscript(60);
+      live[40] = { ...live[40], timestamp: START + 38 * 60_000 + 5_000 };
+      const { client } = server({
+        context: NO_SUMMARY(3, 1, [ovMessage(59)]),
+        archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-39", lastMessageIndex: 39, ownTimes: {} } },
+      });
+      const { value, outcome } = await assemble(live, 12_000, client);
+
+      expect(marksOf(value.messages)).toEqual(expect.arrayContaining(range(40, 59)));
+      expect(Number(outcome.tailMessages)).toBeLessThanOrEqual(21);
+    });
   });
 
   it("в архиве виден один ход: границу не угадывает, берёт по весу, не меньше планки", async () => {
