@@ -562,3 +562,91 @@ describe("«догнать» для сессии", () => {
     expect(client.getSessionContext).not.toHaveBeenCalled();
   });
 });
+
+/*
+ * PLAN-krug 7г: сброс беседы оставляет ту же сессию и сливает её целиком -- остаток пуст, архивы есть.
+ * В том же процессе закладку держит память; после перезапуска -- файл закладок: новейшая строка ветки,
+ * которую Викинг заведомо держит, записанная после каждого «догнать».
+ */
+function memoryBookmarks(initial: Record<string, string> = {}) {
+  const rows = new Map(Object.entries(initial));
+  return {
+    rows,
+    get: async (ovSessionId: string) => rows.get(ovSessionId),
+    set: async (ovSessionId: string, rowId: string) => {
+      rows.set(ovSessionId, rowId);
+    },
+  };
+}
+
+describe("закладка на диске после сброса и перезапуска (PLAN-krug 7г)", () => {
+  const before = [row("u1", "user", "привет", T0), row("a1", "assistant", "здравствуй", T0 + 1_000)];
+  const after = [row("u2", "user", "новая беседа", T0 + 60_000), row("a2", "assistant", "начнём", T0 + 61_000)];
+  const call = (catchUp: ReturnType<typeof createSessionCatchUp>, client: unknown, branch: BranchRow[], log = logger()) =>
+    catchUp({ client: client as never, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: log });
+
+  it("после сброса и перезапуска пишет беседу после сброса, старую -- нет", async () => {
+    const options = { totalArchives: 0 };
+    const { client, stored } = server(options);
+    const bookmarks = memoryBookmarks();
+    await call(createSessionCatchUp({ bookmarks }), client, before);
+    // Сброс: сервер сливает всё -- остаток пуст, архив один.
+    stored.splice(0);
+    options.totalArchives = 1;
+
+    const outcome = await call(createSessionCatchUp({ bookmarks }), client, [...before, ...after]);
+
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0 });
+    expect(textsOf(stored)).toEqual(["новая беседа", "начнём"]);
+    expect(bookmarks.rows.get("s1")).toBe("a2");
+  });
+
+  it("строки из файла нет на ветке -- громкий пропуск, ничего не пишется", async () => {
+    const { client, stored } = server({ totalArchives: 1 });
+    const log = logger();
+
+    const outcome = await call(createSessionCatchUp({ bookmarks: memoryBookmarks({ s1: "чужая" }) }), client, after, log);
+
+    expect(outcome).toEqual({ kind: "skipped", reason: "bookmark_not_on_branch" });
+    expect(stored).toEqual([]);
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("записи в файле нет -- громкий пропуск, как было", async () => {
+    const { client, stored } = server({ totalArchives: 1 });
+
+    const outcome = await call(createSessionCatchUp({ bookmarks: memoryBookmarks() }), client, [...before, ...after]);
+
+    expect(outcome).toEqual({ kind: "skipped", reason: "empty_remainder_with_archives" });
+    expect(stored).toEqual([]);
+  });
+
+  it("файл обновляется и без записи строк: закладка -- то, что держит сервер (запись, легшая поздно)", async () => {
+    const { client } = server({ stored: [held("u1", "user", "привет"), held("a1", "assistant", "здравствуй")] });
+    const bookmarks = memoryBookmarks();
+
+    const outcome = await call(createSessionCatchUp({ bookmarks }), client, before);
+
+    expect(outcome).toEqual({ kind: "wrote", written: 0, lost: 0 });
+    expect(bookmarks.rows.get("s1")).toBe("a1");
+  });
+
+  it("файл не читается и не пишется -- «догнать» работает, как без него", async () => {
+    const { client, stored } = server({ totalArchives: 0 });
+    const broken = {
+      get: async () => {
+        throw new Error("disk gone");
+      },
+      set: async () => {
+        throw new Error("disk gone");
+      },
+    };
+    const log = logger();
+
+    const outcome = await call(createSessionCatchUp({ bookmarks: broken }), client, before, log);
+
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0 });
+    expect(textsOf(stored)).toEqual(["привет", "здравствуй"]);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("disk gone"));
+  });
+});
