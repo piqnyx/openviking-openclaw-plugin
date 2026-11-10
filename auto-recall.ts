@@ -67,23 +67,20 @@ export type PreparedRecallQuery = {
 // PLAN, step 5) -- are a script's user turn: a marker line and a phrase line. Since the gateway's model-only
 // prompt context (digest PLAN-rasskaz, 08.11) the script's task -- the digest's with its paper, the watcher's
 // with its facts -- follows it in the message the turn's recall reads, so the search ends with the phrase
-// line -- only when that trigger's own task follows it, known by the task's first words (each script's tests
-// hold them; the proxy keys on another phrase of the digest's line and on this line of the watcher's). A
+// line -- only when a script's task follows it, known by the task's first words, the same for both scripts
+// (their tests hold them; the proxy keys on other phrases of those lines). A
 // marker line with no task after it -- an old trigger merged in front of Vit's next message, one he pasted,
 // one quoted in a memory block -- leaves the message as before. If the first words change, nothing is cut and
 // the task is back in the search: the over-long query shows as "recall query truncated" in the log. Only the
 // search: what the turn records comes from the transcript, which never holds the task.
 const SERVICE_TRIGGER_LINE_RE =
-  /^[^\S\r\n]*::(digest|weather)-trigger::(?=\s|$)[^\S\r\n]*(?:(?:\r\n|\r|\n)[^\S\r\n]*)?[^\r\n]*/gm;
-const SERVICE_TASK_START: Record<string, string> = {
-  digest: "Служебное задание на этот ход",
-  weather: "Служебное задание сторожа погоды на этот ход",
-};
+  /^[^\S\r\n]*::(?:digest|weather)-trigger::(?=\s|$)[^\S\r\n]*(?:(?:\r\n|\r|\n)[^\S\r\n]*)?[^\r\n]*/gm;
+const SERVICE_TASK_START = "Служебное задание на этот ход";
 
 function dropAfterServicePhrase(text: string): string {
   for (const match of text.matchAll(SERVICE_TRIGGER_LINE_RE)) {
     const end = match.index + match[0].length;
-    if (text.slice(end).trimStart().startsWith(SERVICE_TASK_START[match[1]])) {
+    if (text.slice(end).trimStart().startsWith(SERVICE_TASK_START)) {
       return text.slice(0, end);
     }
   }
