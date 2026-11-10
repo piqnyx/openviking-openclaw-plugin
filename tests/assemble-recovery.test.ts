@@ -160,6 +160,8 @@ type Cut = {
   holdForSummarySeconds?: number;
   /** «Догнать» шло и не дописало (запись встала). */
   catchUp?: "stopped";
+  /** PLAN-krug 7в.5: вид истории шлюза, который движок привязывает к ручке. */
+  historyForModel?: (messages: AgentMessage[]) => Promise<AgentMessage[]>;
 };
 
 /** Весы, которые молчат: вердикта нет ни на одно тело (шторм). */
@@ -183,7 +185,12 @@ function assemble(messages: AgentMessage[], tokenBudget: number, client: OpenVik
     },
     ...(cut.handle === false
       ? {}
-      : { priceHandle: cut.handle === "silent" ? silentHandle() : charsHandle() }),
+      : {
+          priceHandle: {
+            ...(cut.handle === "silent" ? silentHandle() : charsHandle()),
+            ...(cut.historyForModel ? { historyForModel: cut.historyForModel } : {}),
+          },
+        }),
     ...(cut.catchUp === "stopped"
       ? {
           catchUp: async () => ({ kind: "stopped" as const, written: 0, error: "storage busy" }),
@@ -774,6 +781,76 @@ describe("сборка, когда ответ сервера негоден по
 
     expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
     expect(outcome).toMatchObject({ recovered: true, reason: "no_ov_data", archiveId: null });
+  });
+});
+
+describe("запасной путь весит то, что увидит модель (PLAN-krug 7в.5)", () => {
+  // Подделка вида шлюза: каждому вопросу штамп в 200 знаков (шлюз ставит штамп времени прошлым вопросам).
+  const stamp = "[штамп]".padEnd(200, "ш");
+  const historyForModel = async (messages: AgentMessage[]) =>
+    messages.map((message) =>
+      message.role === "user"
+        ? ({
+            ...message,
+            content: `${stamp}${
+              typeof message.content === "string"
+                ? message.content
+                : (message.content as Array<{ text?: string }>).map((block) => block.text ?? "").join("")
+            }`,
+          } as AgentMessage)
+        : message,
+    );
+
+  it("переписка под K, как хранится, но тяжелее K со штампами -- целиком не уходит", async () => {
+    // 30 сообщений по 966 знаков -- 28 981 под 30 000; со штампами 31 981. Под K -- 14 ходов (29 849).
+    const live = liveTranscript(30);
+    const { client } = server({ down: true });
+    const { value, outcome } = await assemble(live, 200_000, client, {
+      keepRecentTokens: 30_000,
+      historyForModel,
+    });
+
+    expect(value.messages).not.toBe(live);
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 28 }, (_, k) => mark(2 + k)));
+    expect(outcome).toMatchObject({ recovered: true, droppedMessages: 2 });
+  });
+
+  it("хвост от границы режет по весу со штампами", async () => {
+    // Хвост -- 52 сообщения с десятого; под 12 000 со штампами -- десять (пять ходов, 10 661), не двенадцать.
+    const live = liveTranscript(60);
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-9", lastMessageIndex: 9 } },
+    });
+    const { value } = await assemble(live, 12_000, client, {
+      keepRecentTokens: 12_000,
+      keepRecentFloor: 4,
+      historyForModel,
+    });
+
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 10 }, (_, k) => mark(50 + k)));
+  });
+
+  it("хвост весится в форме окна: выдача без вызова, которую окно выбросит, не весится", async () => {
+    // Без выдачи под 12 000 -- двенадцать сообщений с 48-го. Выдача без вызова в 3 000 знаков после 53-го в окно
+    // не попадёт (починка пар) -- и в весе её нет.
+    const live = liveTranscript(60);
+    live.splice(54, 0, {
+      role: "toolResult",
+      toolCallId: "call_orphan",
+      toolName: "read",
+      content: [{ type: "text", text: "О".repeat(3_000) }],
+      isError: false,
+      timestamp: START + 53 * 60_000 + 1,
+    } as AgentMessage);
+    const { client } = server({
+      context: NO_SUMMARY(3, 1, [ovMessage(59, "assistant")]),
+      archives: { archive_002: { overview: "ПЕРЕСКАЗ-ДО-9", lastMessageIndex: 9 } },
+    });
+    const { value } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    expect(marksOf(value.messages)).toEqual(Array.from({ length: 12 }, (_, k) => mark(48 + k)));
+    expect(JSON.stringify(value.messages)).not.toContain("call_orphan");
   });
 });
 

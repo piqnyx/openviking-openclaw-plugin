@@ -5,6 +5,7 @@ import { OpenVikingClient, type OVMessage } from "../client.js";
 import { memoryOpenVikingConfigSchema } from "../config.js";
 import { createMemoryOpenVikingContextEngine } from "../context-engine.js";
 import type { PriceVerdict } from "../price-handle.js";
+import type { AgentMessage } from "../services/context-message-adapter.js";
 
 /*
  * Отливание по X (PLAN-gorizont, 4б).
@@ -107,6 +108,7 @@ function engineOver(
   priceHandle: ReturnType<typeof handle>["price"] | undefined,
   keepRecentFloor = 20,
   extraCfg: Record<string, unknown> = {},
+  historyForModel?: (messages: AgentMessage[]) => Promise<AgentMessage[]>,
 ) {
   const diags: Array<{ stage: string; data: Record<string, unknown> }> = [];
   const warned: string[] = [];
@@ -136,6 +138,7 @@ function engineOver(
     getClient: async () => stand.client,
     resolveAgentId: () => "main",
     ...(priceHandle ? { priceHandle } : {}),
+    ...(historyForModel ? { historyForModel } : {}),
   });
   return { engine, diags, warned };
 }
@@ -637,5 +640,50 @@ describe("слив при сорванной сводке (PLAN-krug 7в.Р2а)"
     expect(stand.asked.filter((line) => line.endsWith("/context")).length).toBe(readsBefore);
     expect(stand.commits).toEqual([]);
     expect(lastDiag(diags, "pour_skip")).toMatchObject({ reason: "below_x" });
+  });
+});
+
+/*
+ * PLAN-krug 7в.5: хвост весится, как его получит модель. Шлюз по дороге к модели ставит каждому прошлому
+ * вопросу штамп времени; хвост «под K» должен быть под K вместе со штампами. Вид истории даёт шлюз (контекст
+ * фабрики движка); здесь вместо него -- подделка, ставящая вопросам штамп в 1 000 знаков.
+ */
+const STAMP = "[штамп]".padEnd(1_000, "ш");
+
+function textOf(content: unknown): string {
+  return typeof content === "string"
+    ? content
+    : (content as Array<{ text?: string }>).map((block) => block.text ?? "").join("");
+}
+
+async function stamped(messages: AgentMessage[]): Promise<AgentMessage[]> {
+  return messages.map((message) =>
+    message.role === "user" ? ({ ...message, content: `${STAMP}${textOf(message.content)}` } as AgentMessage) : message,
+  );
+}
+
+describe("хвост весится, как его увидит модель (PLAN-krug 7в.5)", () => {
+  it("слив оставляет хвост под K со штампами шлюза", async () => {
+    // 100 ходов по 1 000 знаков. Без штампов под 150 000 -- 148 сообщений; со штампом в 1 000 у каждого вопроса
+    // ход весит 3 000 -- 49 ходов (147 001), 98 сообщений.
+    const stand = server(100, 1_000);
+    const { engine } = engineOver(stand, handle().price, 20, {}, stamped);
+
+    await afterTurn(engine, "view-stamps", X);
+
+    expect(stand.commits).toEqual([{ keep_recent_count: 98 }]);
+  });
+
+  it("вид шлюза сломался -- взвешивает как хранится и говорит об этом", async () => {
+    const stand = server(100, 1_000);
+    const broken = async () => {
+      throw new Error("boundary broke");
+    };
+    const { engine, warned } = engineOver(stand, handle().price, 20, {}, broken);
+
+    await afterTurn(engine, "view-broken", X);
+
+    expect(stand.commits).toEqual([{ keep_recent_count: 148 }]);
+    expect(warned.filter((line) => line.includes("boundary broke"))).toHaveLength(1);
   });
 });
