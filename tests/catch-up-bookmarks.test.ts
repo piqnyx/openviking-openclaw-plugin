@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createFileCatchUpBookmarks } from "../services/catch-up-bookmarks.js";
+import { catchUpBookmarksPath, createFileCatchUpBookmarks } from "../services/catch-up-bookmarks.js";
 
 /*
  * PLAN-krug 7г: файл закладок «догнать» -- сессия Викинга -> новейшая строка ветки, которую Викинг заведомо
@@ -41,6 +41,29 @@ describe("файл закладок «догнать»", () => {
 
     const reader = createFileCatchUpBookmarks(file);
     expect([await reader.get("s1"), await reader.get("s2")]).toEqual(["a2", "b1"]);
+  });
+
+  it("одновременные записи разных сессий одного процесса не теряют друг друга", async () => {
+    const file = await fileIn();
+    const store = createFileCatchUpBookmarks(file);
+    await Promise.all([store.set("s1", "a1"), store.set("s2", "b1"), store.set("s3", "c1")]);
+
+    const reader = createFileCatchUpBookmarks(file);
+    expect([await reader.get("s1"), await reader.get("s2"), await reader.get("s3")]).toEqual(["a1", "b1", "c1"]);
+  });
+
+  it("лежит в каталоге состояния шлюза (OPENCLAW_STATE_DIR), как настройка плагина", () => {
+    const saved = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = "/srv/state";
+    try {
+      expect(catchUpBookmarksPath()).toBe(path.join("/srv/state", "openviking", "catch-up-bookmarks.json"));
+    } finally {
+      if (saved === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = saved;
+      }
+    }
   });
 
   it("держит не больше предела, уходят самые давние", async () => {

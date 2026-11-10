@@ -621,14 +621,50 @@ describe("закладка на диске после сброса и перез
     expect(stored).toEqual([]);
   });
 
-  it("файл обновляется и без записи строк: закладка -- то, что держит сервер (запись, легшая поздно)", async () => {
-    const { client } = server({ stored: [held("u1", "user", "привет"), held("a1", "assistant", "здравствуй")] });
-    const bookmarks = memoryBookmarks();
+  it.each(["open", "none"] as const)(
+    "файл обновляется и без записи строк: закладка -- то, что держит сервер (память %s; none -- сброс)",
+    async (memory) => {
+      const { client } = server({ stored: [held("u1", "user", "привет"), held("a1", "assistant", "здравствуй")] });
+      const bookmarks = memoryBookmarks();
 
-    const outcome = await call(createSessionCatchUp({ bookmarks }), client, before);
+      const outcome = await createSessionCatchUp({ bookmarks })({
+        client: client as never,
+        ovSessionId: "s1",
+        reader: reader(before),
+        holdTrailingQuestion: false,
+        memory,
+        peerIdOf: () => undefined,
+        logger: logger(),
+      });
 
-    expect(outcome).toEqual({ kind: "wrote", written: 0, lost: 0 });
-    expect(bookmarks.rows.get("s1")).toBe("a1");
+      expect(outcome).toEqual({ kind: "wrote", written: 0, lost: 0 });
+      expect(bookmarks.rows.get("s1")).toBe("a1");
+    },
+  );
+
+  it("промах закладки помнится: файл -- раз на процесс, ветка без закладки не читается снова", async () => {
+    const { client } = server({ totalArchives: 1 });
+    let gets = 0;
+    const bookmarks = {
+      get: async () => {
+        gets += 1;
+        return "чужая";
+      },
+      set: async () => {},
+    };
+    const catchUp = createSessionCatchUp({ bookmarks });
+    const branch = reader([...before, ...after]);
+    const run = () =>
+      catchUp({ client: client as never, ovSessionId: "s1", reader: branch, holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: logger() });
+
+    const first = await run();
+    const readsAfterFirst = branch.cursors.length;
+    const second = await run();
+
+    expect(first).toEqual({ kind: "skipped", reason: "bookmark_not_on_branch" });
+    expect(second).toEqual({ kind: "skipped", reason: "empty_remainder_with_archives" });
+    expect(gets).toBe(1);
+    expect(branch.cursors.length).toBe(readsAfterFirst);
   });
 
   it("файл не читается и не пишется -- «догнать» работает, как без него", async () => {
