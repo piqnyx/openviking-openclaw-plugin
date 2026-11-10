@@ -118,7 +118,7 @@ export function createSessionCatchUp(options: { now?: () => number; bookmarks?: 
     }
   };
 
-  return async function catchUpSession(params: CatchUpParams): Promise<CatchUpOutcome> {
+  const catchUpSession = async function catchUpSession(params: CatchUpParams): Promise<CatchUpOutcome> {
     return await exclusive(params.ovSessionId, async () => {
       const state = stateOf(params.ovSessionId);
       try {
@@ -135,6 +135,10 @@ export function createSessionCatchUp(options: { now?: () => number; bookmarks?: 
       }
     });
   };
+  // Whether this process wrote the session by row ids or found its rows held by id: the session is the
+  // catch-up's, and the old write without a reader stays out of it (plugin review, 10.11).
+  const holdsRowsOf = (ovSessionId: string): boolean => (states.get(ovSessionId)?.held.size ?? 0) > 0;
+  return Object.assign(catchUpSession, { holdsRowsOf });
 }
 
 async function catchUpUnderLock(
@@ -461,4 +465,7 @@ function isRefusal(error: unknown): boolean {
 }
 
 /** The «догнать» of one plugin registration, shared by every engine it builds (PLAN-krug К18). */
-export type SessionCatchUp = ReturnType<typeof createSessionCatchUp>;
+export type SessionCatchUp = ((params: CatchUpParams) => Promise<CatchUpOutcome>) & {
+  /** Absent on a catch-up made for a test: then no session counts as the catch-up's. */
+  holdsRowsOf?: (ovSessionId: string) => boolean;
+};

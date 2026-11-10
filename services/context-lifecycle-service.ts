@@ -2323,38 +2323,55 @@ export async function afterTurnOpenVikingSession({
       // truth is the server's tail, not this process's memory, so a restart or a
       // replayed commit does not double it either. A server that gives no tail is
       // warned about and the turn is recorded whole: a repeat costs less than a loss.
-      let skipped = 0;
+      // The queue's turn is checked against the server's tail (below); the turn's end is not read here --
+      // below X it reads nothing (PLAN-krug 7в.Р2а).
+      let tail: OVMessage[] | undefined;
       if (path === "commitTurn" && toRecord.length > 0) {
         try {
-          const tail = (await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET)).messages ?? [];
-          skipped = recordedPrefixLength(toRecord, tail);
+          tail = (await client.getSessionContext(ovSessionId, NO_TRIM_TOKEN_BUDGET)).messages ?? [];
         } catch (err) {
           logger.warn?.(
             `openviking: could not read the server's tail for session=${ovSessionId} before recording the turn ` +
               `(${String(err)}); recording it whole`,
           );
         }
-        diag("afterTurn_dedupe", ovSessionId, {
-          path,
-          skipped,
-          recorded: toRecord.length - skipped,
-        });
       }
+      // A session Viking holds by gateway row ids is the catch-up's (plugin review, 10.11): a turn without the
+      // gateway's reader -- a rare path of a new gateway -- is not written the old way, or the next catch-up
+      // with a reader writes its rows again; that catch-up writes them once, by their ids. Known from this
+      // process's catch-up (a turn's assemble, with its reader, comes before the turn's end) or from the
+      // queue's read of the tail. An older gateway never gives row ids, and its turns go the old way as before.
+      const ownedByCatchUp =
+        catchUp?.holdsRowsOf?.(ovSessionId) === true ||
+        tail?.some((message) => (message.source_message_ids?.length ?? 0) > 0) === true;
+      if (ownedByCatchUp) {
+        diag("afterTurn_skip", ovSessionId, { reason: "catch_up_owns_session", path });
+      } else {
+        let skipped = 0;
+        if (path === "commitTurn" && toRecord.length > 0) {
+          skipped = tail ? recordedPrefixLength(toRecord, tail) : 0;
+          diag("afterTurn_dedupe", ovSessionId, {
+            path,
+            skipped,
+            recorded: toRecord.length - skipped,
+          });
+        }
 
-      for (const msg of toRecord.slice(skipped)) {
-        await client.addSessionMessage(
-          ovSessionId,
-          msg.role,
-          msg.parts,
-          undefined,
-          createdAt,
-          resolveOpenVikingMessagePeerId({
-            peerRole: cfg.peer_role ?? "assistant",
-            role: msg.role,
-            personPeerId: senderRoleId,
-            assistantPeerId: agentId,
-          }),
-        );
+        for (const msg of toRecord.slice(skipped)) {
+          await client.addSessionMessage(
+            ovSessionId,
+            msg.role,
+            msg.parts,
+            undefined,
+            createdAt,
+            resolveOpenVikingMessagePeerId({
+              peerRole: cfg.peer_role ?? "assistant",
+              role: msg.role,
+              personPeerId: senderRoleId,
+              assistantPeerId: agentId,
+            }),
+          );
+        }
       }
     }
 

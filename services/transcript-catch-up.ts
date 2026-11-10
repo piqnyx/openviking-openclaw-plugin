@@ -43,9 +43,14 @@ export function planTranscriptCatchUp(params: {
   const { rows } = params;
   const bookmark = newestSeenIndex(rows, params.seenIds);
   const last = rows.at(-1);
-  const holdsQuestion =
-    params.holdTrailingQuestion && last !== undefined && rows.length - 1 > bookmark && roleOf(last.message) === "user";
-  const end = holdsQuestion ? rows.length - 1 : rows.length;
+  // The questions at the branch's end with nothing after them wait together -- a question and the lines added
+  // to it before any answer are one turn's prompt; one of them written ahead would stand in the next window
+  // beside the same question in the gateway's prompt (plugin review, 10.11).
+  let end = rows.length;
+  while (params.holdTrailingQuestion && end - 1 > bookmark && roleOf(rows[end - 1]?.message) === "user") {
+    end -= 1;
+  }
+  const holdsQuestion = end < rows.length;
 
   // Tool calls before the bookmark still name the inputs of the results after it.
   const toolUseInputs = collectToolUseInputs(rows.slice(0, end).map((row) => row.message));
