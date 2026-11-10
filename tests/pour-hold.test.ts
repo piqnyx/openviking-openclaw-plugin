@@ -293,8 +293,9 @@ describe("весы молчат в конце хода", () => {
   });
 
   // Review of 7в.7г: going on by the answer read before a pour that was made would send the whole window the
-  // pour took away (about X), while the host hears the compaction; the turn fails as it did, the end told.
-  it("слив сделан, а ответ после него не читается -- сбой сборки, как был, конец со сжатием", async () => {
+  // pour took away (about X), while the host hears the compaction. The window goes by the fallback path with
+  // that answer's summary (the archive the pour made waits for one), not without any summary; the end told.
+  it("слив сделан, а ответ после него не читается -- запасной путь со сводкой, конец со сжатием", async () => {
     const stand = server();
     let silent = true;
     const { price } = scales(() => silent);
@@ -305,10 +306,28 @@ describe("весы молчат в конце хода", () => {
     stand.state.failContextAfterCommit = true;
     const announce = vi.fn();
 
-    await startOfTurn(engine, sessionId, announce);
+    // The live transcript heavier than K, so the fallback path cuts it and stands on a summary.
+    const live = Array.from({ length: 40 }, (_, i) => ({
+      role: i % 2 === 0 ? "user" : "assistant",
+      content: i % 2 === 0 ? `вопрос ${i}`.padEnd(5_000, "в") : [{ type: "text", text: `ответ ${i}`.padEnd(5_000, "о") }],
+      timestamp: Date.UTC(2026, 9, 11, 1, i),
+    }));
+    await engine.assemble({
+      sessionId,
+      messages: live as never,
+      tokenBudget: 249_000,
+      prompt: "вопрос следующий",
+      runtimeSettings: MODEL,
+      announceCompaction: announce,
+    } as never);
 
     expect(stand.commits).toEqual([{ keep_recent_count: 28 }]);
-    expect(diags.filter((d) => d.stage === "assemble_error")).toHaveLength(1);
+    expect(diags.filter((d) => d.stage === "assemble_error")).toEqual([]);
+    expect(diags.filter((d) => d.stage === "assemble_result").at(-1)?.data).toMatchObject({
+      recovered: true,
+      reason: "pour_reread_failed",
+      summaryFrom: "context",
+    });
     expect(announce.mock.calls).toEqual([
       ["start"],
       ["end", { completed: true, compacted: true, tokensAfter: 185_000 }],
