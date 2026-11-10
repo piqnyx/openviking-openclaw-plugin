@@ -296,10 +296,33 @@ describe("отливание по X", () => {
   it("веса окна нет -- отливать не по чему", async () => {
     const stand = server(20, 10_000);
     const { price } = handle();
-    const { engine, diags } = engineOver(stand, price);
+    const { engine, diags, warned } = engineOver(stand, price);
     await afterTurn(engine, "no-weight", undefined);
     expect(stand.commits).toEqual([]);
     expect(lastDiag(diags, "pour_skip")).toMatchObject({ reason: "no_window_weight" });
+    // Посреди хода шлюз зовёт afterTurn без веса нарочно: громкой строки нет.
+    expect(warned.filter((line) => line.includes("window's weight"))).toEqual([]);
+  });
+
+  // PLAN-krug 7е (5в.6): запись очереди без веса окна -- обычно ход, дочитанный после перезапуска; слив
+  // пропускается до следующей записи с весом -- громко, вес не выдумывается.
+  it("запись хода без веса окна -- слива нет, громкая строка", async () => {
+    const stand = server(20, 10_000);
+    const { price } = handle();
+    const { engine, diags, warned } = engineOver(stand, price);
+    const result = await engine.commitTurn?.({
+      advancementKey: "adv-no-weight",
+      messages: turn("record-no-weight") as never,
+      prePromptMessageCount: 0,
+      sessionId: `${SESSION}-record-no-weight`,
+      runtimeContext: {},
+      runtimeSettings: { model: { resolved: "gemini-3.5-flash-lite" } },
+    } as never);
+
+    expect(result?.status).toBe("committed");
+    expect(stand.commits).toEqual([]);
+    expect(lastDiag(diags, "pour_skip")).toMatchObject({ reason: "no_window_weight" });
+    expect(warned.filter((line) => line.includes("window's weight"))).toHaveLength(1);
   });
 
   it("сообщений меньше планки -- отливать нечего, предупреждение", async () => {
