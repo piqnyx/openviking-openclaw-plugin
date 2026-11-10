@@ -331,7 +331,7 @@ describe("автоматическое сжатие", () => {
 describe("хвост сжатия весится, как его увидит модель (PLAN-krug 7в.5)", () => {
   it("оставляет хвост под K со штампами, которые шлюз ставит вопросам", async () => {
     // 20 ходов по 5 000 знаков; со штампом в 5 000 у каждого вопроса ход весит 15 000 -- под 150 000 девять
-    // ходов (135 001), 18 сообщений, а не 28.
+    // ходов (135 001), 18 сообщений, а не 28. Планка 4: при обычной (20) она сильнее веса и оставила бы 20.
     const stamp = "[штамп]".padEnd(5_000, "ш");
     const historyForModel = async (messages: AgentMessage[]) =>
       messages.map((message) =>
@@ -347,7 +347,7 @@ describe("хвост сжатия весится, как его увидит м�
           : message,
       );
     const stand = server(20, 5_000);
-    const { engine } = engineOver(stand, { historyForModel });
+    const { engine } = engineOver(stand, { historyForModel, keepRecentFloor: 4 });
     const result = await compact(engine, "budget");
 
     expect(stand.commits).toEqual([{ keep_recent_count: 18 }]);

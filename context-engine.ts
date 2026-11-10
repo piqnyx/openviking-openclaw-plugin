@@ -1,6 +1,6 @@
 import type { OpenVikingClient } from "./client.js";
 import type { MemoryOpenVikingConfig } from "./config.js";
-import type { PriceHandle } from "./price-handle.js";
+import type { HistoryForModel, PriceHandle, TailPriceHandle } from "./price-handle.js";
 import type { RuntimeQueryConfigStore } from "./query-config.js";
 import {
   AUTO_RECALL_SOURCE_MARKER,
@@ -343,6 +343,8 @@ export function createMemoryOpenVikingContextEngine(params: {
   traceRecorder?: { record(entry: RecallTraceEntry): void; recordAndFlush?: (entry: RecallTraceEntry) => Promise<unknown> };
   /** The proxy's price handle (PLAN-gorizont 4а); none when the config names no address. */
   priceHandle?: Pick<PriceHandle, "price" | "url">;
+  /** PLAN-krug 7в.5: the gateway's view of history as the model gets it (its engine factory's context). */
+  historyForModel?: HistoryForModel;
   /** How often the server is asked while waiting or watching a task, ms; the tests shorten it. */
   pollIntervalMs?: number;
   /** PLAN-gorizont 5а: how long the held turn waits between questions to the price handle, ms; the tests shorten it. */
@@ -363,10 +365,34 @@ export function createMemoryOpenVikingContextEngine(params: {
     rememberSessionAgentId,
     queryConfigStore,
     traceRecorder,
-    priceHandle,
     pollIntervalMs,
     pourRetryPauseMs,
   } = params;
+
+  // PLAN-krug 7в.5: the gateway's view of history travels with the handle, so every tail is weighed as the
+  // model will see it. A view that breaks leaves the tails weighed as stored (the weight before 7в.5), said once.
+  const viewOfGateway = params.historyForModel;
+  let viewBroke = false;
+  const priceHandle: TailPriceHandle | undefined =
+    params.priceHandle && viewOfGateway
+      ? {
+          url: params.priceHandle.url,
+          price: params.priceHandle.price.bind(params.priceHandle),
+          historyForModel: async (window) => {
+            try {
+              return await viewOfGateway(window);
+            } catch (trouble) {
+              if (!viewBroke) {
+                viewBroke = true;
+                logger.warn?.(
+                  `openviking: the gateway's view of history broke; tails are weighed as stored: ${String(trouble)}`,
+                );
+              }
+              return window;
+            }
+          },
+        }
+      : params.priceHandle;
 
   // PLAN-krug 7б: the turns written by the gateway's row ids. К18: its memory is the registration's;
   // an engine built on its own (tests) keeps its own.

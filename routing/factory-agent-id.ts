@@ -11,6 +11,8 @@ import { sanitizeOpenVikingAgentIdHeader } from "./identity-routing.js";
 export type ContextEngineFactoryContext = {
   agentDir?: unknown;
   workspaceDir?: unknown;
+  /** PLAN-krug 7в.5: the gateway's view of history as the model gets it; absent on an older gateway. */
+  historyForModel?: unknown;
 };
 
 /** `…/agents/<agentId>/agent` — the layout OpenClaw uses for agent state. */

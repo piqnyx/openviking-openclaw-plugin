@@ -15,7 +15,7 @@ import {
   sanitizeOpenVikingPeerId,
   type OpenVikingPeerRole,
 } from "../routing/identity-routing.js";
-import { priceBodyOf, priceMessagesOf, type PriceHandle } from "../price-handle.js";
+import { inWindowFormForWeighing, priceBodyOf, priceMessagesOf, type TailPriceHandle } from "../price-handle.js";
 import { floorTail, longestTailWithin, turnStarts } from "../tail-by-weight.js";
 import { extractNewTurnMessages } from "../text-utils.js";
 import { coalesceConsecutiveToolMessages, normalizeTimestamp, toOvParts } from "./capture-form.js";
@@ -130,7 +130,7 @@ export type AssembleOpenVikingSessionParams = {
   cfg: any;
   getClient: (agentId: string | undefined) => Promise<OpenVikingClient>;
   /** The proxy's price handle (PLAN-gorizont 4а); the recovery path cuts the live tail by it (4б). */
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
   logger: ContextEngineLifecycleLogger;
   resolveAgentId: (sessionId: string, sessionKey?: string, ovSessionId?: string) => string;
   rememberSessionAgentId?: (ctx: {
@@ -188,7 +188,7 @@ export type CompactOpenVikingSessionParams = {
   customInstructions?: string;
   /** The host's runtime settings; the model's name is read off them for the price handle. */
   runtimeSettings?: unknown;
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
   cfg: PourOffConfig & {
     /** How long to wait for the summary to stand on the server, seconds. */
     compactWaitSeconds: number;
@@ -249,7 +249,7 @@ export type AfterTurnOpenVikingSessionParams = {
   isBypassedSession: (params: { sessionId?: string; sessionKey?: string }) => boolean;
   diag: (stage: string, sessionId: string, data: Record<string, unknown>) => void;
   /** The proxy's price handle (PLAN-gorizont 4а): the pour-off by weight (4б) asks it. */
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
 };
 
 export function totalExtractedMemories(memories?: Record<string, number>): number {
@@ -799,7 +799,7 @@ async function chooseKeptTail(params: {
   pending: OVMessage[];
   window: number | undefined;
   runtimeSettings: unknown;
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
   cfg: PourOffConfig;
   logger: ContextEngineLifecycleLogger;
   ovSessionId: string;
@@ -815,7 +815,9 @@ async function chooseKeptTail(params: {
           if (known !== undefined) {
             return known;
           }
-          const verdict = await priceHandle.price(priceBodyOf(model, pending.slice(start)));
+          const verdict = await priceHandle.price(
+            await priceBodyOf(model, pending.slice(start), priceHandle.historyForModel),
+          );
           if (!verdict) {
             throw new NoWeightFromTheHandle(start);
           }
@@ -946,6 +948,15 @@ async function tailByWeight(params: {
   return start === null ? null : { start, weight: null, priced: false, asked: 0 };
 }
 
+/** The live messages in the cut window's form for weighing, or as they are when that breaks (as the window does). */
+function inProviderOrder(messages: AgentMessage[]): AgentMessage[] {
+  try {
+    return inWindowFormForWeighing(messages);
+  } catch {
+    return messages;
+  }
+}
+
 /**
  * Assembly without a fresh summary (28.09.2026).
  *
@@ -985,7 +996,7 @@ async function assembleWithoutFreshSummary(params: {
   tokenBudget: number;
   keepRecentTokens: number;
   keepRecentFloor: number;
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
   runtimeSettings?: unknown;
   client?: RecoveryClient;
   totalArchives?: number;
@@ -1001,13 +1012,13 @@ async function assembleWithoutFreshSummary(params: {
     return assemblePassthrough({ diag, ovSessionId, reason, liveMessages, originalTokens, extra });
   }
   const model = modelOf(params.runtimeSettings);
+  const handle = params.priceHandle;
+  // PLAN-krug 7в.5: weighed in the form the window goes in, as the model will see it (the gateway's view).
   const weighLive =
-    params.priceHandle && model
+    handle && model
       ? async (messages: AgentMessage[]) => {
-          const verdict = await params.priceHandle!.price({
-            model,
-            messages: priceMessagesOf(messages),
-          });
+          const seen = handle.historyForModel ? await handle.historyForModel(messages) : messages;
+          const verdict = await handle.price({ model, messages: priceMessagesOf(seen) });
           return verdict ? verdict.charge : null;
         }
       : null;
@@ -1050,9 +1061,10 @@ async function assembleWithoutFreshSummary(params: {
   // The tail by weight (PLAN-gorizont 4б): the live part of the window is never
   // heavier than K by the handle, whole turns, never fewer than the floor. The
   // estimate of characters cut here before; it is not in the counter's units.
+  // The cut window is put in order for the provider (below); a tail is weighed in that form.
   const weigh = weighLive
     ? async (start: number): Promise<number> => {
-        const weight = await weighLive(tail.slice(start));
+        const weight = await weighLive(inProviderOrder(tail.slice(start)));
         if (weight === null) {
           throw new NoWeightFromTheHandle(start);
         }
@@ -1312,7 +1324,7 @@ async function settleWindow(params: {
   pollIntervalMs: number;
   pourRetryPauseMs: number;
   runtimeSettings: unknown;
-  priceHandle?: Pick<PriceHandle, "price" | "url">;
+  priceHandle?: TailPriceHandle;
 }): Promise<SessionContextResult | null | undefined> {
   const { client, ovSessionId, cfg, logger, diag, announceCompaction } = params;
   const due = pourDue.get(ovSessionId);
