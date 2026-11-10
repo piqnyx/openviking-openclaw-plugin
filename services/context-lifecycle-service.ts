@@ -2267,9 +2267,9 @@ export async function afterTurnOpenVikingSession({
       if (catchUp && !warnedOfNoTranscriptReader) {
         warnedOfNoTranscriptReader = true;
         logger.warn?.(
-          "openviking: the gateway hands no readSessionTranscript; turns of a session Viking holds by gateway " +
-            "row ids are left to the catch-up, others are recorded the old way, guessed by the server's tail, " +
-            "and rows the model never sees may go to memory",
+          "openviking: the gateway hands no readSessionTranscript here; turns are recorded the old way, guessed " +
+            "by the server's tail, and rows the model never sees may go to memory -- except a turn's end in a " +
+            "session Viking holds by gateway row ids, which is left to the catch-up (said for each)",
         );
       }
       const messages = rawMessages ?? [];
@@ -2352,9 +2352,11 @@ export async function afterTurnOpenVikingSession({
         // Loud each time (final reviewers, 10.11): on a gateway older than the reader -- one rolled back alone,
         // the plugin kept -- every turn of such a session stands here until a gateway with the reader comes back.
         logger.warn?.(
-          `openviking: session=${ovSessionId}: a turn came without the gateway's transcript reader; Viking holds ` +
-            "this session by gateway row ids, so the turn is not recorded the old way -- the next catch-up with " +
-            "the reader writes it (a gateway older than PLAN-krug brings none: roll the plugin back with it)",
+          `openviking: session=${ovSessionId}: a turn's end came without the gateway's transcript reader; Viking ` +
+            "holds this session by gateway row ids, so the turn is not recorded the old way -- the next catch-up " +
+            "with the reader writes it, and a question the loop hook already wrote the old way goes in again " +
+            "then. A gateway older than PLAN-krug hands no reader at all: one rolled back alone needs the plugin " +
+            "rolled back too",
         );
         diag("afterTurn_skip", ovSessionId, { reason: "catch_up_owns_session", path });
       } else {
