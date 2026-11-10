@@ -1111,6 +1111,27 @@ describe("выдачи внутри одного хода раздаются в�
     expect(text).toContain("ВЫДАЧА-два");
     expect(text).not.toContain("missing tool result");
   });
+
+  it("выдачи сдвинуты за дописку -- переставляются к вызовам, каждому своя", async () => {
+    const live = liveTranscript(54);
+    live.push(
+      ask(54, "оба"),
+      { role: "assistant", content: [callOf("раз"), callOf("два")], timestamp: START + 55 * 60_000 } as AgentMessage,
+      ask(55, "дописка"),
+      outputOf(55, "раз"),
+      outputOf(55, "два"),
+      { role: "assistant", content: [{ type: "text", text: "прочла оба" }], timestamp: START + 56 * 60_000 } as AgentMessage,
+    );
+    const { client } = server({ down: true });
+    const { value } = await assemble(live, 12_000, client, { keepRecentTokens: 12_000, keepRecentFloor: 4 });
+
+    const outputs = value.messages
+      .filter((m) => m.role === "toolResult")
+      .map((m) => JSON.stringify((m as { content?: unknown }).content));
+    expect(outputs).toHaveLength(2);
+    expect(outputs[0]).toContain("ВЫДАЧА-раз");
+    expect(outputs[1]).toContain("ВЫДАЧА-два");
+  });
 });
 
 describe("то же через движок, как его зовёт шлюз", () => {
