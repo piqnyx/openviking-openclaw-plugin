@@ -1,7 +1,7 @@
 import { OpenVikingRequestError, type OpenVikingClient, type OVMessage } from "../client.js";
 import { fromBookmarkTurn, readBranchSinceBookmark, type BranchMemory, type SessionTranscriptReader } from "./branch-reader.js";
 import type { CatchUpBookmarks } from "./catch-up-bookmarks.js";
-import { planTranscriptCatchUp, type CatchUpMessage } from "./transcript-catch-up.js";
+import { newestHeldRowId, planTranscriptCatchUp, type CatchUpMessage } from "./transcript-catch-up.js";
 
 /** What «догнать» needs of the server: the write, and the session's live messages with their row ids. */
 export type CatchUpClient = {
@@ -14,7 +14,17 @@ export type CatchUpClient = {
 };
 
 export type CatchUpOutcome =
-  | { kind: "wrote"; written: number; lost: number; heldQuestion?: string }
+  | {
+      kind: "wrote";
+      written: number;
+      lost: number;
+      heldQuestion?: string;
+      /**
+       * PLAN-krug 12е: the newest row of the read branch Viking now holds -- under the main assemble's
+       * bound, where the gateway's history ends.
+       */
+      newestHeldRow?: string;
+    }
   | { kind: "stopped"; written: number; error: string }
   | { kind: "skipped"; reason: string };
 
@@ -189,9 +199,17 @@ async function catchUpUnderLock(
     state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
   }
   state.held = new Set([...held.ids].slice(-MAX_HELD_IDS));
-  await saveBookmark(params, state, read.visible, held.ids, bookmarks);
+  const newest = newestHeldRowId(read.visible, held.ids);
+  await saveBookmark(params, state, newest, bookmarks);
+  if (written.kind !== "wrote") {
+    return written;
+  }
   // The question waiting for its turn's continuation, named in the journal (PLAN-krug П9).
-  return written.kind === "wrote" && plan.heldQuestionId ? { ...written, heldQuestion: plan.heldQuestionId } : written;
+  return {
+    ...written,
+    ...(plan.heldQuestionId ? { heldQuestion: plan.heldQuestionId } : {}),
+    ...(newest ? { newestHeldRow: newest } : {}),
+  };
 }
 
 /**
@@ -203,19 +221,11 @@ async function catchUpUnderLock(
 async function saveBookmark(
   params: Pick<CatchUpParams, "ovSessionId" | "logger">,
   state: SessionState,
-  rows: readonly { firstEntryId: string }[],
-  ids: ReadonlySet<string>,
+  newest: string | undefined,
   bookmarks: CatchUpBookmarks | undefined,
 ): Promise<void> {
   if (!bookmarks) {
     return;
-  }
-  let newest: string | undefined;
-  for (let index = rows.length - 1; index >= 0 && newest === undefined; index -= 1) {
-    const id = rows[index]?.firstEntryId;
-    if (id !== undefined && ids.has(id)) {
-      newest = id;
-    }
   }
   if (!newest || newest === state.saved) {
     return;

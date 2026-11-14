@@ -1,6 +1,6 @@
 import { OpenVikingRequestError } from "../client.js";
 import { fromBookmarkTurn, readBranchSinceBookmark } from "./branch-reader.js";
-import { planTranscriptCatchUp } from "./transcript-catch-up.js";
+import { newestHeldRowId, planTranscriptCatchUp } from "./transcript-catch-up.js";
 // The server cuts nothing at this budget (as NO_TRIM_TOKEN_BUDGET of the lifecycle service).
 const WHOLE_REMAINDER = 1_000_000_000;
 // The same request will never pass: a refusal of the request itself, not of the moment.
@@ -131,9 +131,17 @@ async function catchUpUnderLock(params, state, now, bookmarks) {
         state[params.memory] = { cursor: read.memory.cursor, rows: fromBookmarkTurn(read.memory.rows, held.ids) };
     }
     state.held = new Set([...held.ids].slice(-MAX_HELD_IDS));
-    await saveBookmark(params, state, read.visible, held.ids, bookmarks);
+    const newest = newestHeldRowId(read.visible, held.ids);
+    await saveBookmark(params, state, newest, bookmarks);
+    if (written.kind !== "wrote") {
+        return written;
+    }
     // The question waiting for its turn's continuation, named in the journal (PLAN-krug П9).
-    return written.kind === "wrote" && plan.heldQuestionId ? { ...written, heldQuestion: plan.heldQuestionId } : written;
+    return {
+        ...written,
+        ...(plan.heldQuestionId ? { heldQuestion: plan.heldQuestionId } : {}),
+        ...(newest ? { newestHeldRow: newest } : {}),
+    };
 }
 /**
  * PLAN-krug 7г: the newest row of the branch Viking holds -- what this call wrote or found written (checked
@@ -141,16 +149,9 @@ async function catchUpUnderLock(params, state, now, bookmarks) {
  * goes to disk, after every call that read the branch, whether it wrote or not. A disk that fails costs the
  * bookmark, never the catch-up.
  */
-async function saveBookmark(params, state, rows, ids, bookmarks) {
+async function saveBookmark(params, state, newest, bookmarks) {
     if (!bookmarks) {
         return;
-    }
-    let newest;
-    for (let index = rows.length - 1; index >= 0 && newest === undefined; index -= 1) {
-        const id = rows[index]?.firstEntryId;
-        if (id !== undefined && ids.has(id)) {
-            newest = id;
-        }
     }
     if (!newest || newest === state.saved) {
         return;
