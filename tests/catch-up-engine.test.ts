@@ -143,6 +143,25 @@ function readerOver(branch: BranchRow[], options: { fence?: number } = {}): Sess
   };
 }
 
+/**
+ * PLAN-krug 12д: the gateway's reader at the main assemble -- the branch up to the end of the history
+ * the attempt prepared (rows before `end`); a cursor past that end starts the read over
+ * (session-accessor.sqlite-active-events.ts: reset "anchor_moved"), a cursor at it reads nothing.
+ */
+function readerUpTo(branch: BranchRow[], end: number): SessionTranscriptReader {
+  return {
+    readVisiblePage: async (limits) => {
+      const last = limits?.cursor !== undefined ? Number(limits.cursor) : -1;
+      if (last >= end) {
+        return { kind: "reset", cursor: "-1", reason: "anchor_moved" };
+      }
+      const rows = branch.slice(last + 1, end);
+      return { kind: "page", cursor: String(last + rows.length), rows, hasMore: false };
+    },
+    selectModelVisible: (rows) => rows,
+  };
+}
+
 const question = row("u1", { role: "user", content: "погода?", timestamp: T0 });
 const call = row("c1", {
   role: "assistant",
@@ -530,6 +549,59 @@ describe("запись хода через «догнать», как зовёт
 
     expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"]]);
     expect(JSON.stringify(assembled.messages)).not.toContain("погода?");
+  });
+
+  // PLAN-krug 12е: the window ends where the gateway's history ends. A row Viking holds past that end --
+  // this turn's question, written by an earlier attempt that kept it in its history -- is not shown:
+  // the attempt sends the question again as its prompt, and the model must see it once.
+  it("окно сборки кончается там, где история шлюза: вопрос, записанный прошлой попыткой, в него не входит", async () => {
+    const stand = server();
+    const { engine } = engineOver(stand);
+    await queueWith(engine, [u0, a0], "turn-earlier");
+    const branch = [u0, a0, question];
+    const assemble = async (end: number) =>
+      await engine.assemble({
+        sessionId: SESSION,
+        sessionKey: KEY,
+        messages: branch.slice(0, end).map((candidate) => candidate.message) as never,
+        tokenBudget: 200_000,
+        availableTools: new Set<string>(),
+        runtimeContext: { sessionKey: KEY, readSessionTranscript: readerUpTo(branch, end) },
+      } as never);
+
+    // An internal attempt (a continuation after a compaction) keeps the question in its history.
+    await assemble(3);
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"], ["u1"]]);
+    // It failed; the next model's run sends the question as its prompt, its history ends before it.
+    const assembled = await assemble(2);
+
+    expect(JSON.stringify(assembled.messages)).toContain("здравствуй");
+    expect(JSON.stringify(assembled.messages)).not.toContain("погода?");
+  });
+
+  // PLAN-krug 12е: only what Viking holds by the gateway's row ids can be told to lie past the end; a
+  // message written without them stays in the window.
+  it("сообщение Викинга без номеров строк шлюза в конце окна остаётся", async () => {
+    const stand = server();
+    const { engine } = engineOver(stand);
+    await queueWith(engine, [u0, a0], "turn-earlier");
+    stand.stored.push({
+      id: "ov-old-way",
+      role: "user",
+      parts: [{ type: "text", text: "записано по-старому" }],
+      created_at: "",
+    });
+
+    const assembled = await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: [u0, a0].map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerUpTo([u0, a0], 2) },
+    } as never);
+
+    expect(JSON.stringify(assembled.messages)).toContain("записано по-старому");
   });
 
   it("журнал afterTurn_entry (опись З7) пишется и на пути с читателем", async () => {
