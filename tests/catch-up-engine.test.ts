@@ -146,7 +146,8 @@ function readerOver(branch: BranchRow[], options: { fence?: number } = {}): Sess
 /**
  * PLAN-krug 12д: the gateway's reader at the main assemble -- the branch up to the end of the history
  * the attempt prepared (rows before `end`); a cursor past that end starts the read over
- * (session-accessor.sqlite-active-events.ts: reset "anchor_moved"), a cursor at it reads nothing.
+ * (session-accessor.sqlite-active-events.ts: reset "anchor_moved"), a cursor at it reads nothing. It
+ * says so (12е): its reads end where the attempt's history ends.
  */
 function readerUpTo(branch: BranchRow[], end: number): SessionTranscriptReader {
   return {
@@ -159,6 +160,7 @@ function readerUpTo(branch: BranchRow[], end: number): SessionTranscriptReader {
       return { kind: "page", cursor: String(last + rows.length), rows, hasMore: false };
     },
     selectModelVisible: (rows) => rows,
+    endsAtHistoryEnd: true,
   };
 }
 
@@ -577,6 +579,31 @@ describe("запись хода через «догнать», как зовёт
 
     expect(JSON.stringify(assembled.messages)).toContain("здравствуй");
     expect(JSON.stringify(assembled.messages)).not.toContain("погода?");
+  });
+
+  // PLAN-krug 12е (code review): an older gateway's read at the assemble ends at the admitted question,
+  // not at the attempt's history end -- a retry keeps the earlier attempt's tool round past it, which the
+  // hook already wrote. Without the reader's word that its read ends at the history end, nothing is cut.
+  it("со старым шлюзом (ограда у вопроса) окно не режется: повтор видит вопрос и круг инструмента", async () => {
+    const stand = server();
+    const { engine } = engineOver(stand);
+    await queueWith(engine, [u0, a0], "turn-earlier");
+    const branch = [u0, a0, question, call, result];
+    await hookWith(engine, branch);
+    expect(stand.stored.map((message) => message.source_message_ids)).toEqual([["u0"], ["a0"], ["u1"], ["r1"]]);
+
+    // The model call after the tool round failed; the next model retries under the old fence.
+    const assembled = await engine.assemble({
+      sessionId: SESSION,
+      sessionKey: KEY,
+      messages: branch.map((candidate) => candidate.message) as never,
+      tokenBudget: 200_000,
+      availableTools: new Set<string>(),
+      runtimeContext: { sessionKey: KEY, readSessionTranscript: readerOver(branch, { fence: 2 }) },
+    } as never);
+
+    expect(JSON.stringify(assembled.messages)).toContain("погода?");
+    expect(JSON.stringify(assembled.messages)).toContain("дождь");
   });
 
   // PLAN-krug 12е: only what Viking holds by the gateway's row ids can be told to lie past the end; a
