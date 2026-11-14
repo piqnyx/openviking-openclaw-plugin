@@ -1322,8 +1322,9 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
             }
             // PLAN-krug 12е: the window ends where the gateway's history ends. What Viking holds past it -- this
             // turn's rows an earlier attempt wrote while it kept the question in its history -- stays out, or the
-            // model sees the question twice: in the window and in this attempt's prompt.
-            if (ctx && outcome.newestHeldRow) {
+            // model sees the question twice: in the window and in this attempt's prompt. Only on the reader's word
+            // that its read ends there: an older gateway's ended at the admitted question, rows past it are history.
+            if (ctx && outcome.newestHeldRow && reader.endsAtHistoryEnd === true) {
                 const window = windowUpToHistoryEnd(ctx.messages, outcome.newestHeldRow);
                 if (window.dropped.length > 0) {
                     const rows = window.dropped.flatMap((message) => message.source_message_ids ?? []);
@@ -1334,6 +1335,10 @@ export async function assembleOpenVikingSession({ sessionId, sessionKey, message
                 else if (window.unsure === "tail_without_row_ids") {
                     logger.warn?.(`openviking: assemble session=${ovSessionId}: Viking holds messages without the gateway's row ids ` +
                         `after the end of its history (row ${outcome.newestHeldRow}); the window keeps them`);
+                }
+                else if (window.unsure === "end_not_live") {
+                    logger.warn?.(`openviking: assemble session=${ovSessionId}: the end of the gateway's history (row ` +
+                        `${outcome.newestHeldRow}) is not among Viking's live messages; the window is not cut there`);
                 }
                 if (window.dropped.length > 0 || window.unsure) {
                     diag("assemble_window_end", ovSessionId, {

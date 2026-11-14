@@ -13,6 +13,12 @@ export type SessionTranscriptReader = {
   }): Promise<SessionTranscriptPage>;
   /** Judges a whole run of rows: a heartbeat poll goes or stays together with its reply. */
   selectModelVisible<T extends { message: unknown }>(rows: T[]): T[];
+  /**
+   * PLAN-krug 12е: the gateway's word that the reads end where the attempt's history ends (its main
+   * assemble, 12д) -- only then may the window leave out what Viking holds past them. An older gateway
+   * does not say it: its read ended at the admitted question, and a retry keeps rows past it.
+   */
+  endsAtHistoryEnd?: true;
 };
 
 export type SessionTranscriptPage =
