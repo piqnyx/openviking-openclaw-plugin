@@ -20,6 +20,7 @@ import { floorTail, longestTailWithin, turnStarts } from "../tail-by-weight.js";
 import { extractNewTurnMessages } from "../text-utils.js";
 import { coalesceConsecutiveToolMessages, normalizeTimestamp, toOvParts } from "./capture-form.js";
 import { transcriptReaderOf } from "./branch-reader.js";
+import { windowUpToHistoryEnd } from "./transcript-catch-up.js";
 import type { CatchUpOutcome, SessionCatchUp } from "./catch-up-session.js";
 import { estimateAgentMessageTokens, estimateTextTokens } from "../token-estimator.js";
 import {
@@ -1852,6 +1853,38 @@ export async function assembleOpenVikingSession({
             totalArchives: before.stats?.totalArchives,
             standing: standingSummaryOf(before),
             extra: { catchUp: outcome, error: String(err) },
+          });
+        }
+      }
+      // PLAN-krug 12е: the window ends where the gateway's history ends. What Viking holds past it -- this
+      // turn's rows an earlier attempt wrote while it kept the question in its history -- stays out, or the
+      // model sees the question twice: in the window and in this attempt's prompt. Only on the reader's word
+      // that its read ends there: an older gateway's ended at the admitted question, rows past it are history.
+      if (ctx && outcome.newestHeldRow && reader.endsAtHistoryEnd === true) {
+        const window = windowUpToHistoryEnd(ctx.messages, outcome.newestHeldRow);
+        if (window.dropped.length > 0) {
+          const rows = window.dropped.flatMap((message) => message.source_message_ids ?? []);
+          logger.info(
+            `openviking: assemble session=${ovSessionId}: ${window.dropped.length} message(s) Viking holds past ` +
+              `the end of the gateway's history are left out of the window (rows ${rows.join(",")})`,
+          );
+          ctx = { ...ctx, messages: [...window.messages] };
+        } else if (window.unsure === "tail_without_row_ids") {
+          logger.warn?.(
+            `openviking: assemble session=${ovSessionId}: Viking holds messages without the gateway's row ids ` +
+              `after the end of its history (row ${outcome.newestHeldRow}); the window keeps them`,
+          );
+        } else if (window.unsure === "end_not_live") {
+          logger.warn?.(
+            `openviking: assemble session=${ovSessionId}: the end of the gateway's history (row ` +
+              `${outcome.newestHeldRow}) is not among Viking's live messages; the window is not cut there`,
+          );
+        }
+        if (window.dropped.length > 0 || window.unsure) {
+          diag("assemble_window_end", ovSessionId, {
+            endRow: outcome.newestHeldRow,
+            dropped: window.dropped.length,
+            ...(window.unsure ? { unsure: window.unsure } : {}),
           });
         }
       }

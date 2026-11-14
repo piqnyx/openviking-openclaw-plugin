@@ -190,8 +190,8 @@ describe("«догнать» для сессии", () => {
     const first = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: log });
     const second = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: log });
 
-    expect(first).toEqual({ kind: "wrote", written: 2, lost: 0 });
-    expect(second).toEqual({ kind: "wrote", written: 0, lost: 0 });
+    expect(first).toEqual({ kind: "wrote", written: 2, lost: 0, newestHeldRow: "a1" });
+    expect(second).toEqual({ kind: "wrote", written: 0, lost: 0, newestHeldRow: "a1" });
     expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["a1"]]);
   });
 
@@ -208,7 +208,7 @@ describe("«догнать» для сессии", () => {
     const restarted = createSessionCatchUp();
     const outcome = await restarted({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: logger() });
 
-    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0 });
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0, newestHeldRow: "a2" });
     expect(textsOf(stored)).toEqual(["привет", "здравствуй", "как дела?", "хорошо"]);
   });
 
@@ -221,7 +221,7 @@ describe("«догнать» для сессии", () => {
     const first = await catchUp({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: log });
     await catchUp({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: log });
 
-    expect(first).toEqual({ kind: "wrote", written: 1, lost: 1 });
+    expect(first).toEqual({ kind: "wrote", written: 1, lost: 1, newestHeldRow: "a1" });
     expect(textsOf(stored)).toEqual(["ответ"]);
     expect(client.addSessionMessage).toHaveBeenCalledTimes(2);
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("u1"));
@@ -242,7 +242,7 @@ describe("«догнать» для сессии", () => {
 
     expect(asChunk).toMatchObject({ kind: "stopped", written: 0 });
     expect(first).toMatchObject({ kind: "stopped", written: 1 });
-    expect(second).toEqual({ kind: "wrote", written: 2, lost: 0 });
+    expect(second).toEqual({ kind: "wrote", written: 2, lost: 0, newestHeldRow: "u2" });
     expect(textsOf(stored)).toEqual(["привет", "здравствуй", "как дела?"]);
   });
 
@@ -266,7 +266,7 @@ describe("«догнать» для сессии", () => {
 
     const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: log });
 
-    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 1 });
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 1, newestHeldRow: "u2" });
     expect(stored.map((message) => message.source_message_ids)).toEqual([["u1"], ["u2"]]);
     const lines = log.warn.mock.calls.map(([line]) => String(line));
     expect(lines.filter((line) => line.includes("a1"))).toHaveLength(1);
@@ -353,7 +353,7 @@ describe("«догнать» для сессии", () => {
 
     const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", reader: reader(branch), holdTrailingQuestion: false, memory: "open", peerIdOf: () => undefined, logger: logger() });
 
-    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0 });
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0, newestHeldRow: "a1" });
     expect(textsOf(stored)).toEqual(["привет", "здравствуй"]);
   });
 
@@ -389,7 +389,7 @@ describe("«догнать» для сессии", () => {
       remainder: { messages: [...stored], totalArchives: 0 },
     });
 
-    expect(fenced).toEqual({ kind: "wrote", written: 0, lost: 0 });
+    expect(fenced).toEqual({ kind: "wrote", written: 0, lost: 0, newestHeldRow: "a0" });
   });
 
   it("повтор попытки после круга инструментов не пишет вопрос и круг второй раз", async () => {
@@ -540,7 +540,7 @@ describe("«догнать» для сессии", () => {
 
     const outcome = await createSessionCatchUp()({ client, ovSessionId: "s1", holdTrailingQuestion: true, memory: "open", reader: reader(branch), peerIdOf: () => undefined, logger: logger() });
 
-    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0, heldQuestion: "u2" });
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0, heldQuestion: "u2", newestHeldRow: "a1" });
   });
 
   it("свежая сессия без архивов -- пишет ветку целиком", async () => {
@@ -596,7 +596,7 @@ describe("закладка на диске после сброса и перез
 
     const outcome = await call(createSessionCatchUp({ bookmarks }), client, [...before, ...after]);
 
-    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0 });
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0, newestHeldRow: "a2" });
     expect(textsOf(stored)).toEqual(["новая беседа", "начнём"]);
     expect(bookmarks.rows.get("s1")).toBe("a2");
   });
@@ -637,7 +637,7 @@ describe("закладка на диске после сброса и перез
         logger: logger(),
       });
 
-      expect(outcome).toEqual({ kind: "wrote", written: 0, lost: 0 });
+      expect(outcome).toEqual({ kind: "wrote", written: 0, lost: 0, newestHeldRow: "a1" });
       expect(bookmarks.rows.get("s1")).toBe("a1");
     },
   );
@@ -681,7 +681,7 @@ describe("закладка на диске после сброса и перез
 
     const outcome = await call(createSessionCatchUp({ bookmarks: broken }), client, before, log);
 
-    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0 });
+    expect(outcome).toEqual({ kind: "wrote", written: 2, lost: 0, newestHeldRow: "a1" });
     expect(textsOf(stored)).toEqual(["привет", "здравствуй"]);
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("disk gone"));
   });

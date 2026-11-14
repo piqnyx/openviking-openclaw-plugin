@@ -80,6 +80,38 @@ export function planTranscriptCatchUp(params: {
   return holdsQuestion && last ? { messages, heldQuestionId: last.firstEntryId } : { messages };
 }
 
+/** The newest row of these Viking holds (by the id the row was first written under), when any. */
+export function newestHeldRowId(rows: readonly BranchRow[], heldIds: ReadonlySet<string>): string | undefined {
+  return rows[newestSeenIndex(rows, heldIds)]?.firstEntryId;
+}
+
+/**
+ * PLAN-krug 12е: Viking's live messages up to the end of the gateway's history -- the last message holding
+ * its newest row -- without what lies after it. Viking appends in the branch's order and later turns go after,
+ * so rows past the end are only a tail: this turn's rows an earlier attempt wrote (it kept the question in its
+ * history; this one sends it as the prompt). Cut only what was written by the gateway's row ids; a message
+ * without them, or a newest row not among the live messages (archived), leaves the window as it is.
+ */
+export function windowUpToHistoryEnd<T extends { source_message_ids?: string[] }>(
+  messages: readonly T[],
+  newestRowId: string,
+): { messages: readonly T[]; dropped: T[]; unsure?: "tail_without_row_ids" | "end_not_live" } {
+  let endIndex = -1;
+  for (let index = messages.length - 1; index >= 0 && endIndex < 0; index -= 1) {
+    if (messages[index]?.source_message_ids?.includes(newestRowId)) {
+      endIndex = index;
+    }
+  }
+  if (endIndex < 0) {
+    return messages.length > 0 ? { messages, dropped: [], unsure: "end_not_live" } : { messages, dropped: [] };
+  }
+  const tail = messages.slice(endIndex + 1);
+  if (tail.some((message) => (message.source_message_ids?.length ?? 0) === 0)) {
+    return { messages, dropped: [], unsure: "tail_without_row_ids" };
+  }
+  return { messages: messages.slice(0, endIndex + 1), dropped: tail };
+}
+
 function newestSeenIndex(rows: readonly BranchRow[], seenIds: ReadonlySet<string>): number {
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index];
